@@ -1,32 +1,43 @@
-# cpplinq — LINQ-to-SQL for Modern C++ (C++20)
+# cpplinq — Type-Safe LINQ-to-SQL for Modern C++ (C++20)
 
-`cpplinq` is a type-safe, fluent database query library for C++20 inspired by .NET's LINQ to SQL and Entity Framework Core. It brings compile-time type checking, expression tree generation, struct-based row mapping, and a fluent query API to relational databases.
+`cpplinq` is an expressive, compile-time type-safe database query and object-relational mapping (ORM) library for C++20 inspired by .NET's LINQ to SQL and Entity Framework Core. It delivers compile-time query syntax checking, operator-overloaded expression AST generation, zero-overhead struct hydration, cross-dialect SQL generation, and connection pooling.
 
 ---
 
-## Features
+## ✨ Features
 
-- **Type-Safe Expression AST**: Operator overloading (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) builds a compile-time expression tree rather than string concatenation.
-- **Fluent Query Builder**: Method chaining (`.from()`, `.where()`, `.order_by()`, `.limit()`, `.offset()`) with deferred execution.
-- **Automatic Struct Mapping**: Maps database records directly into plain C++ structs without external pre-compilers or intrusive macros.
-- **Nullable Columns with `std::optional`**: Native SQL `NULL` handling seamlessly mapped to `std::optional<T>`.
-- **Database Abstraction**: Pluggable SQL dialect (`ISqlDialect`) and driver (`IConnection`, `IPreparedStatement`, `IDataReader`) architecture.
-  - **SQLite** (included out of the box via built-in amalgamation)
-  - **PostgreSQL** (via `libpq` with ODBC DSN support)
+- 🛡️ **Type-Safe Expression AST**: Operator overloading (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) builds a strongly-typed expression tree, preventing syntax and runtime type errors.
+- ⚡ **Zero-Overhead Struct Mapping**: Maps database records directly into plain C++ structs and tuples (`std::pair`, `std::tuple`) without macros, code generators, or reflection boilerplate.
+- 🔗 **Multi-Table Joins & Relationships**: Type-safe `INNER JOIN` and `LEFT JOIN` (2 and 3+ tables) with tuple/pair hydration and nullable `std::optional<T>` mapping.
+- 🧱 **Common Table Expressions (CTEs)**: Fluent `WITH cte AS (...) SELECT ...` queries via `.with_cte()`.
+- 🪟 **Window Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, and aggregate window functions (`SUM/AVG/COUNT OVER`) with `.over().partition_by(...).order_by(...)`.
+- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, and SQL Server.
+- 🔍 **Subqueries & Predicates**: `EXISTS`, `NOT EXISTS`, `IN (subquery)`, `LIKE`, `BETWEEN`, `IN (list)`, and scalar subqueries.
+- 🔄 **Cross-Dialect UPSERT**: Atomic insert-or-update operations (`INSERT ON CONFLICT DO UPDATE` on SQLite/PostgreSQL, `MERGE INTO` on MSSQL).
+- 🔀 **SQL Set Operations**: `union_with` (`UNION`), `union_all` (`UNION ALL`), `intersect` (`INTERSECT`), and `except_from` (`EXCEPT`).
+- 🏊 **Thread-Safe Connection Pool**: High-performance `ConnectionPool<Backend>` with RAII leasing (`PooledConnection`), acquisition timeouts, and recycling.
+- 📊 **Full Aggregations & Grouping**: `count()`, `count_distinct()`, `sum()`, `avg()`, `min_val()`, `max_val()`, `group_by()`, and `having()`.
+- 💾 **Multi-Database Support**:
+  - **SQLite** (built-in amalgamation, in-memory & file databases)
+  - **PostgreSQL** (native driver with dollar-sign parameter binding `$1` and `RETURNING`)
   - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
-- **Full CRUD & Aggregates**:
-  - `insert` & `insert_many` (with `RETURNING` and `OUTPUT INSERTED` ID support)
-  - `where(...)` filtering with chained logical operators
-  - `order_by` / `order_by_desc`
-  - `limit` / `offset` pagination
-  - `update` with typed column assignments
-  - `remove` (DELETE)
-  - `count()`, `avg()`, `min_val()`, `max_val()`, `sum()`
-  - `begin_transaction()` with RAII rollback/commit semantics
 
 ---
 
-## Quick Start Example
+## 📚 Documentation
+
+Detailed documentation is available in the [`doc/`](doc/) directory:
+
+- [**Architecture & Design**](doc/architecture.md) — Internal design, AST engine, dialect system, driver layer, and connection pooling.
+- [**Querying & Filtering Guide**](doc/query_guide.md) — Where filters, boolean logic, ranges (`BETWEEN`), patterns (`LIKE`), lists (`IN`), sorting (`ORDER BY`), and paging (`LIMIT`/`OFFSET`).
+- [**Joins, Subqueries & CTEs**](doc/joins_and_relationships.md) — 2-table & 3-table joins, tuple mapping, correlated subqueries, `EXISTS`, and Common Table Expressions.
+- [**Functions, Aggregates & Window Functions**](doc/functions_and_aggregates.md) — Scalar SQL functions, date/time operations, `GROUP BY`/`HAVING`, and window functions (`ROW_NUMBER`, `RANK`, etc.).
+- [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
+- [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, and Microsoft SQL Server, ODBC DSN setup, and CI workflows.
+
+---
+
+## 🚀 Quick Start Example
 
 ```cpp
 #include <iostream>
@@ -36,7 +47,7 @@
 
 using namespace cpplinq;
 
-// 1. Define your Entity struct
+// 1. Define Entity Structs
 struct User {
     int id = 0;
     std::string name;
@@ -44,7 +55,13 @@ struct User {
     int age = 0;
 };
 
-// 2. Define the Table Schema
+struct Order {
+    int id = 0;
+    int user_id = 0;
+    double amount = 0.0;
+};
+
+// 2. Define Table Schemas
 inline const auto users_table = table<User>(
     "users",
     column("id",    &User::id,    primary_key, auto_increment),
@@ -53,55 +70,62 @@ inline const auto users_table = table<User>(
     column("age",   &User::age,   not_null)
 );
 
+inline const auto orders_table = table<Order>(
+    "orders",
+    column("id",      &Order::id,      primary_key, auto_increment),
+    column("user_id", &Order::user_id, not_null),
+    column("amount",  &Order::amount,  not_null)
+);
+
 int main() {
-    // 3. Connect to Database:
-    // SQLite:
+    // 3. Connect to Database (SQLite / PostgreSQL / MSSQL)
     auto db = cpplinq::connect<cpplinq::sqlite>(":memory:");
-    // PostgreSQL:
-    // auto db = cpplinq::connect<cpplinq::postgres>("PostgreSQL35W");
-    // Microsoft SQL Server:
-    // auto db = cpplinq::connect<cpplinq::mssql>("Driver={ODBC Driver 17 for SQL Server};Server=localhost;Database=testdb;Trusted_Connection=yes;");
 
-    // 4. Create table if not exists
     db.ensure_table(users_table);
+    db.ensure_table(orders_table);
 
-    // 5. Insert records
+    // 4. Insert records
     int64_t alice_id = db.insert(users_table, User{0, "Alice", "alice@example.com", 30});
     int64_t bob_id   = db.insert(users_table, User{0, "Bob",   std::nullopt,        25});
+    db.insert(orders_table, Order{0, static_cast<int>(alice_id), 199.99});
 
-    // 6. Query with LINQ-like fluent syntax
-    auto users = db.from(users_table)
-                   .where(users_table["age"] >= 25 && users_table["name"] != "Bob")
-                   .order_by_desc(users_table["age"])
-                   .to_vector();
+    // 5. Type-Safe Query with Filters & Sorting
+    auto adults = db.from(users_table)
+                    .where(users_table["age"] >= 25 && users_table["email"].is_not_null())
+                    .order_by_desc(users_table["age"])
+                    .to_vector();
 
-    for (const auto& u : users) {
-        std::cout << u.name << " (" << u.age << ")\n";
+    // 6. Multi-Table INNER JOIN (returns std::pair<User, Order>)
+    auto user_orders = db.from(users_table)
+                         .join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                         .where(orders_table["amount"] > 100.0)
+                         .to_vector();
+
+    for (const auto& [user, order] : user_orders) {
+        std::cout << user.name << " bought Order #" << order.id << " ($" << order.amount << ")\n";
     }
 
-    // 7. Aggregates
-    size_t count = db.from(users_table).count();
-    auto avg_age = db.from(users_table).avg(users_table["age"]);
-    std::cout << "Count: " << count << ", Avg age: " << (avg_age ? *avg_age : 0.0) << "\n";
+    // 7. Subquery with EXISTS
+    auto buyers = db.from(users_table)
+                    .where(exists(
+                        db.from(orders_table)
+                          .where(orders_table["user_id"] == users_table["id"])
+                    ))
+                    .to_vector();
 
-    // 8. Update
-    db.from(users_table)
-      .where(users_table["id"] == bob_id)
-      .update({
-          users_table["email"] = "bob.new@example.com",
-          users_table["age"]   = 26
-      });
+    // 8. Cross-Dialect UPSERT
+    db.upsert(
+        users_table,
+        User{static_cast<int>(alice_id), "Alice Smith", "alice.smith@example.com", 31},
+        {users_table["id"]},
+        {users_table["name"], users_table["email"], users_table["age"]}
+    );
 
-    // 9. Delete
-    db.from(users_table)
-      .where(users_table["age"] < 18)
-      .remove();
-
-    // 10. RAII Transactions
+    // 9. RAII Transaction Guard
     {
         auto txn = db.begin_transaction();
         db.insert(users_table, User{0, "Charlie", "charlie@test.com", 22});
-        txn.commit(); // If not committed, automatically rolls back on scope exit!
+        txn.commit(); // Automatically rolls back if an exception occurs before commit()
     }
 
     return 0;
@@ -110,78 +134,43 @@ int main() {
 
 ---
 
-## Building and Running Tests
+## 🛠️ Building & Running Tests
 
 ### Prerequisites
-- C++20 compliant compiler (MSVC 2022+, GCC 11+, Clang 13+)
+- C++20 compliant compiler (MSVC 2022 v17.4+, GCC 11+, Clang 13+)
 - CMake 3.20+
 
-### Build Instructions
-
+### Build
 ```bash
-# Configure (SQLite, PostgreSQL, and MSSQL enabled)
+# Configure with all backends, tests, and examples
 cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON
 
-# Build
-cmake --build build --config Release
+# Build in Release mode
+cmake --build build --config Release --parallel
+```
 
-# Run all tests (PostgreSQL/MSSQL integration tests will run if environment vars are set, or skip cleanly if not set)
+### Run Test Suite
+```bash
+# Run all 7 test suites
 ctest --test-dir build --output-on-failure -C Release
 
-# To run PostgreSQL / MSSQL integration tests with custom DSNs or connection strings:
-# PowerShell:
+# Optional: Run against live PostgreSQL or Microsoft SQL Server instances
 $env:CPPLINQ_POSTGRES_ODBC="PostgreSQL35W"
 $env:CPPLINQ_MSSQL_ODBC="MSSQLLocalDB"
 ctest --test-dir build --output-on-failure -C Release
-
-# Run example application
-./build/examples/Release/basic_usage
 ```
+
+| Suite Executable | Description |
+|---|---|
+| `test_expression` | AST construction, boolean operators, date/time AST, window function AST |
+| `test_query_builder` | Dialect-aware SQL generator (SELECT, INSERT, CTEs, Joins, Windows, UPSERT, Set Ops) |
+| `test_row_mapper` | Struct and tuple row materialization, optional NULL handling |
+| `test_sqlite_integration` | End-to-end SQLite in-memory integration testing (CRUD, joins, CTEs, subqueries) |
+| `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
+| `test_postgres_integration` | Live PostgreSQL integration test suite |
+| `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
 
 ---
 
-## Project Structure
-
-```
-cppdb1/
-├── include/cpplinq/
-│   ├── cpplinq.hpp               # Master header
-│   ├── core/
-│   │   ├── column.h              # ColumnDef and constraints (primary_key, etc.)
-│   │   ├── table.h               # TableDef compile-time schema mapping
-│   │   ├── expression.h          # Expression AST & operator overloads
-│   │   ├── query_builder.h       # Fluent query builder with deferred execution
-│   │   ├── db_context.h          # DbContext top-level facade
-│   │   └── sql_generator.h       # AST to parameterized SQL translator
-│   ├── mapping/
-│   │   ├── row_mapper.h          # Struct materialization engine
-│   │   └── type_traits.h         # C++ to SQL type deduction & is_nullable
-│   ├── dialect/
-│   │   └── dialect.h             # ISqlDialect interface
-│   └── driver/
-│       └── connection.h          # IConnection, IPreparedStatement, IDataReader (sqlite, postgres, mssql tags)
-├── src/
-│   ├── sql_generator.cpp         # Dialect-aware SQL generator implementation
-│   ├── dialect/
-│   │   ├── sqlite_dialect.h/.cpp
-│   │   ├── postgres_dialect.h/.cpp
-│   │   └── mssql_dialect.h/.cpp
-│   └── driver/
-│       ├── sqlite_connection.h/.cpp
-│       ├── postgres_connection.h/.cpp (with Windows ODBC DSN resolution)
-│       └── mssql_connection.h/.cpp    (native Windows ODBC driver)
-├── tests/
-│   ├── test_expression.cpp          # 34 tests: AST nodes, operators, literals
-│   ├── test_query_builder.cpp       # 23 tests: SQL generation & SQLite/PG/MSSQL formats
-│   ├── test_row_mapper.cpp          # 6 tests: struct & optional field mapping
-│   ├── test_sqlite_integration.cpp  # 11 tests: end-to-end in-memory SQLite CRUD
-│   ├── test_postgres_integration.cpp # 12 tests: PostgreSQL CRUD via CPPLINQ_POSTGRES_ODBC
-│   └── test_mssql_integration.cpp   # 12 tests: MSSQL CRUD via CPPLINQ_MSSQL_ODBC
-└── examples/
-    └── basic_usage.cpp              # Complete runnable demonstration
-```
-
----
-
-## License
+## 📄 License
 MIT License.
