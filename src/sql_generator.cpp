@@ -101,6 +101,16 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
                 list_str += visit(item->values[i], params);
             }
             return "(" + expr_str + (item->is_not ? " NOT IN (" : " IN (") + list_str + "))";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::FunctionExpr>>) {
+            if (!item) return "";
+            std::string sql = dialect_.function_name(item->function_name);
+            sql += "(";
+            for (size_t i = 0; i < item->arguments.size(); ++i) {
+                if (i > 0) sql += ", ";
+                sql += visit(item->arguments[i], params);
+            }
+            sql += ")";
+            return sql;
         }
         return "";
 

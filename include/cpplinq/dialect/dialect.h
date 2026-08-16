@@ -40,6 +40,11 @@ public:
     virtual std::string create_table_prefix(std::string_view table_name) const {
         return "CREATE TABLE IF NOT EXISTS " + quote_id(table_name);
     }
+
+    // Function name mapping (e.g. LENGTH -> LEN in MSSQL)
+    virtual std::string function_name(std::string_view func) const {
+        return std::string(func);
+    }
 };
 
 } // namespace cpplinq

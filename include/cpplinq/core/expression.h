@@ -52,6 +52,7 @@ struct UnaryExpr;
 struct BetweenExpr;
 struct LikeExpr;
 struct InListExpr;
+struct FunctionExpr;
 
 // Column reference node
 struct ColumnRef {
@@ -83,8 +84,18 @@ using ExprNode = std::variant<
     std::shared_ptr<UnaryExpr>,
     std::shared_ptr<BetweenExpr>,
     std::shared_ptr<LikeExpr>,
-    std::shared_ptr<InListExpr>
+    std::shared_ptr<InListExpr>,
+    std::shared_ptr<FunctionExpr>
 >;
+
+// Function call expression AST node: FUNC(arg1, arg2, ...)
+struct FunctionExpr {
+    std::string function_name;
+    std::vector<ExprNode> arguments;
+
+    FunctionExpr(std::string name, std::vector<ExprNode> args)
+        : function_name(std::move(name)), arguments(std::move(args)) {}
+};
 
 // Binary expression AST node (comparisons)
 struct BinaryExpr {
@@ -250,6 +261,38 @@ public:
         }
         return Expr(std::make_shared<InListExpr>(node, std::move(val_nodes), true));
     }
+
+    Expr lower() const {
+        return Expr(std::make_shared<FunctionExpr>("LOWER", std::vector<ExprNode>{node}));
+    }
+
+    Expr upper() const {
+        return Expr(std::make_shared<FunctionExpr>("UPPER", std::vector<ExprNode>{node}));
+    }
+
+    Expr length() const {
+        return Expr(std::make_shared<FunctionExpr>("LENGTH", std::vector<ExprNode>{node}));
+    }
+
+    Expr trim() const {
+        return Expr(std::make_shared<FunctionExpr>("TRIM", std::vector<ExprNode>{node}));
+    }
+
+    Expr substr(const Expr& start, const Expr& len) const {
+        return Expr(std::make_shared<FunctionExpr>("SUBSTR", std::vector<ExprNode>{node, start.node, len.node}));
+    }
+
+    Expr abs_val() const {
+        return Expr(std::make_shared<FunctionExpr>("ABS", std::vector<ExprNode>{node}));
+    }
+
+    Expr round_val(const Expr& decimals = 0) const {
+        return Expr(std::make_shared<FunctionExpr>("ROUND", std::vector<ExprNode>{node, decimals.node}));
+    }
+
+    Expr coalesce(const Expr& fallback) const {
+        return Expr(std::make_shared<FunctionExpr>("COALESCE", std::vector<ExprNode>{node, fallback.node}));
+    }
 };
 
 // ColumnHandle class representing a table column in expressions
@@ -326,6 +369,38 @@ public:
     Expr not_in_list(std::initializer_list<T> values) const {
         return Expr(ref).not_in_list(values);
     }
+
+    Expr lower() const {
+        return Expr(ref).lower();
+    }
+
+    Expr upper() const {
+        return Expr(ref).upper();
+    }
+
+    Expr length() const {
+        return Expr(ref).length();
+    }
+
+    Expr trim() const {
+        return Expr(ref).trim();
+    }
+
+    Expr substr(const Expr& start, const Expr& len) const {
+        return Expr(ref).substr(start, len);
+    }
+
+    Expr abs_val() const {
+        return Expr(ref).abs_val();
+    }
+
+    Expr round_val(const Expr& decimals = 0) const {
+        return Expr(ref).round_val(decimals);
+    }
+
+    Expr coalesce(const Expr& fallback) const {
+        return Expr(ref).coalesce(fallback);
+    }
 };
 
 // Comparison operators (==, !=, <, <=, >, >=)
@@ -375,6 +450,39 @@ inline Expr is_not_null(const Expr& e) {
     return e.is_not_null();
 }
 
+// Built-in SQL functions
+inline Expr lower(const Expr& e) {
+    return e.lower();
+}
+
+inline Expr upper(const Expr& e) {
+    return e.upper();
+}
+
+inline Expr length(const Expr& e) {
+    return e.length();
+}
+
+inline Expr trim(const Expr& e) {
+    return e.trim();
+}
+
+inline Expr substr(const Expr& e, const Expr& start, const Expr& len) {
+    return e.substr(start, len);
+}
+
+inline Expr abs_val(const Expr& e) {
+    return e.abs_val();
+}
+
+inline Expr round_val(const Expr& e, const Expr& decimals = 0) {
+    return e.round_val(decimals);
+}
+
+inline Expr coalesce(const Expr& e, const Expr& fallback) {
+    return e.coalesce(fallback);
+}
+
 // Order-by expression and helpers
 struct OrderByExpr {
     ExprNode expr;
@@ -402,6 +510,10 @@ using expr::Literal;
 using expr::BinaryExpr;
 using expr::LogicExpr;
 using expr::UnaryExpr;
+using expr::BetweenExpr;
+using expr::LikeExpr;
+using expr::InListExpr;
+using expr::FunctionExpr;
 using expr::ExprNode;
 using expr::AssignExpr;
 using expr::Expr;
@@ -409,6 +521,14 @@ using expr::ColumnHandle;
 using expr::OrderByExpr;
 using expr::is_null;
 using expr::is_not_null;
+using expr::lower;
+using expr::upper;
+using expr::length;
+using expr::trim;
+using expr::substr;
+using expr::abs_val;
+using expr::round_val;
+using expr::coalesce;
 using expr::asc;
 using expr::desc;
 

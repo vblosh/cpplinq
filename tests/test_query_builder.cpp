@@ -143,6 +143,12 @@ public:
     std::string create_table_prefix(std::string_view table_name) const override {
         return "IF OBJECT_ID(N'" + std::string(table_name) + "', N'U') IS NULL CREATE TABLE [" + std::string(table_name) + "]";
     }
+
+    std::string function_name(std::string_view func) const override {
+        if (func == "LENGTH") return "LEN";
+        if (func == "SUBSTR") return "SUBSTRING";
+        return std::string(func);
+    }
 };
 
 } // namespace
@@ -567,5 +573,31 @@ TEST(SqlGeneratorTest, MultiColumnOrderBy) {
     };
     auto result = gen.generate_select("users", {"id"}, std::nullopt, order_by);
     EXPECT_EQ(result.sql, "SELECT \"id\" FROM \"users\" ORDER BY \"users\".\"dept\" ASC, \"users\".\"salary\" DESC");
+}
+
+TEST(SqlGeneratorTest, SqlFunctionsSqlite) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle name("users", "name");
+    ColumnHandle email("users", "email");
+
+    auto result = gen.generate_select("users", {"id"}, (lower(name) == "alice" && length(email) > 5).node);
+    EXPECT_EQ(result.sql, "SELECT \"id\" FROM \"users\" WHERE ((LOWER(\"users\".\"name\") = ?) AND (LENGTH(\"users\".\"email\") > ?))");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<std::string>(result.params[0]), "alice");
+    EXPECT_EQ(std::get<int64_t>(result.params[1]), 5);
+}
+
+TEST(SqlGeneratorTest, SqlFunctionsMssql) {
+    MockMssqlDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle name("users", "name");
+    ColumnHandle email("users", "email");
+
+    auto result = gen.generate_select("users", {"id"}, (lower(name) == "alice" && length(email) > 5).node);
+    EXPECT_EQ(result.sql, "SELECT [id] FROM [users] WHERE ((LOWER([users].[name]) = ?) AND (LEN([users].[email]) > ?))");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<std::string>(result.params[0]), "alice");
+    EXPECT_EQ(std::get<int64_t>(result.params[1]), 5);
 }
 

@@ -410,3 +410,37 @@ TEST(ExpressionTest, InListAndNotInList) {
     EXPECT_TRUE((*not_in_ptr)->is_not);
     EXPECT_EQ((*not_in_ptr)->values.size(), 2);
 }
+
+TEST(ExpressionTest, SqlFunctionsAst) {
+    ColumnHandle name("users", "name");
+    ColumnHandle email("users", "email");
+    ColumnHandle score("users", "score");
+
+    Expr l = lower(name);
+    auto* func_l = std::get_if<std::shared_ptr<FunctionExpr>>(&l.node);
+    ASSERT_NE(func_l, nullptr);
+    EXPECT_EQ((*func_l)->function_name, "LOWER");
+    EXPECT_EQ((*func_l)->arguments.size(), 1);
+
+    Expr u = upper(name);
+    auto* func_u = std::get_if<std::shared_ptr<FunctionExpr>>(&u.node);
+    ASSERT_NE(func_u, nullptr);
+    EXPECT_EQ((*func_u)->function_name, "UPPER");
+
+    Expr len = length(name);
+    auto* func_len = std::get_if<std::shared_ptr<FunctionExpr>>(&len.node);
+    ASSERT_NE(func_len, nullptr);
+    EXPECT_EQ((*func_len)->function_name, "LENGTH");
+
+    Expr sub = substr(name, 1, 3);
+    auto* func_sub = std::get_if<std::shared_ptr<FunctionExpr>>(&sub.node);
+    ASSERT_NE(func_sub, nullptr);
+    EXPECT_EQ((*func_sub)->function_name, "SUBSTR");
+    EXPECT_EQ((*func_sub)->arguments.size(), 3);
+
+    Expr coal = coalesce(email, "default@test.com");
+    auto* func_coal = std::get_if<std::shared_ptr<FunctionExpr>>(&coal.node);
+    ASSERT_NE(func_coal, nullptr);
+    EXPECT_EQ((*func_coal)->function_name, "COALESCE");
+    EXPECT_EQ((*func_coal)->arguments.size(), 2);
+}

@@ -326,3 +326,22 @@ TEST_F(MssqlIntegrationTest, InListAndMultiColumnThenBy) {
     EXPECT_EQ(in_list[1].name, "Bob");
     EXPECT_EQ(in_list[2].name, "Alice");
 }
+
+TEST_F(MssqlIntegrationTest, SqlFunctionsFilter) {
+    db->insert(users_table, User{0, "ALICE", "alice@example.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+
+    auto res = db->from(users_table)
+                 .where(users_table["name"].lower() == "alice")
+                 .to_vector();
+
+    ASSERT_EQ(res.size(), 1);
+    EXPECT_EQ(res[0].name, "ALICE");
+
+    auto len_res = db->from(users_table)
+                     .where(length(users_table["name"]) == 3)
+                     .to_vector();
+
+    ASSERT_EQ(len_res.size(), 1);
+    EXPECT_EQ(len_res[0].name, "Bob");
+}

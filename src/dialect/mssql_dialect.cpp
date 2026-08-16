@@ -60,4 +60,10 @@ std::string MssqlDialect::create_table_prefix(std::string_view table_name) const
     return "IF OBJECT_ID(N'" + std::string(table_name) + "', N'U') IS NULL CREATE TABLE " + quote_id(table_name);
 }
 
+std::string MssqlDialect::function_name(std::string_view func) const {
+    if (func == "LENGTH") return "LEN";
+    if (func == "SUBSTR") return "SUBSTRING";
+    return std::string(func);
+}
+
 } // namespace cpplinq
