@@ -110,18 +110,51 @@ auto high_spenders = db.from(users_table)
 
 ## 4. Common Table Expressions (CTEs: `WITH ... AS (...)`)
 
-Define named subqueries that can be referenced in main queries:
+Define modular, named subqueries that can be referenced in main queries:
 
 ```cpp
-// Fluent QueryBuilder CTE:
-auto sub = db.from(orders_table).where(orders_table["amount"] > 100.0);
+// 1. Define an intermediate subquery
+auto high_value = db.from(orders_table).where(orders_table["amount"] > 100.0);
 
+// 2. Attach as CTE to the outer query
 auto users = db.from(users_table)
-               .with_cte("high_value_orders", sub)
-               .where(users_table["id"].in(
-                   sub.as_subquery(orders_table["user_id"])
-               ))
+               .with_cte("high_value_orders", high_value)
+               .where(users_table["age"] >= 25)
+               .order_by(users_table["name"])
                .to_vector();
+```
+
+### Generated SQL
+```sql
+WITH "high_value_orders" AS (
+    SELECT "id", "user_id", "amount" 
+    FROM "orders" 
+    WHERE ("orders"."amount" > ?)
+)
+SELECT "id", "name", "email", "age" 
+FROM "users" 
+WHERE ("users"."age" >= ?) 
+ORDER BY "users"."name" ASC
+```
+
+### Chaining Multiple CTEs
+Multiple CTEs can be attached sequentially to a single `QueryBuilder`:
+
+```cpp
+auto q1 = db.from(users_table).where(users_table["age"] >= 21);
+auto q2 = db.from(orders_table).where(orders_table["amount"] >= 500.0);
+
+auto results = db.from(users_table)
+                 .with_cte("eligible_users", q1)
+                 .with_cte("large_orders", q2)
+                 .order_by(users_table["id"])
+                 .to_vector();
+```
+
+```sql
+WITH "eligible_users" AS (SELECT * FROM "users" WHERE ("users"."age" >= ?)),
+     "large_orders" AS (SELECT * FROM "orders" WHERE ("orders"."amount" >= ?))
+SELECT "id", "name", "email", "age" FROM "users" ORDER BY "users"."id" ASC
 ```
 
 ---
