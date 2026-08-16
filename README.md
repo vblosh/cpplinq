@@ -21,6 +21,7 @@
   - **SQLite** (built-in amalgamation, in-memory & file databases)
   - **PostgreSQL** (native driver with dollar-sign parameter binding `$1` and `RETURNING`)
   - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
+  - **MySQL / MariaDB** (native ODBC driver with backtick quoting `` `table` ``, `ON DUPLICATE KEY UPDATE`, `LAST_INSERT_ID()`)
 
 ---
 
@@ -33,7 +34,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 - [**Joins, Subqueries & CTEs**](doc/joins_and_relationships.md) — 2-table & 3-table joins, tuple mapping, correlated subqueries, `EXISTS`, and Common Table Expressions.
 - [**Functions, Aggregates & Window Functions**](doc/functions_and_aggregates.md) — Scalar SQL functions, date/time operations, `GROUP BY`/`HAVING`, and window functions (`ROW_NUMBER`, `RANK`, etc.).
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
-- [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, and Microsoft SQL Server, ODBC DSN setup, and CI workflows.
+- [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, Microsoft SQL Server, MySQL, MariaDB, ODBC DSN setup, and CI workflows.
 
 ---
 
@@ -143,7 +144,7 @@ int main() {
 ### Build
 ```bash
 # Configure with all backends, tests, and examples
-cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON
+cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
 
 # Build in Release mode
 cmake --build build --config Release --parallel
@@ -151,12 +152,13 @@ cmake --build build --config Release --parallel
 
 ### Run Test Suite
 ```bash
-# Run all 7 test suites
+# Run all 8 test suites
 ctest --test-dir build --output-on-failure -C Release
 
-# Optional: Run against live PostgreSQL or Microsoft SQL Server instances
+# Optional: Run against live PostgreSQL, Microsoft SQL Server, or MySQL instances
 $env:CPPLINQ_POSTGRES_ODBC="PostgreSQL35W"
 $env:CPPLINQ_MSSQL_ODBC="MSSQLLocalDB"
+$env:CPPLINQ_MYSQL_ODBC="MySQLDSN"
 ctest --test-dir build --output-on-failure -C Release
 ```
 
@@ -169,6 +171,7 @@ ctest --test-dir build --output-on-failure -C Release
 | `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
 | `test_postgres_integration` | Live PostgreSQL integration test suite |
 | `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
+| `test_mysql_integration` | Live MySQL / MariaDB integration test suite |
 
 ---
 

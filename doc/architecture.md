@@ -21,14 +21,14 @@
 ┌──────────────────────────────▼──────────────────────────────┐
 │                       SqlGenerator                          │
 │               Translates AST to Parameterized SQL           │
-└──────────────┬───────────────┼───────────────┬──────────────┘
-               │               │               │
-      ┌────────▼────────┐ ┌────▼─────┐ ┌───────▼────────┐
-      │  ISqlDialect    │ │PostgreSQL│ │Microsoft SQL   │
-      │    (SQLite)     │ │ Dialect  │ │Server Dialect  │
-      └────────┬────────┘ └────┬─────┘ └───────┬────────┘
-               │               │               │
-┌──────────────▼───────────────▼───────────────▼──────────────┐
+└────────┬──────────────┬──────────────┬──────────────┬───────┘
+         │              │              │              │
+    ┌────▼────┐    ┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐
+    │ SQLite  │    │PostgreSQL│   │  MSSQL   │   │  MySQL / │
+    │ Dialect │    │ Dialect  │   │ Dialect  │   │ MariaDB  │
+    └────┬────┘    └────┬─────┘   └────┬─────┘   └────┬─────┘
+         │              │              │              │
+┌────────▼──────────────▼──────────────▼──────────────▼───────┐
 │                       Driver Layer                          │
 │          IConnection / IPreparedStatement / IDataReader     │
 └──────────────────────────────┬──────────────────────────────┘
@@ -65,13 +65,13 @@ Nodes support:
 
 ### 1.3 Dialect Abstraction & SQL Generator
 - **`ISqlDialect`**: Encapsulates database-specific syntax differences:
-  - Identifier quoting (`"table"` for SQLite/Postgres vs `[table]` for MSSQL)
+  - Identifier quoting (`"table"` for SQLite/Postgres vs `[table]` for MSSQL vs `` `table` `` for MySQL)
   - Parameter placeholders (`?` vs `$1` vs `@p1`)
-  - Auto-increment identity generation (`AUTOINCREMENT`, `SERIAL`, `IDENTITY(1,1)`)
-  - Primary key retrieval (`last_insert_rowid()`, `RETURNING id`, `OUTPUT INSERTED.id`)
+  - Auto-increment identity generation (`AUTOINCREMENT`, `SERIAL`, `IDENTITY(1,1)`, `AUTO_INCREMENT`)
+  - Primary key retrieval (`last_insert_rowid()`, `RETURNING id`, `OUTPUT INSERTED.id`, `LAST_INSERT_ID()`)
   - Pagination (`LIMIT...OFFSET` vs `OFFSET...FETCH NEXT`)
-  - Upsert syntax (`INSERT ON CONFLICT DO UPDATE` vs `MERGE INTO`)
-  - Date & time functions (`strftime`, `EXTRACT`, `DATEADD`)
+  - Upsert syntax (`INSERT ON CONFLICT DO UPDATE` vs `MERGE INTO` vs `ON DUPLICATE KEY UPDATE`)
+  - Date & time functions (`strftime`, `EXTRACT`, `DATEADD`, `DATE_ADD`)
 - **`SqlGenerator`**: Walks the expression AST using `std::visit` and produces parameterized SQL queries with separate bound value vectors, preventing SQL injection vulnerabilities.
 
 ### 1.4 Database Driver Abstraction

@@ -94,6 +94,8 @@ struct sqlite {};
 struct postgres {};
 struct mssql {};
 using sqlserver = mssql;
+struct mysql {};
+using mariadb = mysql;
 
 // Connection factory (specializations in driver .cpp files)
 template <typename Backend>

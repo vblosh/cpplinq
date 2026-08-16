@@ -23,6 +23,13 @@ if(CPPLINQ_ENABLE_MSSQL)
     )
 endif()
 
+if(CPPLINQ_ENABLE_MYSQL)
+    list(APPEND CPPLINQ_SOURCES
+        dialect/mysql_dialect.cpp
+        driver/mysql_connection.cpp
+    )
+endif()
+
 add_library(cpplinq ${CPPLINQ_SOURCES})
 target_include_directories(cpplinq PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(cpplinq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -46,4 +53,14 @@ if(CPPLINQ_ENABLE_MSSQL)
         target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
     endif()
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_MSSQL=1)
+endif()
+
+if(CPPLINQ_ENABLE_MYSQL)
+    if(WIN32)
+        target_link_libraries(cpplinq PUBLIC odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
+    endif()
+    target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_MYSQL=1)
 endif()

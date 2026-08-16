@@ -109,10 +109,24 @@ public:
         }
 
         if (!pk_col.empty()) {
-            auto reader = stmt->execute_query();
-            if (reader && reader->next()) {
-                return reader->get_int64(0);
+            std::string ret_clause = conn_->dialect().returning_clause(pk_col);
+            std::string out_clause = conn_->dialect().output_clause(pk_col);
+            if (!ret_clause.empty() || !out_clause.empty()) {
+                auto reader = stmt->execute_query();
+                if (reader && reader->next()) {
+                    return reader->get_int64(0);
+                }
+                return 0;
             }
+            // Dialects without RETURNING/OUTPUT (e.g. MySQL)
+            stmt->execute_non_query();
+            try {
+                auto last_id_stmt = conn_->prepare("SELECT LAST_INSERT_ID()");
+                auto r = last_id_stmt->execute_query();
+                if (r && r->next()) {
+                    return r->get_int64(0);
+                }
+            } catch (...) {}
             return 0;
         }
         stmt->execute_non_query();

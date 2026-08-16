@@ -217,6 +217,99 @@ public:
     }
 };
 
+class MockMysqlDialect : public ISqlDialect {
+public:
+    std::string quote_id(std::string_view id) const override {
+        std::string quoted = "`";
+        for (char c : id) {
+            if (c == '`') quoted += "``";
+            else quoted += c;
+        }
+        quoted += "`";
+        return quoted;
+    }
+
+    std::string placeholder(size_t /*index*/) const override {
+        return "?";
+    }
+
+    std::string limit_offset(std::optional<size_t> limit,
+                             std::optional<size_t> offset) const override {
+        std::string result;
+        if (limit.has_value() && offset.has_value()) {
+            result = " LIMIT " + std::to_string(*limit) + " OFFSET " + std::to_string(*offset);
+        } else if (limit.has_value()) {
+            result = " LIMIT " + std::to_string(*limit);
+        } else if (offset.has_value()) {
+            result = " LIMIT 18446744073709551615 OFFSET " + std::to_string(*offset);
+        }
+        return result;
+    }
+
+    std::string type_name(SqlType type) const override {
+        switch (type) {
+            case SqlType::Integer: return "INT";
+            case SqlType::BigInt:  return "BIGINT";
+            case SqlType::Real:    return "DOUBLE";
+            case SqlType::Text:    return "TEXT";
+            case SqlType::Blob:    return "LONGBLOB";
+            case SqlType::Boolean: return "TINYINT(1)";
+        }
+        return "TEXT";
+    }
+
+    std::string auto_increment_type() const override {
+        return "INT AUTO_INCREMENT PRIMARY KEY";
+    }
+
+    std::string returning_clause(std::string_view /*column*/) const override {
+        return "";
+    }
+
+    std::string output_clause(std::string_view /*column*/) const override {
+        return "";
+    }
+
+    std::string current_date_func() const override {
+        return "CURRENT_DATE()";
+    }
+
+    std::string extract_part_func(std::string_view part, std::string_view expr_sql) const override {
+        if (part == "YEAR") return "YEAR(" + std::string(expr_sql) + ")";
+        if (part == "MONTH") return "MONTH(" + std::string(expr_sql) + ")";
+        if (part == "DAY") return "DAY(" + std::string(expr_sql) + ")";
+        return "EXTRACT(" + std::string(part) + " FROM " + std::string(expr_sql) + ")";
+    }
+
+    std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const override {
+        return "DATE_ADD(" + std::string(expr_sql) + ", INTERVAL (" + std::string(days_sql) + ") DAY)";
+    }
+
+    std::string generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<std::string>& /*conflict_columns*/,
+        const std::vector<std::string>& update_columns
+    ) const override {
+        std::string sql = "INSERT INTO " + quote_id(table_name) + " (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(insert_columns[i]);
+        }
+        sql += ") VALUES (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += placeholder(i);
+        }
+        sql += ") ON DUPLICATE KEY UPDATE ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(update_columns[i]) + " = VALUES(" + quote_id(update_columns[i]) + ")";
+        }
+        return sql;
+    }
+};
+
 } // namespace
 
 // ============================================================================
@@ -875,5 +968,74 @@ TEST(SqlGeneratorTest, MultiTableJoinGeneration) {
 
     EXPECT_EQ(res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\", \"order_items\".\"id\", \"order_items\".\"product\" FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") LEFT JOIN \"order_items\" ON (\"orders\".\"id\" = \"order_items\".\"order_id\")");
 }
+
+// ============================================================================
+// MySQL Dialect Tests
+// ============================================================================
+
+TEST(SqlGeneratorTest, MysqlSelectWithBackticksAndLimitOffset) {
+    MockMysqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle age("users", "age");
+    ColumnHandle name("name");
+    auto where_expr = (age > 21) && (name == "Alice");
+
+    std::vector<std::pair<ExprNode, SortDir>> order_by = {
+        {age.ref, SortDir::Desc},
+        {name.ref, SortDir::Asc}
+    };
+
+    auto result = gen.generate_select("users", {"id", "name", "age"}, where_expr.node, order_by, 10, 20);
+    EXPECT_EQ(result.sql, "SELECT `id`, `name`, `age` FROM `users` WHERE ((`users`.`age` > ?) AND (`name` = ?)) ORDER BY `users`.`age` DESC, `name` ASC LIMIT 10 OFFSET 20");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(result.params[0]), 21);
+    EXPECT_EQ(std::get<std::string>(result.params[1]), "Alice");
+}
+
+TEST(SqlGeneratorTest, MysqlUpsertOnDuplicateKeyUpdate) {
+    MockMysqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name", "email", "age"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice"), std::string("alice@test.com"), int64_t(30)};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {"name", "email", "age"};
+
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "INSERT INTO `users` (`id`, `name`, `email`, `age`) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `email` = VALUES(`email`), `age` = VALUES(`age`)");
+    EXPECT_EQ(result.params.size(), 4);
+}
+
+TEST(SqlGeneratorTest, MysqlDateFunctions) {
+    MockMysqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle created_at("events", "created_at");
+
+    auto year_expr = created_at.year();
+    auto year_res = gen.generate_expression(year_expr.node);
+    EXPECT_EQ(year_res.sql, "YEAR(`events`.`created_at`)");
+
+    auto add_days_expr = created_at.add_days(7);
+    auto add_days_res = gen.generate_expression(add_days_expr.node);
+    EXPECT_EQ(add_days_res.sql, "DATE_ADD(`events`.`created_at`, INTERVAL (?) DAY)");
+    ASSERT_EQ(add_days_res.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(add_days_res.params[0]), 7);
+}
+
+TEST(SqlGeneratorTest, MysqlWindowFunctions) {
+    MockMysqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle dept("employees", "department");
+    ColumnHandle salary("employees", "salary");
+
+    auto rn = row_number().over().partition_by(dept).order_by(salary.desc());
+    auto rn_res = gen.generate_expression(Expr(rn).node);
+
+    EXPECT_EQ(rn_res.sql, "ROW_NUMBER() OVER (PARTITION BY `employees`.`department` ORDER BY `employees`.`salary` DESC)");
+}
+
 
 

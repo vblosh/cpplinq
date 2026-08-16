@@ -33,6 +33,15 @@ auto db = cpplinq::connect<cpplinq::postgres>("Driver={PostgreSQL Unicode};Serve
 auto db = cpplinq::connect<cpplinq::mssql>("MSSQLLocalDB");
 ```
 
+### 1.4 MySQL / MariaDB
+- **Backend Tag**: `cpplinq::mysql` (or alias `cpplinq::mariadb`)
+- **Connection String**: ODBC connection string or DSN (e.g. `"MySQLDSN"` or `"Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Port=3306;Database=cppdb;Uid=root;Pwd=secret;"`).
+- **Features**: Backtick identifier quoting (`` `table`.`column` ``), `ON DUPLICATE KEY UPDATE` upsert syntax, `LAST_INSERT_ID()` auto-increment retrieval, `DATE_ADD` with `INTERVAL`.
+
+```cpp
+auto db = cpplinq::connect<cpplinq::mysql>("MySQLDSN");
+```
+
 ---
 
 ## 2. Environment Variables for Integration Tests
@@ -43,6 +52,7 @@ The integration test suites automatically discover connections via environment v
 |---|---|---|
 | `CPPLINQ_POSTGRES_ODBC` / `CPPDB_POSTGRES_ODBC` | PostgreSQL | `"PostgreSQL35W"` or `"Driver={PostgreSQL Unicode};Server=localhost;Database=cppdb;Uid=postgres;Pwd=secret;"` |
 | `CPPLINQ_MSSQL_ODBC` / `CPPDB_MSSQL_ODBC` | MSSQL Server | `"MSSQLLocalDB"` or `"Driver={ODBC Driver 17 for SQL Server};Server=(localdb)\MSSQLLocalDB;Database=master;Trusted_Connection=yes;"` |
+| `CPPLINQ_MYSQL_ODBC` / `CPPDB_MYSQL_ODBC` | MySQL / MariaDB | `"MySQLDSN"` or `"Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Database=cppdb;Uid=root;Pwd=secret;"` |
 
 If an environment variable is not defined, the corresponding integration test suite will be skipped cleanly with `GTEST_SKIP()`.
 
