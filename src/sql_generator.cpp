@@ -265,6 +265,80 @@ GeneratedSql SqlGenerator::generate_joined_select(
     return result;
 }
 
+GeneratedSql SqlGenerator::generate_set_operation(
+    std::string_view base_table,
+    const std::vector<std::string>& base_columns,
+    const std::optional<expr::ExprNode>& base_where,
+    bool base_distinct,
+    const std::vector<SetOpClause>& operations,
+    const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by,
+    std::optional<size_t> limit,
+    std::optional<size_t> offset
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = base_distinct ? "SELECT DISTINCT " : "SELECT ";
+    for (size_t i = 0; i < base_columns.size(); ++i) {
+        if (i > 0) sql += ", ";
+        sql += dialect_.quote_id(base_columns[i]);
+    }
+    sql += " FROM " + dialect_.quote_id(base_table);
+    if (base_where.has_value()) {
+        sql += " WHERE " + visit(*base_where, result.params);
+    }
+
+    for (const auto& op : operations) {
+        switch (op.op_type) {
+            case SetOpType::Union:
+                sql += " UNION ";
+                break;
+            case SetOpType::UnionAll:
+                sql += " UNION ALL ";
+                break;
+            case SetOpType::Intersect:
+                sql += " INTERSECT ";
+                break;
+            case SetOpType::Except:
+                sql += " EXCEPT ";
+                break;
+        }
+        sql += op.is_distinct ? "SELECT DISTINCT " : "SELECT ";
+        for (size_t i = 0; i < op.columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(op.columns[i]);
+        }
+        sql += " FROM " + dialect_.quote_id(op.table_name);
+        if (op.where.has_value()) {
+            sql += " WHERE " + visit(*op.where, result.params);
+        }
+    }
+
+    if (!order_by.empty()) {
+        sql += " ORDER BY ";
+        for (size_t i = 0; i < order_by.size(); ++i) {
+            if (i > 0) sql += ", ";
+            if (auto* ref = std::get_if<expr::ColumnRef>(&order_by[i].first)) {
+                sql += dialect_.quote_id(ref->column_name);
+            } else {
+                sql += visit(order_by[i].first, result.params);
+            }
+            if (order_by[i].second == expr::SortDir::Desc) {
+                sql += " DESC";
+            } else {
+                sql += " ASC";
+            }
+        }
+    } else if ((limit.has_value() || offset.has_value()) && dialect_.limit_offset(limit, offset).find("OFFSET") != std::string::npos) {
+        sql += " ORDER BY (SELECT NULL)";
+    }
+
+    sql += dialect_.limit_offset(limit, offset);
+
+    result.sql = std::move(sql);
+    return result;
+}
+
 GeneratedSql SqlGenerator::generate_insert(
     std::string_view table_name,
     const std::vector<std::string>& column_names,

@@ -29,6 +29,23 @@ struct JoinClause {
     expr::ExprNode on_condition;
 };
 
+// Set operation types
+enum class SetOpType {
+    Union,
+    UnionAll,
+    Intersect,
+    Except
+};
+
+// Set operation clause metadata
+struct SetOpClause {
+    SetOpType op_type;
+    std::string table_name;
+    std::vector<std::string> columns;
+    std::optional<expr::ExprNode> where;
+    bool is_distinct = false;
+};
+
 // Column metadata for schema generation (e.g. CREATE TABLE)
 struct ColumnInfo {
     std::string name;
@@ -80,6 +97,18 @@ public:
         std::optional<size_t> limit = std::nullopt,
         std::optional<size_t> offset = std::nullopt,
         bool is_distinct = false
+    ) const;
+
+    // Set operations (UNION, UNION ALL, INTERSECT, EXCEPT)
+    GeneratedSql generate_set_operation(
+        std::string_view base_table,
+        const std::vector<std::string>& base_columns,
+        const std::optional<expr::ExprNode>& base_where,
+        bool base_distinct,
+        const std::vector<SetOpClause>& operations,
+        const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
+        std::optional<size_t> limit = std::nullopt,
+        std::optional<size_t> offset = std::nullopt
     ) const;
 
     // INSERT queries

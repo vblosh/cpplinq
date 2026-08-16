@@ -465,3 +465,32 @@ TEST_F(PostgresIntegrationTest, UpsertEntity) {
     EXPECT_EQ(u_upd->email, "alice@updated.com");
     EXPECT_EQ(u_upd->points, 250);
 }
+
+TEST_F(PostgresIntegrationTest, SetOperations) {
+    db->insert(users_table, User{0, "Alice", "a@test.com", 20});
+    db->insert(users_table, User{0, "Bob", "b@test.com", 30});
+    db->insert(users_table, User{0, "Charlie", "c@test.com", 40});
+
+    auto q1 = db->from(users_table).where(users_table["age"] <= 20);
+    auto q2 = db->from(users_table).where(users_table["age"] >= 30);
+
+    auto union_rows = q1.union_with(q2).order_by(users_table["age"]).to_vector();
+    ASSERT_EQ(union_rows.size(), 3);
+    EXPECT_EQ(union_rows[0].name, "Alice");
+    EXPECT_EQ(union_rows[1].name, "Bob");
+    EXPECT_EQ(union_rows[2].name, "Charlie");
+
+    auto union_all_rows = q1.union_all(q1).to_vector();
+    ASSERT_EQ(union_all_rows.size(), 2);
+    EXPECT_EQ(union_all_rows[0].name, "Alice");
+    EXPECT_EQ(union_all_rows[1].name, "Alice");
+
+    auto intersect_rows = q1.intersect(db->from(users_table).where(users_table["age"] < 30)).to_vector();
+    ASSERT_EQ(intersect_rows.size(), 1);
+    EXPECT_EQ(intersect_rows[0].name, "Alice");
+
+    auto except_rows = db->from(users_table).except_from(q1).order_by(users_table["age"]).to_vector();
+    ASSERT_EQ(except_rows.size(), 2);
+    EXPECT_EQ(except_rows[0].name, "Bob");
+    EXPECT_EQ(except_rows[1].name, "Charlie");
+}

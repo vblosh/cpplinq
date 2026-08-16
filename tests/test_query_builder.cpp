@@ -714,3 +714,29 @@ TEST(SqlGeneratorTest, UpsertMssql) {
     ASSERT_EQ(result.params.size(), 3);
 }
 
+TEST(SqlGeneratorTest, SetOperationsGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle age("users", "age");
+    ColumnHandle admin_age("admins", "age");
+
+    SetOpClause op{
+        SetOpType::UnionAll,
+        "admins",
+        {"id", "name", "email", "age"},
+        (admin_age >= 40).node,
+        false
+    };
+
+    auto result = gen.generate_set_operation(
+        "users", {"id", "name", "email", "age"}, (age < 30).node, false,
+        {op}
+    );
+
+    EXPECT_EQ(result.sql, "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"users\" WHERE (\"users\".\"age\" < ?) UNION ALL SELECT \"id\", \"name\", \"email\", \"age\" FROM \"admins\" WHERE (\"admins\".\"age\" >= ?)");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(result.params[0]), 30);
+    EXPECT_EQ(std::get<int64_t>(result.params[1]), 40);
+}
+

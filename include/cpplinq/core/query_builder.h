@@ -195,6 +195,115 @@ private:
 };
 
 template <typename Entity, typename... ColumnDefs>
+class QueryBuilder;
+
+template <typename Entity, typename... ColumnDefs>
+class SetOpQueryBuilder {
+public:
+    SetOpQueryBuilder(
+        IConnection& conn,
+        std::string base_table,
+        const std::tuple<ColumnDefs...>& columns,
+        std::optional<expr::ExprNode> base_where,
+        bool base_distinct,
+        std::vector<SetOpClause> ops
+    ) : conn_(conn),
+        base_table_(std::move(base_table)),
+        columns_(columns),
+        base_where_(std::move(base_where)),
+        base_distinct_(base_distinct),
+        ops_(std::move(ops)) {}
+
+    template <typename... OtherCols>
+    SetOpQueryBuilder& union_with(const QueryBuilder<Entity, OtherCols...>& other);
+
+    template <typename... OtherCols>
+    SetOpQueryBuilder& union_all(const QueryBuilder<Entity, OtherCols...>& other);
+
+    template <typename... OtherCols>
+    SetOpQueryBuilder& intersect(const QueryBuilder<Entity, OtherCols...>& other);
+
+    template <typename... OtherCols>
+    SetOpQueryBuilder& except_from(const QueryBuilder<Entity, OtherCols...>& other);
+
+    SetOpQueryBuilder& order_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.clear();
+        order_clauses_.emplace_back(std::move(column.node), dir);
+        return *this;
+    }
+
+    SetOpQueryBuilder& order_by_desc(expr::Expr column) {
+        return order_by(std::move(column), expr::SortDir::Desc);
+    }
+
+    SetOpQueryBuilder& then_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.emplace_back(std::move(column.node), dir);
+        return *this;
+    }
+
+    SetOpQueryBuilder& then_by_desc(expr::Expr column) {
+        return then_by(std::move(column), expr::SortDir::Desc);
+    }
+
+    SetOpQueryBuilder& limit(size_t n) {
+        limit_ = n;
+        return *this;
+    }
+
+    SetOpQueryBuilder& offset(size_t n) {
+        offset_ = n;
+        return *this;
+    }
+
+    std::vector<Entity> to_vector() {
+        SqlGenerator gen(conn_.dialect());
+        auto base_cols = get_tuple_column_names(columns_);
+        auto result = gen.generate_set_operation(
+            base_table_, base_cols, base_where_, base_distinct_,
+            ops_, order_clauses_, limit_, offset_
+        );
+
+        auto stmt = conn_.prepare(result.sql);
+        for (size_t i = 0; i < result.params.size(); ++i) {
+            stmt->bind(static_cast<int>(i), result.params[i]);
+        }
+        auto reader = stmt->execute_query();
+
+        RowMapper<Entity, ColumnDefs...> mapper(columns_);
+        std::vector<Entity> entities;
+        if (reader) {
+            while (reader->next()) {
+                entities.push_back(mapper.map_row(*reader));
+            }
+        }
+        return entities;
+    }
+
+    std::optional<Entity> first() {
+        limit_ = 1;
+        auto results = to_vector();
+        if (results.empty()) return std::nullopt;
+        return std::move(results[0]);
+    }
+
+    size_t count() {
+        auto vec = to_vector();
+        return vec.size();
+    }
+
+private:
+    IConnection& conn_;
+    std::string base_table_;
+    std::tuple<ColumnDefs...> columns_;
+    std::optional<expr::ExprNode> base_where_;
+    bool base_distinct_ = false;
+    std::vector<SetOpClause> ops_;
+    std::vector<std::pair<expr::ExprNode, expr::SortDir>> order_clauses_;
+    std::optional<size_t> limit_;
+    std::optional<size_t> offset_;
+};
+
+template <typename Entity, typename... ColumnDefs>
 class QueryBuilder {
 public:
     QueryBuilder(IConnection& conn, std::string table_name,
@@ -238,6 +347,73 @@ public:
             std::move(condition.node),
             where_clause_
         );
+    }
+
+    template <typename... OtherCols>
+    auto union_with(const QueryBuilder<Entity, OtherCols...>& other) {
+        std::vector<SetOpClause> ops;
+        ops.push_back(SetOpClause{
+            SetOpType::Union,
+            other.table_name(),
+            other.get_column_names(),
+            other.where_clause(),
+            other.is_distinct()
+        });
+        return SetOpQueryBuilder<Entity, ColumnDefs...>(
+            conn_, table_name_, columns_, where_clause_, is_distinct_, std::move(ops)
+        );
+    }
+
+    template <typename... OtherCols>
+    auto union_all(const QueryBuilder<Entity, OtherCols...>& other) {
+        std::vector<SetOpClause> ops;
+        ops.push_back(SetOpClause{
+            SetOpType::UnionAll,
+            other.table_name(),
+            other.get_column_names(),
+            other.where_clause(),
+            other.is_distinct()
+        });
+        return SetOpQueryBuilder<Entity, ColumnDefs...>(
+            conn_, table_name_, columns_, where_clause_, is_distinct_, std::move(ops)
+        );
+    }
+
+    template <typename... OtherCols>
+    auto intersect(const QueryBuilder<Entity, OtherCols...>& other) {
+        std::vector<SetOpClause> ops;
+        ops.push_back(SetOpClause{
+            SetOpType::Intersect,
+            other.table_name(),
+            other.get_column_names(),
+            other.where_clause(),
+            other.is_distinct()
+        });
+        return SetOpQueryBuilder<Entity, ColumnDefs...>(
+            conn_, table_name_, columns_, where_clause_, is_distinct_, std::move(ops)
+        );
+    }
+
+    template <typename... OtherCols>
+    auto except_from(const QueryBuilder<Entity, OtherCols...>& other) {
+        std::vector<SetOpClause> ops;
+        ops.push_back(SetOpClause{
+            SetOpType::Except,
+            other.table_name(),
+            other.get_column_names(),
+            other.where_clause(),
+            other.is_distinct()
+        });
+        return SetOpQueryBuilder<Entity, ColumnDefs...>(
+            conn_, table_name_, columns_, where_clause_, is_distinct_, std::move(ops)
+        );
+    }
+
+    const std::string& table_name() const { return table_name_; }
+    const std::optional<expr::ExprNode>& where_clause() const { return where_clause_; }
+    bool is_distinct() const { return is_distinct_; }
+    std::vector<std::string> get_column_names() const {
+        return get_tuple_column_names(columns_);
     }
 
     QueryBuilder& order_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
@@ -406,10 +582,6 @@ private:
     std::vector<expr::ExprNode> group_by_clauses_;
     std::optional<expr::ExprNode> having_clause_;
 
-    std::vector<std::string> get_column_names() const {
-        return get_tuple_column_names(columns_);
-    }
-
     void bind_params(IPreparedStatement& stmt, const std::vector<BoundValue>& params) {
         for (size_t i = 0; i < params.size(); ++i) {
             stmt.bind(static_cast<int>(i), params[i]);
@@ -433,5 +605,61 @@ private:
         return std::nullopt;
     }
 };
+
+template <typename Entity, typename... ColumnDefs>
+template <typename... OtherCols>
+SetOpQueryBuilder<Entity, ColumnDefs...>&
+SetOpQueryBuilder<Entity, ColumnDefs...>::union_with(const QueryBuilder<Entity, OtherCols...>& other) {
+    ops_.push_back(SetOpClause{
+        SetOpType::Union,
+        other.table_name(),
+        other.get_column_names(),
+        other.where_clause(),
+        other.is_distinct()
+    });
+    return *this;
+}
+
+template <typename Entity, typename... ColumnDefs>
+template <typename... OtherCols>
+SetOpQueryBuilder<Entity, ColumnDefs...>&
+SetOpQueryBuilder<Entity, ColumnDefs...>::union_all(const QueryBuilder<Entity, OtherCols...>& other) {
+    ops_.push_back(SetOpClause{
+        SetOpType::UnionAll,
+        other.table_name(),
+        other.get_column_names(),
+        other.where_clause(),
+        other.is_distinct()
+    });
+    return *this;
+}
+
+template <typename Entity, typename... ColumnDefs>
+template <typename... OtherCols>
+SetOpQueryBuilder<Entity, ColumnDefs...>&
+SetOpQueryBuilder<Entity, ColumnDefs...>::intersect(const QueryBuilder<Entity, OtherCols...>& other) {
+    ops_.push_back(SetOpClause{
+        SetOpType::Intersect,
+        other.table_name(),
+        other.get_column_names(),
+        other.where_clause(),
+        other.is_distinct()
+    });
+    return *this;
+}
+
+template <typename Entity, typename... ColumnDefs>
+template <typename... OtherCols>
+SetOpQueryBuilder<Entity, ColumnDefs...>&
+SetOpQueryBuilder<Entity, ColumnDefs...>::except_from(const QueryBuilder<Entity, OtherCols...>& other) {
+    ops_.push_back(SetOpClause{
+        SetOpType::Except,
+        other.table_name(),
+        other.get_column_names(),
+        other.where_clause(),
+        other.is_distinct()
+    });
+    return *this;
+}
 
 } // namespace cpplinq
