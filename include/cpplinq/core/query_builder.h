@@ -3,6 +3,7 @@
 #include "cpplinq/core/table.h"
 #include "cpplinq/driver/connection.h"
 #include "cpplinq/mapping/row_mapper.h"
+#include "cpplinq/core/streaming.h"
 #if __has_include("cpplinq/core/sql_generator.h")
 #include "cpplinq/core/sql_generator.h"
 #endif
@@ -794,6 +795,34 @@ public:
             }
         }
         return entities;
+    }
+
+    // Terminal: stream query results as a single-pass C++20 input range
+    auto stream(ExecutionOptions options = {}) {
+        SqlGenerator gen(conn_.dialect());
+        auto col_names = get_column_names();
+        GeneratedSql result;
+        if (!ctes_.empty()) {
+            result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
+                                             order_clauses_, limit_, offset_, is_distinct_);
+        } else {
+            result = gen.generate_select(table_name_, col_names, where_clause_,
+                                         order_clauses_, limit_, offset_, is_distinct_,
+                                         group_by_clauses_, having_clause_);
+        }
+        auto stmt = conn_.prepare(result.sql);
+        if (options.query_timeout_seconds.has_value()) {
+            stmt->set_timeout(*options.query_timeout_seconds);
+        }
+        if (options.stop_token.has_value()) {
+            stmt->set_stop_token(*options.stop_token);
+        }
+        bind_params(*stmt, result.params);
+        auto reader = stmt->execute_query();
+        RowMapper<Entity, ColumnDefs...> mapper(columns_);
+        return EntityStream<Entity, RowMapper<Entity, ColumnDefs...>>(
+            std::move(stmt), std::move(reader), std::move(mapper), std::move(options)
+        );
     }
 
     // Terminal: first result

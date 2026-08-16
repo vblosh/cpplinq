@@ -247,6 +247,34 @@ size_t PgPreparedStatement::execute_non_query() {
     return affected;
 }
 
+void PgPreparedStatement::cancel() {
+    if (conn_) {
+        PGcancel* cancel_obj = PQgetCancel(conn_);
+        if (cancel_obj) {
+            char errbuf[256];
+            PQcancel(cancel_obj, errbuf, sizeof(errbuf));
+            PQfreeCancel(cancel_obj);
+        }
+    }
+}
+
+void PgPreparedStatement::set_timeout(uint32_t seconds) {
+    if (conn_) {
+        std::string sql = "SET statement_timeout = " + std::to_string(seconds * 1000);
+        PGresult* res = PQexec(conn_, sql.c_str());
+        if (res) PQclear(res);
+    }
+}
+
+void PgPreparedStatement::set_stop_token(std::stop_token token) {
+    stop_token_ = token;
+    if (token.stop_possible() && conn_) {
+        stop_cb_.emplace(token, [this]() {
+            cancel();
+        });
+    }
+}
+
 // ----------------------------------------------------------------------------
 // PgConnection
 // ----------------------------------------------------------------------------
@@ -458,6 +486,36 @@ void PgConnection::rollback() {
 
 const ISqlDialect& PgConnection::dialect() const {
     return dialect_;
+}
+
+DriverInfo PgConnection::info() const {
+    DriverInfo i;
+    i.driver_name = "PostgreSQL (libpq)";
+    i.driver_version = "16";
+    i.dbms_name = "PostgreSQL";
+    if (conn_) {
+        int ver = PQserverVersion(conn_);
+        i.dbms_version = std::to_string(ver / 10000) + "." + std::to_string((ver / 100) % 100);
+    } else {
+        i.dbms_version = "16.0";
+    }
+    i.odbc_version = "N/A";
+    return i;
+}
+
+DriverCapabilities PgConnection::capabilities() const {
+    DriverCapabilities caps;
+    caps.cancel = true;
+    caps.streaming = true;
+    caps.query_timeout = true;
+    caps.transactions = true;
+    caps.savepoints = true;
+    caps.returning_clause = true;
+    caps.output_clause = false;
+    caps.upsert = true;
+    caps.window_functions = true;
+    caps.ctes = true;
+    return caps;
 }
 
 // ----------------------------------------------------------------------------

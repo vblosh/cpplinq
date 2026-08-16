@@ -141,6 +141,27 @@ void SqlitePreparedStatement::reset() {
     }
 }
 
+void SqlitePreparedStatement::cancel() {
+    if (db_) {
+        sqlite3_interrupt(db_);
+    }
+}
+
+void SqlitePreparedStatement::set_timeout(uint32_t seconds) {
+    if (db_) {
+        sqlite3_busy_timeout(db_, static_cast<int>(seconds * 1000));
+    }
+}
+
+void SqlitePreparedStatement::set_stop_token(std::stop_token token) {
+    stop_token_ = token;
+    if (token.stop_possible() && db_) {
+        stop_cb_.emplace(token, [this]() {
+            if (db_) sqlite3_interrupt(db_);
+        });
+    }
+}
+
 // ----------------------------------------------------------------------------
 // SqliteConnection
 // ----------------------------------------------------------------------------
@@ -217,6 +238,31 @@ void SqliteConnection::rollback() {
 
 const ISqlDialect& SqliteConnection::dialect() const {
     return dialect_;
+}
+
+DriverInfo SqliteConnection::info() const {
+    DriverInfo i;
+    i.driver_name = "SQLite";
+    i.driver_version = sqlite3_libversion();
+    i.dbms_name = "SQLite";
+    i.dbms_version = sqlite3_libversion();
+    i.odbc_version = "N/A";
+    return i;
+}
+
+DriverCapabilities SqliteConnection::capabilities() const {
+    DriverCapabilities caps;
+    caps.cancel = true;
+    caps.streaming = true;
+    caps.query_timeout = true;
+    caps.transactions = true;
+    caps.savepoints = true;
+    caps.returning_clause = true;
+    caps.output_clause = false;
+    caps.upsert = true;
+    caps.window_functions = true;
+    caps.ctes = true;
+    return caps;
 }
 
 // ----------------------------------------------------------------------------

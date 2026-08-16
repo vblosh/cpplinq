@@ -245,6 +245,27 @@ void MssqlPreparedStatement::reset() {
     }
 }
 
+void MssqlPreparedStatement::cancel() {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLCancel(hstmt_);
+    }
+}
+
+void MssqlPreparedStatement::set_timeout(uint32_t seconds) {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(seconds)), SQL_IS_UINTEGER);
+    }
+}
+
+void MssqlPreparedStatement::set_stop_token(std::stop_token token) {
+    stop_token_ = token;
+    if (token.stop_possible() && hstmt_ != SQL_NULL_HSTMT) {
+        stop_cb_.emplace(token, [this]() {
+            cancel();
+        });
+    }
+}
+
 void MssqlPreparedStatement::apply_bindings() {
     SQLFreeStmt(hstmt_, SQL_RESET_PARAMS);
     storage_.resize(params_.size());
@@ -480,6 +501,47 @@ void MssqlConnection::rollback() {
 
 const ISqlDialect& MssqlConnection::dialect() const {
     return dialect_;
+}
+
+DriverInfo MssqlConnection::info() const {
+    DriverInfo i;
+    i.driver_name = "ODBC Driver for SQL Server";
+    i.dbms_name = "Microsoft SQL Server";
+    if (hdbc_ != SQL_NULL_HDBC) {
+        char buf[256] = {0};
+        SQLSMALLINT len = 0;
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_NAME, buf, sizeof(buf), &len))) {
+            i.driver_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_VER, buf, sizeof(buf), &len))) {
+            i.driver_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_NAME, buf, sizeof(buf), &len))) {
+            i.dbms_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_VER, buf, sizeof(buf), &len))) {
+            i.dbms_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_ODBC_VER, buf, sizeof(buf), &len))) {
+            i.odbc_version = buf;
+        }
+    }
+    return i;
+}
+
+DriverCapabilities MssqlConnection::capabilities() const {
+    DriverCapabilities caps;
+    caps.cancel = true;
+    caps.streaming = true;
+    caps.query_timeout = true;
+    caps.transactions = true;
+    caps.savepoints = true;
+    caps.returning_clause = false;
+    caps.output_clause = true;
+    caps.upsert = true;
+    caps.window_functions = true;
+    caps.ctes = true;
+    return caps;
 }
 
 // ----------------------------------------------------------------------------

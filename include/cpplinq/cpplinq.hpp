@@ -10,4 +10,5 @@
 #include "cpplinq/mapping/row_mapper.h"
 #include "cpplinq/core/query_builder.h"
 #include "cpplinq/core/db_context.h"
+#include "cpplinq/core/streaming.h"
 #include "cpplinq/driver/connection_pool.h"

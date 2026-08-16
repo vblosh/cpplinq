@@ -1,5 +1,6 @@
 set(CPPLINQ_SOURCES
     sql_generator.cpp
+    driver/connection.cpp
 )
 
 if(CPPLINQ_ENABLE_SQLITE)

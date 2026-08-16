@@ -8,6 +8,8 @@
 #include <optional>
 #include <cstdint>
 #include <stdexcept>
+#include <stop_token>
+#include <functional>
 
 namespace cpplinq {
 
@@ -26,6 +28,55 @@ class DbException : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
+
+// Specific cancellation exception
+class OperationCancelled : public DbException {
+public:
+    explicit OperationCancelled(const std::string& msg = "Operation cancelled by stop token or user request")
+        : DbException(msg) {}
+};
+using operation_cancelled = OperationCancelled;
+
+// Unsupported feature exception
+class UnsupportedFeature : public DbException {
+public:
+    explicit UnsupportedFeature(const std::string& msg = "Requested operation is not supported by driver/dialect")
+        : DbException(msg) {}
+};
+using unsupported_feature = UnsupportedFeature;
+
+// Execution options for queries and streaming
+struct ExecutionOptions {
+    std::optional<uint32_t> query_timeout_seconds;
+    std::optional<std::stop_token> stop_token;
+};
+using execution_options = ExecutionOptions;
+
+// Driver info introspection
+struct DriverInfo {
+    std::string driver_name;
+    std::string driver_version;
+    std::string dbms_name;
+    std::string dbms_version;
+    std::string odbc_version;
+};
+
+// Driver capabilities introspection
+struct DriverCapabilities {
+    bool cancel = true;
+    bool streaming = true;
+    bool query_timeout = true;
+    bool transactions = true;
+    bool savepoints = false;
+    bool returning_clause = false;
+    bool output_clause = false;
+    bool upsert = false;
+    bool window_functions = true;
+    bool ctes = true;
+};
+
+// Forward declaration of streaming range
+class RowStream;
 
 // Result row reader (cursor-based)
 class IDataReader {
@@ -52,6 +103,13 @@ public:
     virtual std::unique_ptr<IDataReader> execute_query() = 0;
     virtual size_t execute_non_query() = 0;  // returns affected rows
     virtual void reset() = 0;
+
+    // Cancellation and execution options
+    virtual void cancel() {
+        throw UnsupportedFeature("Prepared statement cancellation is not supported by this driver");
+    }
+    virtual void set_timeout(uint32_t seconds) { (void)seconds; }
+    virtual void set_stop_token(std::stop_token token) { (void)token; }
 };
 
 // Database connection
@@ -71,6 +129,17 @@ public:
     virtual void rollback() = 0;
 
     virtual const ISqlDialect& dialect() const = 0;
+
+    // Driver capabilities & information
+    virtual DriverInfo info() const = 0;
+    virtual DriverCapabilities capabilities() const = 0;
+
+    // Streaming range over raw query
+    virtual RowStream stream(
+        std::string_view sql,
+        const std::vector<BoundValue>& params = {},
+        ExecutionOptions options = {}
+    );
 };
 
 // RAII transaction guard

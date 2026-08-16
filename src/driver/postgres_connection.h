@@ -8,6 +8,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <stop_token>
+#include <functional>
+#include <optional>
 
 namespace cpplinq {
 
@@ -42,11 +45,17 @@ public:
     size_t execute_non_query() override;
     void reset() override;
 
+    void cancel() override;
+    void set_timeout(uint32_t seconds) override;
+    void set_stop_token(std::stop_token token) override;
+
 private:
     PGconn* conn_;
     std::string sql_;
     std::string stmt_name_;
     std::vector<BoundValue> params_;
+    std::optional<std::stop_token> stop_token_;
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb_;
 };
 
 class PgConnection : public IConnection {
@@ -66,6 +75,9 @@ public:
     void rollback() override;
 
     const ISqlDialect& dialect() const override;
+
+    DriverInfo info() const override;
+    DriverCapabilities capabilities() const override;
 
 private:
     std::string connection_string_;

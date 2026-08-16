@@ -320,6 +320,27 @@ void MysqlPreparedStatement::reset() {
     }
 }
 
+void MysqlPreparedStatement::cancel() {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLCancel(hstmt_);
+    }
+}
+
+void MysqlPreparedStatement::set_timeout(uint32_t seconds) {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLSetStmtAttr(hstmt_, SQL_ATTR_QUERY_TIMEOUT, reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(seconds)), SQL_IS_UINTEGER);
+    }
+}
+
+void MysqlPreparedStatement::set_stop_token(std::stop_token token) {
+    stop_token_ = token;
+    if (token.stop_possible() && hstmt_ != SQL_NULL_HSTMT) {
+        stop_cb_.emplace(token, [this]() {
+            cancel();
+        });
+    }
+}
+
 // ----------------------------------------------------------------------------
 // MysqlConnection
 // ----------------------------------------------------------------------------
@@ -458,6 +479,47 @@ void MysqlConnection::rollback() {
 
 const ISqlDialect& MysqlConnection::dialect() const {
     return dialect_;
+}
+
+DriverInfo MysqlConnection::info() const {
+    DriverInfo i;
+    i.driver_name = "MySQL ODBC Driver";
+    i.dbms_name = "MySQL";
+    if (hdbc_ != SQL_NULL_HDBC) {
+        char buf[256] = {0};
+        SQLSMALLINT len = 0;
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_NAME, buf, sizeof(buf), &len))) {
+            i.driver_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_VER, buf, sizeof(buf), &len))) {
+            i.driver_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_NAME, buf, sizeof(buf), &len))) {
+            i.dbms_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_VER, buf, sizeof(buf), &len))) {
+            i.dbms_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_ODBC_VER, buf, sizeof(buf), &len))) {
+            i.odbc_version = buf;
+        }
+    }
+    return i;
+}
+
+DriverCapabilities MysqlConnection::capabilities() const {
+    DriverCapabilities caps;
+    caps.cancel = true;
+    caps.streaming = true;
+    caps.query_timeout = true;
+    caps.transactions = true;
+    caps.savepoints = true;
+    caps.returning_clause = false;
+    caps.output_clause = false;
+    caps.upsert = true;
+    caps.window_functions = true;
+    caps.ctes = true;
+    return caps;
 }
 
 // ----------------------------------------------------------------------------
