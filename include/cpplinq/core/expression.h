@@ -53,6 +53,9 @@ struct BetweenExpr;
 struct LikeExpr;
 struct InListExpr;
 struct FunctionExpr;
+struct SubqueryExpr;
+struct ExistsExpr;
+struct InSubqueryExpr;
 
 // Column reference node
 struct ColumnRef {
@@ -85,8 +88,59 @@ using ExprNode = std::variant<
     std::shared_ptr<BetweenExpr>,
     std::shared_ptr<LikeExpr>,
     std::shared_ptr<InListExpr>,
-    std::shared_ptr<FunctionExpr>
+    std::shared_ptr<FunctionExpr>,
+    std::shared_ptr<SubqueryExpr>,
+    std::shared_ptr<ExistsExpr>,
+    std::shared_ptr<InSubqueryExpr>
 >;
+
+// Subquery expression AST node: (SELECT col1, col2 FROM tbl WHERE ...)
+struct SubqueryExpr {
+    std::string table_name;
+    std::vector<std::string> select_columns;
+    std::shared_ptr<ExprNode> where;
+    bool is_distinct = false;
+
+    SubqueryExpr() = default;
+    SubqueryExpr(
+        std::string tbl,
+        std::vector<std::string> cols = {},
+        std::shared_ptr<ExprNode> w = nullptr,
+        bool dist = false
+    ) : table_name(std::move(tbl)),
+        select_columns(std::move(cols)),
+        where(std::move(w)),
+        is_distinct(dist) {}
+
+    SubqueryExpr(
+        std::string tbl,
+        std::vector<std::string> cols,
+        ExprNode w,
+        bool dist = false
+    ) : table_name(std::move(tbl)),
+        select_columns(std::move(cols)),
+        where(std::make_shared<ExprNode>(std::move(w))),
+        is_distinct(dist) {}
+};
+
+// EXISTS expression AST node: EXISTS (SELECT ... FROM ...)
+struct ExistsExpr {
+    SubqueryExpr subquery;
+    bool is_not = false;
+
+    ExistsExpr(SubqueryExpr sub, bool n = false)
+        : subquery(std::move(sub)), is_not(n) {}
+};
+
+// IN (subquery) expression AST node: col IN (SELECT col FROM ...)
+struct InSubqueryExpr {
+    ExprNode expr;
+    SubqueryExpr subquery;
+    bool is_not = false;
+
+    InSubqueryExpr(ExprNode e, SubqueryExpr sub, bool n = false)
+        : expr(std::move(e)), subquery(std::move(sub)), is_not(n) {}
+};
 
 // Function call expression AST node: FUNC(arg1, arg2, ...)
 struct FunctionExpr {
@@ -293,6 +347,14 @@ public:
     Expr coalesce(const Expr& fallback) const {
         return Expr(std::make_shared<FunctionExpr>("COALESCE", std::vector<ExprNode>{node, fallback.node}));
     }
+
+    Expr in(SubqueryExpr sub) const {
+        return Expr(std::make_shared<InSubqueryExpr>(node, std::move(sub), false));
+    }
+
+    Expr not_in(SubqueryExpr sub) const {
+        return Expr(std::make_shared<InSubqueryExpr>(node, std::move(sub), true));
+    }
 };
 
 // ColumnHandle class representing a table column in expressions
@@ -368,6 +430,14 @@ public:
     template <typename T>
     Expr not_in_list(std::initializer_list<T> values) const {
         return Expr(ref).not_in_list(values);
+    }
+
+    Expr in(SubqueryExpr sub) const {
+        return Expr(ref).in(std::move(sub));
+    }
+
+    Expr not_in(SubqueryExpr sub) const {
+        return Expr(ref).not_in(std::move(sub));
     }
 
     Expr lower() const {
@@ -483,6 +553,14 @@ inline Expr coalesce(const Expr& e, const Expr& fallback) {
     return e.coalesce(fallback);
 }
 
+inline Expr exists(SubqueryExpr sub) {
+    return Expr(std::make_shared<ExistsExpr>(std::move(sub), false));
+}
+
+inline Expr not_exists(SubqueryExpr sub) {
+    return Expr(std::make_shared<ExistsExpr>(std::move(sub), true));
+}
+
 // Order-by expression and helpers
 struct OrderByExpr {
     ExprNode expr;
@@ -514,6 +592,9 @@ using expr::BetweenExpr;
 using expr::LikeExpr;
 using expr::InListExpr;
 using expr::FunctionExpr;
+using expr::SubqueryExpr;
+using expr::ExistsExpr;
+using expr::InSubqueryExpr;
 using expr::ExprNode;
 using expr::AssignExpr;
 using expr::Expr;
@@ -529,6 +610,8 @@ using expr::substr;
 using expr::abs_val;
 using expr::round_val;
 using expr::coalesce;
+using expr::exists;
+using expr::not_exists;
 using expr::asc;
 using expr::desc;
 

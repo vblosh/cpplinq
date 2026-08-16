@@ -416,6 +416,38 @@ public:
         return get_tuple_column_names(columns_);
     }
 
+    expr::SubqueryExpr as_subquery() const {
+        return expr::SubqueryExpr(
+            table_name_,
+            get_column_names(),
+            where_clause_ ? std::make_shared<expr::ExprNode>(*where_clause_) : nullptr,
+            is_distinct_
+        );
+    }
+
+    template <typename EntityType, typename ColType>
+    expr::SubqueryExpr as_subquery(const ColumnDef<EntityType, ColType>& col) const {
+        return expr::SubqueryExpr(
+            table_name_,
+            {std::string(col.name)},
+            where_clause_ ? std::make_shared<expr::ExprNode>(*where_clause_) : nullptr,
+            is_distinct_
+        );
+    }
+
+    expr::SubqueryExpr as_subquery(const ColumnHandle& col) const {
+        return expr::SubqueryExpr(
+            table_name_,
+            {col.ref.column_name},
+            where_clause_ ? std::make_shared<expr::ExprNode>(*where_clause_) : nullptr,
+            is_distinct_
+        );
+    }
+
+    operator expr::Expr() const {
+        return expr::Expr(std::make_shared<expr::SubqueryExpr>(as_subquery()));
+    }
+
     QueryBuilder& order_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
         order_clauses_.clear();
         order_clauses_.emplace_back(std::move(column.node), dir);
@@ -660,6 +692,16 @@ SetOpQueryBuilder<Entity, ColumnDefs...>::except_from(const QueryBuilder<Entity,
         other.is_distinct()
     });
     return *this;
+}
+
+template <typename Entity, typename... ColumnDefs>
+inline expr::Expr exists(const QueryBuilder<Entity, ColumnDefs...>& query) {
+    return expr::exists(query.as_subquery());
+}
+
+template <typename Entity, typename... ColumnDefs>
+inline expr::Expr not_exists(const QueryBuilder<Entity, ColumnDefs...>& query) {
+    return expr::not_exists(query.as_subquery());
 }
 
 } // namespace cpplinq

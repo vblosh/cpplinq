@@ -449,3 +449,31 @@ TEST_F(SqliteIntegrationTest, SetOperations) {
     EXPECT_EQ(except_rows[0].name, "Bob");
     EXPECT_EQ(except_rows[1].name, "Charlie");
 }
+
+TEST_F(SqliteIntegrationTest, SubqueriesExistsAndIn) {
+    int64_t u1 = db->insert(users_table, User{0, "Alice", "a@test.com", 25});
+    int64_t u2 = db->insert(users_table, User{0, "Bob", "b@test.com", 35});
+
+    db->insert(orders_table, Order{0, static_cast<int>(u1), 150.0});
+
+    // EXISTS: Alice has orders, Bob does not
+    auto has_orders = db->from(users_table)
+                        .where(exists(db->from(orders_table).where(orders_table["user_id"] == users_table["id"])))
+                        .to_vector();
+    ASSERT_EQ(has_orders.size(), 1);
+    EXPECT_EQ(has_orders[0].name, "Alice");
+
+    // NOT EXISTS: Bob has no orders
+    auto no_orders = db->from(users_table)
+                       .where(not_exists(db->from(orders_table).where(orders_table["user_id"] == users_table["id"])))
+                       .to_vector();
+    ASSERT_EQ(no_orders.size(), 1);
+    EXPECT_EQ(no_orders[0].name, "Bob");
+
+    // IN (subquery): Alice's id is in orders
+    auto in_orders = db->from(users_table)
+                       .where(users_table["id"].in(db->from(orders_table).where(orders_table["amount"] > 100.0).as_subquery(orders_table["user_id"])))
+                       .to_vector();
+    ASSERT_EQ(in_orders.size(), 1);
+    EXPECT_EQ(in_orders[0].name, "Alice");
+}

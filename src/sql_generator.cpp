@@ -111,6 +111,61 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
             }
             sql += ")";
             return sql;
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::SubqueryExpr>>) {
+            if (!item) return "";
+            std::string sql = "(SELECT ";
+            if (item->is_distinct) sql += "DISTINCT ";
+            if (item->select_columns.empty()) {
+                sql += "*";
+            } else {
+                for (size_t i = 0; i < item->select_columns.size(); ++i) {
+                    if (i > 0) sql += ", ";
+                    sql += dialect_.quote_id(item->select_columns[i]);
+                }
+            }
+            sql += " FROM " + dialect_.quote_id(item->table_name);
+            if (item->where) {
+                sql += " WHERE " + visit(*item->where, params);
+            }
+            sql += ")";
+            return sql;
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::ExistsExpr>>) {
+            if (!item) return "";
+            std::string sql = item->is_not ? "NOT EXISTS (SELECT " : "EXISTS (SELECT ";
+            if (item->subquery.is_distinct) sql += "DISTINCT ";
+            if (item->subquery.select_columns.empty()) {
+                sql += "1";
+            } else {
+                for (size_t i = 0; i < item->subquery.select_columns.size(); ++i) {
+                    if (i > 0) sql += ", ";
+                    sql += dialect_.quote_id(item->subquery.select_columns[i]);
+                }
+            }
+            sql += " FROM " + dialect_.quote_id(item->subquery.table_name);
+            if (item->subquery.where) {
+                sql += " WHERE " + visit(*item->subquery.where, params);
+            }
+            sql += ")";
+            return sql;
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::InSubqueryExpr>>) {
+            if (!item) return "";
+            std::string expr_str = visit(item->expr, params);
+            std::string sql = "(" + expr_str + (item->is_not ? " NOT IN (SELECT " : " IN (SELECT ");
+            if (item->subquery.is_distinct) sql += "DISTINCT ";
+            if (item->subquery.select_columns.empty()) {
+                sql += "*";
+            } else {
+                for (size_t i = 0; i < item->subquery.select_columns.size(); ++i) {
+                    if (i > 0) sql += ", ";
+                    sql += dialect_.quote_id(item->subquery.select_columns[i]);
+                }
+            }
+            sql += " FROM " + dialect_.quote_id(item->subquery.table_name);
+            if (item->subquery.where) {
+                sql += " WHERE " + visit(*item->subquery.where, params);
+            }
+            sql += "))";
+            return sql;
         }
         return "";
 

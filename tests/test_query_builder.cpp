@@ -740,3 +740,28 @@ TEST(SqlGeneratorTest, SetOperationsGeneration) {
     EXPECT_EQ(std::get<int64_t>(result.params[1]), 40);
 }
 
+TEST(SqlGeneratorTest, SubqueryGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle u_id("users", "id");
+    ColumnHandle o_uid("orders", "user_id");
+    ColumnHandle o_amount("orders", "amount");
+
+    // EXISTS (SELECT 1 FROM "orders" WHERE ("orders"."user_id" = "users"."id" AND "orders"."amount" > ?))
+    SubqueryExpr sub("orders", {}, ((o_uid == u_id) && (o_amount > 100.0)).node);
+    auto exists_res = gen.generate_select("users", {"id", "name"}, (exists(sub)).node);
+
+    EXPECT_EQ(exists_res.sql, "SELECT \"id\", \"name\" FROM \"users\" WHERE EXISTS (SELECT 1 FROM \"orders\" WHERE ((\"orders\".\"user_id\" = \"users\".\"id\") AND (\"orders\".\"amount\" > ?)))");
+    ASSERT_EQ(exists_res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(exists_res.params[0]), 100.0);
+
+    // IN (SELECT "user_id" FROM "orders" WHERE "orders"."amount" > ?)
+    SubqueryExpr in_sub("orders", {"user_id"}, (o_amount > 50.0).node);
+    auto in_res = gen.generate_select("users", {"id", "name"}, (u_id.in(in_sub)).node);
+
+    EXPECT_EQ(in_res.sql, "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" IN (SELECT \"user_id\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)))");
+    ASSERT_EQ(in_res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(in_res.params[0]), 50.0);
+}
+
