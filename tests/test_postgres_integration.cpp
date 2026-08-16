@@ -37,7 +37,10 @@ protected:
     void SetUp() override {
         const char* env_conn = std::getenv("CPPLINQ_POSTGRES_ODBC");
         if (!env_conn || env_conn[0] == '\0') {
-            GTEST_SKIP() << "CPPLINQ_POSTGRES_ODBC environment variable is not defined. Skipping PostgreSQL integration tests.";
+            env_conn = std::getenv("CPPDB_POSTGRES_ODBC");
+        }
+        if (!env_conn || env_conn[0] == '\0') {
+            GTEST_SKIP() << "CPPLINQ_POSTGRES_ODBC (or CPPDB_POSTGRES_ODBC) environment variable is not defined. Skipping PostgreSQL integration tests.";
             return;
         }
 

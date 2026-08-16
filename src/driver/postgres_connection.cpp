@@ -329,6 +329,59 @@ static std::string resolve_odbc_dsn(const std::string& conn_str) {
 }
 #endif
 
+static std::string parse_odbc_conn_str(const std::string& conn_str) {
+    if (conn_str.find("Driver=") == std::string::npos &&
+        conn_str.find("driver=") == std::string::npos &&
+        conn_str.find("Server=") == std::string::npos &&
+        conn_str.find("server=") == std::string::npos) {
+        return "";
+    }
+
+    std::string host, port, dbname, user, pwd, sslmode;
+    size_t start = 0;
+    while (start < conn_str.size()) {
+        size_t end = conn_str.find(';', start);
+        if (end == std::string::npos) end = conn_str.size();
+        std::string token = conn_str.substr(start, end - start);
+        start = end + 1;
+
+        size_t eq = token.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = token.substr(0, eq);
+        std::string val = token.substr(eq + 1);
+
+        auto trim = [](std::string& s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+        };
+        trim(key);
+        trim(val);
+
+        std::string lower_key = key;
+        for (char& c : lower_key) c = static_cast<char>(::tolower(c));
+
+        if (lower_key == "server" || lower_key == "host") host = val;
+        else if (lower_key == "port") port = val;
+        else if (lower_key == "database" || lower_key == "dbname" || lower_key == "db") dbname = val;
+        else if (lower_key == "uid" || lower_key == "user" || lower_key == "username") user = val;
+        else if (lower_key == "pwd" || lower_key == "password") pwd = val;
+        else if (lower_key == "sslmode") sslmode = val;
+    }
+
+    if (host.empty() && dbname.empty() && user.empty()) return "";
+
+    std::string result;
+    if (!host.empty()) result += "host=" + host + " ";
+    if (!port.empty()) result += "port=" + port + " ";
+    if (!dbname.empty()) result += "dbname=" + dbname + " ";
+    if (!user.empty()) result += "user=" + user + " ";
+    if (!pwd.empty()) result += "password=" + pwd + " ";
+    if (!sslmode.empty()) result += "sslmode=" + sslmode + " ";
+
+    return result;
+}
+
 PgConnection::PgConnection(std::string connection_string)
     : connection_string_(std::move(connection_string))
     , conn_(nullptr)
@@ -340,11 +393,14 @@ PgConnection::~PgConnection() {
 
 void PgConnection::open() {
     if (is_open()) return;
+    std::string effective_conn_str = parse_odbc_conn_str(connection_string_);
+    if (effective_conn_str.empty()) {
 #ifdef _WIN32
-    std::string effective_conn_str = resolve_odbc_dsn(connection_string_);
+        effective_conn_str = resolve_odbc_dsn(connection_string_);
 #else
-    std::string effective_conn_str = connection_string_;
+        effective_conn_str = connection_string_;
 #endif
+    }
     conn_ = PQconnectdb(effective_conn_str.c_str());
     if (!conn_ || PQstatus(conn_) != CONNECTION_OK) {
         std::string err = conn_ ? PQerrorMessage(conn_) : "Unable to allocate PGconn";
