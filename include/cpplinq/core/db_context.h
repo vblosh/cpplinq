@@ -121,6 +121,61 @@ public:
         txn.commit();
     }
 
+    // Upsert (insert or update on conflict)
+    template <typename Entity, typename... Cols>
+    size_t upsert(
+        const TableDef<Entity, Cols...>& table,
+        const Entity& entity,
+        const std::vector<std::string>& conflict_columns = {},
+        const std::vector<std::string>& update_columns = {}
+    ) {
+        SqlGenerator gen(conn_->dialect());
+        std::vector<std::string> insert_cols;
+        std::vector<BoundValue> values;
+        std::vector<std::string> auto_conflict_cols = conflict_columns;
+
+        std::apply([&](const auto&... cols) {
+            auto process = [&](const auto& col) {
+                insert_cols.emplace_back(col.name);
+                values.push_back(field_to_bound_value(entity, col.member_ptr));
+                if (col.is_primary_key && auto_conflict_cols.empty()) {
+                    auto_conflict_cols.emplace_back(col.name);
+                }
+            };
+            (process(cols), ...);
+        }, table.columns);
+
+        std::vector<std::string> actual_update_cols = update_columns;
+        if (actual_update_cols.empty()) {
+            for (const auto& col_name : insert_cols) {
+                bool is_conflict = false;
+                for (const auto& c : auto_conflict_cols) {
+                    if (c == col_name) {
+                        is_conflict = true;
+                        break;
+                    }
+                }
+                if (!is_conflict) {
+                    actual_update_cols.push_back(col_name);
+                }
+            }
+        }
+
+        auto result = gen.generate_upsert(
+            std::string(table.name),
+            insert_cols,
+            values,
+            auto_conflict_cols,
+            actual_update_cols
+        );
+
+        auto stmt = conn_->prepare(result.sql);
+        for (size_t i = 0; i < result.params.size(); ++i) {
+            stmt->bind(static_cast<int>(i), result.params[i]);
+        }
+        return stmt->execute_non_query();
+    }
+
     // Direct SQL execution
     void execute_raw(std::string_view sql) {
         conn_->execute(sql);

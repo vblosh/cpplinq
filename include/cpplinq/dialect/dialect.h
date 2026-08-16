@@ -45,6 +45,36 @@ public:
     virtual std::string function_name(std::string_view func) const {
         return std::string(func);
     }
+
+    // UPSERT statement generation
+    virtual std::string generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const {
+        std::string sql = "INSERT INTO " + quote_id(table_name) + " (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(insert_columns[i]);
+        }
+        sql += ") VALUES (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += placeholder(i);
+        }
+        sql += ") ON CONFLICT (";
+        for (size_t i = 0; i < conflict_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(conflict_columns[i]);
+        }
+        sql += ") DO UPDATE SET ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(update_columns[i]) + " = EXCLUDED." + quote_id(update_columns[i]);
+        }
+        return sql;
+    }
 };
 
 } // namespace cpplinq

@@ -97,6 +97,23 @@ public:
         std::optional<std::string_view> returning_column = std::nullopt
     ) const;
 
+    // UPSERT queries
+    GeneratedSql generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<BoundValue>& values,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const;
+
+    GeneratedSql generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<expr::SqlValue>& values,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const;
+
     // UPDATE queries
     GeneratedSql generate_update(
         std::string_view table_name,

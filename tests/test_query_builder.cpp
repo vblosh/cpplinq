@@ -149,6 +149,46 @@ public:
         if (func == "SUBSTR") return "SUBSTRING";
         return std::string(func);
     }
+
+    std::string generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const override {
+        std::string sql = "MERGE INTO " + quote_id(table_name) + " WITH (HOLDLOCK) AS [target] USING (VALUES (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += placeholder(i);
+        }
+        sql += ")) AS [source] (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(insert_columns[i]);
+        }
+        sql += ") ON (";
+        for (size_t i = 0; i < conflict_columns.size(); ++i) {
+            if (i > 0) sql += " AND ";
+            sql += "[target]." + quote_id(conflict_columns[i]) + " = [source]." + quote_id(conflict_columns[i]);
+        }
+        sql += ") WHEN MATCHED THEN UPDATE SET ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += "[target]." + quote_id(update_columns[i]) + " = [source]." + quote_id(update_columns[i]);
+        }
+        sql += " WHEN NOT MATCHED THEN INSERT (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(insert_columns[i]);
+        }
+        sql += ") VALUES (";
+        for (size_t i = 0; i < insert_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += "[source]." + quote_id(insert_columns[i]);
+        }
+        sql += ");";
+        return sql;
+    }
 };
 
 } // namespace
@@ -650,5 +690,27 @@ TEST(SqlGeneratorTest, JoinedSelectInnerAndLeft) {
     );
 
     EXPECT_EQ(left_res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\" FROM \"users\" LEFT JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")");
+}
+
+TEST(SqlGeneratorTest, UpsertSqlite) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<BoundValue> values = {int64_t{1}, std::string{"Alice"}, int64_t{30}};
+    auto result = gen.generate_upsert("users", {"id", "name", "age"}, values, {"id"}, {"name", "age"});
+
+    EXPECT_EQ(result.sql, "INSERT INTO \"users\" (\"id\", \"name\", \"age\") VALUES (?, ?, ?) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\", \"age\" = EXCLUDED.\"age\"");
+    ASSERT_EQ(result.params.size(), 3);
+}
+
+TEST(SqlGeneratorTest, UpsertMssql) {
+    MockMssqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<BoundValue> values = {int64_t{1}, std::string{"Alice"}, int64_t{30}};
+    auto result = gen.generate_upsert("users", {"id", "name", "age"}, values, {"id"}, {"name", "age"});
+
+    EXPECT_EQ(result.sql, "MERGE INTO [users] WITH (HOLDLOCK) AS [target] USING (VALUES (?, ?, ?)) AS [source] ([id], [name], [age]) ON ([target].[id] = [source].[id]) WHEN MATCHED THEN UPDATE SET [target].[name] = [source].[name], [target].[age] = [source].[age] WHEN NOT MATCHED THEN INSERT ([id], [name], [age]) VALUES ([source].[id], [source].[name], [source].[age]);");
+    ASSERT_EQ(result.params.size(), 3);
 }
 

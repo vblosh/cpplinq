@@ -41,6 +41,21 @@ inline const auto orders_table = table<Order>(
     column("amount", &Order::amount)
 );
 
+struct Account {
+    std::string username;
+    std::string email;
+    int points = 0;
+
+    bool operator==(const Account& other) const = default;
+};
+
+inline const auto accounts_table = table<Account>(
+    "accounts",
+    column("username", &Account::username, primary_key),
+    column("email", &Account::email),
+    column("points", &Account::points)
+);
+
 } // namespace
 
 // ============================================================================
@@ -53,6 +68,7 @@ protected:
         db = std::make_unique<DbContext<sqlite>>(":memory:");
         db->ensure_table(users_table);
         db->ensure_table(orders_table);
+        db->ensure_table(accounts_table);
     }
 
     std::unique_ptr<DbContext<sqlite>> db;
@@ -384,4 +400,23 @@ TEST_F(SqliteIntegrationTest, InnerJoinAndLeftJoin) {
 
     EXPECT_EQ(left_rows[2].first.name, "Bob");
     EXPECT_FALSE(left_rows[2].second.has_value());
+}
+
+TEST_F(SqliteIntegrationTest, UpsertEntity) {
+    db->upsert(accounts_table, Account{"alice", "alice@initial.com", 100}, {"username"}, {"email", "points"});
+
+    auto u = db->from(accounts_table).where(accounts_table["username"] == "alice").first();
+    ASSERT_TRUE(u.has_value());
+    EXPECT_EQ(u->username, "alice");
+    EXPECT_EQ(u->email, "alice@initial.com");
+    EXPECT_EQ(u->points, 100);
+
+    // Upsert with same username updates the record
+    db->upsert(accounts_table, Account{"alice", "alice@updated.com", 250}, {"username"}, {"email", "points"});
+
+    auto u_upd = db->from(accounts_table).where(accounts_table["username"] == "alice").first();
+    ASSERT_TRUE(u_upd.has_value());
+    EXPECT_EQ(u_upd->username, "alice");
+    EXPECT_EQ(u_upd->email, "alice@updated.com");
+    EXPECT_EQ(u_upd->points, 250);
 }

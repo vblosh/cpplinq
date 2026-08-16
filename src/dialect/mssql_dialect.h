@@ -17,6 +17,12 @@ public:
     std::string output_clause(std::string_view column) const override;
     std::string create_table_prefix(std::string_view table_name) const override;
     std::string function_name(std::string_view func) const override;
+    std::string generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const override;
 };
 
 } // namespace cpplinq
