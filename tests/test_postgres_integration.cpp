@@ -494,3 +494,19 @@ TEST_F(PostgresIntegrationTest, SetOperations) {
     EXPECT_EQ(except_rows[0].name, "Bob");
     EXPECT_EQ(except_rows[1].name, "Charlie");
 }
+
+TEST_F(PostgresIntegrationTest, ConnectionPoolWithPostgres) {
+    PoolConfig config;
+    config.min_connections = 2;
+    config.max_connections = 4;
+
+    auto pool = make_pool<postgres>(conn_str_, config);
+    EXPECT_EQ(pool->size(), 2);
+
+    pool->with_context([&](auto& db_ctx) {
+        db_ctx.insert(users_table, User{0, "PoolUser", "pool@test.com", 28});
+        auto users = db_ctx.from(users_table).where(users_table["name"] == "PoolUser").to_vector();
+        EXPECT_EQ(users.size(), 1);
+        EXPECT_EQ(users[0].name, "PoolUser");
+    });
+}

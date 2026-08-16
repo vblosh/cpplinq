@@ -163,6 +163,7 @@ void SqliteConnection::open() {
         close();
         throw DbException("Failed to open SQLite database: " + err);
     }
+    sqlite3_busy_timeout(db_, 10000);
     execute("PRAGMA journal_mode=WAL;");
 }
 

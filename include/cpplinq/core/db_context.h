@@ -35,13 +35,22 @@ template <typename Backend>
 class DbContext {
 public:
     explicit DbContext(const std::string& connection_string)
-        : conn_(make_connection<Backend>(connection_string)) {
+        : conn_storage_(make_connection<Backend>(connection_string)),
+          conn_(conn_storage_.get()) {
         conn_->open();
     }
 
+    explicit DbContext(IConnection* conn)
+        : conn_storage_(nullptr),
+          conn_(conn) {}
+
+    explicit DbContext(IConnection& conn)
+        : conn_storage_(nullptr),
+          conn_(&conn) {}
+
     ~DbContext() {
-        if (conn_ && conn_->is_open()) {
-            try { conn_->close(); } catch(...) {}
+        if (conn_storage_ && conn_storage_->is_open()) {
+            try { conn_storage_->close(); } catch(...) {}
         }
     }
 
@@ -189,7 +198,8 @@ public:
     IConnection& connection() { return *conn_; }
 
 private:
-    std::unique_ptr<IConnection> conn_;
+    std::unique_ptr<IConnection> conn_storage_;
+    IConnection* conn_ = nullptr;
 
     template <typename Col>
     static ColumnInfo make_column_info(const Col& col) {
