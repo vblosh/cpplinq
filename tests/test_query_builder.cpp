@@ -601,3 +601,29 @@ TEST(SqlGeneratorTest, SqlFunctionsMssql) {
     EXPECT_EQ(std::get<int64_t>(result.params[1]), 5);
 }
 
+TEST(SqlGeneratorTest, GroupByAndHaving) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle dept("users", "dept");
+    ColumnHandle age("users", "age");
+
+    auto result = gen.generate_select("users", {"dept"}, std::nullopt,
+                                      std::vector<std::pair<expr::ExprNode, expr::SortDir>>{},
+                                      std::nullopt, std::nullopt, false,
+                                      {dept.ref}, (age > 18).node);
+
+    EXPECT_EQ(result.sql, "SELECT \"dept\" FROM \"users\" GROUP BY \"users\".\"dept\" HAVING (\"users\".\"age\" > ?)");
+    ASSERT_EQ(result.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(result.params[0]), 18);
+}
+
+TEST(SqlGeneratorTest, CountDistinct) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle dept("users", "dept");
+
+    auto result = gen.generate_count("users", std::nullopt, true, "dept");
+    EXPECT_EQ(result.sql, "SELECT COUNT(DISTINCT \"dept\") FROM \"users\"");
+    EXPECT_TRUE(result.params.empty());
+}
+

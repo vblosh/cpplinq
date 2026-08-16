@@ -124,7 +124,9 @@ GeneratedSql SqlGenerator::generate_select(
     const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by,
     std::optional<size_t> limit,
     std::optional<size_t> offset,
-    bool is_distinct
+    bool is_distinct,
+    const std::vector<expr::ExprNode>& group_by,
+    const std::optional<expr::ExprNode>& having
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
@@ -145,6 +147,19 @@ GeneratedSql SqlGenerator::generate_select(
     if (where.has_value()) {
         sql += " WHERE ";
         sql += visit(*where, result.params);
+    }
+
+    if (!group_by.empty()) {
+        sql += " GROUP BY ";
+        for (size_t i = 0; i < group_by.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += visit(group_by[i], result.params);
+        }
+    }
+
+    if (having.has_value()) {
+        sql += " HAVING ";
+        sql += visit(*having, result.params);
     }
 
     if (!order_by.empty()) {
@@ -175,14 +190,16 @@ GeneratedSql SqlGenerator::generate_select(
     const std::vector<expr::OrderByExpr>& order_by,
     std::optional<size_t> limit,
     std::optional<size_t> offset,
-    bool is_distinct
+    bool is_distinct,
+    const std::vector<expr::ExprNode>& group_by,
+    const std::optional<expr::ExprNode>& having
 ) const {
     std::vector<std::pair<expr::ExprNode, expr::SortDir>> pairs;
     pairs.reserve(order_by.size());
     for (const auto& item : order_by) {
         pairs.emplace_back(item.expr, item.direction);
     }
-    return generate_select(table_name, columns, where, pairs, limit, offset, is_distinct);
+    return generate_select(table_name, columns, where, pairs, limit, offset, is_distinct, group_by, having);
 }
 
 GeneratedSql SqlGenerator::generate_insert(
@@ -369,12 +386,20 @@ GeneratedSql SqlGenerator::generate_create_table(
 
 GeneratedSql SqlGenerator::generate_count(
     std::string_view table_name,
-    const std::optional<expr::ExprNode>& where
+    const std::optional<expr::ExprNode>& where,
+    bool is_distinct,
+    std::optional<std::string_view> distinct_column
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
 
-    std::string sql = "SELECT COUNT(*) FROM ";
+    std::string sql = "SELECT COUNT(";
+    if (is_distinct && distinct_column.has_value()) {
+        sql += "DISTINCT " + dialect_.quote_id(*distinct_column);
+    } else {
+        sql += "*";
+    }
+    sql += ") FROM ";
     sql += dialect_.quote_id(table_name);
 
     if (where.has_value()) {

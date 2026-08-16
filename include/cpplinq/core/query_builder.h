@@ -61,6 +61,23 @@ public:
         return then_by(std::move(column), expr::SortDir::Desc);
     }
 
+    QueryBuilder& group_by(expr::Expr column) {
+        group_by_clauses_.emplace_back(std::move(column.node));
+        return *this;
+    }
+
+    template <typename... MoreCols>
+    QueryBuilder& group_by(expr::Expr first_col, MoreCols&&... rest) {
+        group_by_clauses_.emplace_back(std::move(first_col.node));
+        (group_by_clauses_.emplace_back(expr::Expr(std::forward<MoreCols>(rest)).node), ...);
+        return *this;
+    }
+
+    QueryBuilder& having(expr::Expr condition) {
+        having_clause_ = std::move(condition.node);
+        return *this;
+    }
+
     QueryBuilder& limit(size_t n) {
         limit_ = n;
         return *this;
@@ -76,7 +93,8 @@ public:
         SqlGenerator gen(conn_.dialect());
         auto col_names = get_column_names();
         auto result = gen.generate_select(table_name_, col_names, where_clause_,
-                                          order_clauses_, limit_, offset_, is_distinct_);
+                                          order_clauses_, limit_, offset_, is_distinct_,
+                                          group_by_clauses_, having_clause_);
         auto stmt = conn_.prepare(result.sql);
         bind_params(*stmt, result.params);
         auto reader = stmt->execute_query();
@@ -103,6 +121,23 @@ public:
     size_t count() {
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_count(table_name_, where_clause_);
+        auto stmt = conn_.prepare(result.sql);
+        bind_params(*stmt, result.params);
+        auto reader = stmt->execute_query();
+        if (reader && reader->next()) {
+            return static_cast<size_t>(reader->get_int64(0));
+        }
+        return 0;
+    }
+
+    // Terminal: COUNT(DISTINCT col)
+    size_t count_distinct(const expr::Expr& column) {
+        std::string col_name;
+        if (auto* ref = std::get_if<expr::ColumnRef>(&column.node)) {
+            col_name = ref->column_name;
+        }
+        SqlGenerator gen(conn_.dialect());
+        auto result = gen.generate_count(table_name_, where_clause_, true, col_name);
         auto stmt = conn_.prepare(result.sql);
         bind_params(*stmt, result.params);
         auto reader = stmt->execute_query();
@@ -159,6 +194,8 @@ private:
     std::optional<size_t> limit_;
     std::optional<size_t> offset_;
     bool is_distinct_ = false;
+    std::vector<expr::ExprNode> group_by_clauses_;
+    std::optional<expr::ExprNode> having_clause_;
 
     std::vector<std::string> get_column_names() const {
         std::vector<std::string> names;

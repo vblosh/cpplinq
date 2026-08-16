@@ -312,3 +312,21 @@ TEST_F(SqliteIntegrationTest, SqlFunctionsFilter) {
     ASSERT_EQ(len_res.size(), 1);
     EXPECT_EQ(len_res[0].name, "Bob");
 }
+
+TEST_F(SqliteIntegrationTest, GroupByAndCountDistinct) {
+    db->insert(users_table, User{0, "Alice", "a1@test.com", 30});
+    db->insert(users_table, User{0, "Alice", "a2@test.com", 30});
+    db->insert(users_table, User{0, "Bob", "b1@test.com", 25});
+
+    size_t distinct_names = db->from(users_table).count_distinct(users_table["name"]);
+    EXPECT_EQ(distinct_names, 2);
+
+    auto grouped = db->from(users_table)
+                     .group_by(users_table["id"], users_table["name"], users_table["email"], users_table["age"])
+                     .having(users_table["age"] >= 30)
+                     .to_vector();
+
+    ASSERT_EQ(grouped.size(), 2);
+    EXPECT_EQ(grouped[0].age, 30);
+    EXPECT_EQ(grouped[1].age, 30);
+}

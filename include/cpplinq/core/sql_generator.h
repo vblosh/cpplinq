@@ -45,7 +45,9 @@ public:
         const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
         std::optional<size_t> limit = std::nullopt,
         std::optional<size_t> offset = std::nullopt,
-        bool is_distinct = false
+        bool is_distinct = false,
+        const std::vector<expr::ExprNode>& group_by = {},
+        const std::optional<expr::ExprNode>& having = std::nullopt
     ) const;
 
     GeneratedSql generate_select(
@@ -55,7 +57,9 @@ public:
         const std::vector<expr::OrderByExpr>& order_by,
         std::optional<size_t> limit = std::nullopt,
         std::optional<size_t> offset = std::nullopt,
-        bool is_distinct = false
+        bool is_distinct = false,
+        const std::vector<expr::ExprNode>& group_by = {},
+        const std::optional<expr::ExprNode>& having = std::nullopt
     ) const;
 
     // INSERT queries
@@ -101,7 +105,9 @@ public:
     // Aggregate queries
     GeneratedSql generate_count(
         std::string_view table_name,
-        const std::optional<expr::ExprNode>& where = std::nullopt
+        const std::optional<expr::ExprNode>& where = std::nullopt,
+        bool is_distinct = false,
+        std::optional<std::string_view> distinct_column = std::nullopt
     ) const;
 
     GeneratedSql generate_aggregate(
