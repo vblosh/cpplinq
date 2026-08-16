@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <string_view>
+#include <vector>
+#include <initializer_list>
 #include <variant>
 #include <memory>
 #include <optional>
@@ -47,6 +49,9 @@ enum class SortDir {
 struct BinaryExpr;
 struct LogicExpr;
 struct UnaryExpr;
+struct BetweenExpr;
+struct LikeExpr;
+struct InListExpr;
 
 // Column reference node
 struct ColumnRef {
@@ -75,7 +80,10 @@ using ExprNode = std::variant<
     Literal,
     std::shared_ptr<BinaryExpr>,
     std::shared_ptr<LogicExpr>,
-    std::shared_ptr<UnaryExpr>
+    std::shared_ptr<UnaryExpr>,
+    std::shared_ptr<BetweenExpr>,
+    std::shared_ptr<LikeExpr>,
+    std::shared_ptr<InListExpr>
 >;
 
 // Binary expression AST node (comparisons)
@@ -96,6 +104,37 @@ struct LogicExpr {
 
     LogicExpr(ExprNode l, LogicOp o, ExprNode r)
         : left(std::move(l)), op(o), right(std::move(r)) {}
+};
+
+// Between expression AST node: col BETWEEN low AND high
+struct BetweenExpr {
+    ExprNode expr;
+    ExprNode low;
+    ExprNode high;
+    bool is_not = false;
+
+    BetweenExpr(ExprNode e, ExprNode l, ExprNode h, bool n = false)
+        : expr(std::move(e)), low(std::move(l)), high(std::move(h)), is_not(n) {}
+};
+
+// LIKE expression AST node: col LIKE pattern
+struct LikeExpr {
+    ExprNode expr;
+    ExprNode pattern;
+    bool is_not = false;
+
+    LikeExpr(ExprNode e, ExprNode p, bool n = false)
+        : expr(std::move(e)), pattern(std::move(p)), is_not(n) {}
+};
+
+// IN expression AST node: col IN (val1, val2, ...)
+struct InListExpr {
+    ExprNode expr;
+    std::vector<ExprNode> values;
+    bool is_not = false;
+
+    InListExpr(ExprNode e, std::vector<ExprNode> v, bool n = false)
+        : expr(std::move(e)), values(std::move(v)), is_not(n) {}
 };
 
 // Unary expression AST node (NOT, IS NULL, IS NOT NULL)
@@ -155,6 +194,62 @@ public:
     Expr is_not_null() const {
         return Expr(std::make_shared<UnaryExpr>(UnaryOp::IsNotNull, node));
     }
+
+    Expr between(const Expr& low, const Expr& high) const {
+        return Expr(std::make_shared<BetweenExpr>(node, low.node, high.node, false));
+    }
+
+    Expr not_between(const Expr& low, const Expr& high) const {
+        return Expr(std::make_shared<BetweenExpr>(node, low.node, high.node, true));
+    }
+
+    Expr like(const Expr& pattern) const {
+        return Expr(std::make_shared<LikeExpr>(node, pattern.node, false));
+    }
+
+    Expr not_like(const Expr& pattern) const {
+        return Expr(std::make_shared<LikeExpr>(node, pattern.node, true));
+    }
+
+    template <typename T>
+    Expr in_list(const std::vector<T>& values) const {
+        std::vector<ExprNode> val_nodes;
+        val_nodes.reserve(values.size());
+        for (const auto& v : values) {
+            val_nodes.push_back(Expr(v).node);
+        }
+        return Expr(std::make_shared<InListExpr>(node, std::move(val_nodes), false));
+    }
+
+    template <typename T>
+    Expr in_list(std::initializer_list<T> values) const {
+        std::vector<ExprNode> val_nodes;
+        val_nodes.reserve(values.size());
+        for (const auto& v : values) {
+            val_nodes.push_back(Expr(v).node);
+        }
+        return Expr(std::make_shared<InListExpr>(node, std::move(val_nodes), false));
+    }
+
+    template <typename T>
+    Expr not_in_list(const std::vector<T>& values) const {
+        std::vector<ExprNode> val_nodes;
+        val_nodes.reserve(values.size());
+        for (const auto& v : values) {
+            val_nodes.push_back(Expr(v).node);
+        }
+        return Expr(std::make_shared<InListExpr>(node, std::move(val_nodes), true));
+    }
+
+    template <typename T>
+    Expr not_in_list(std::initializer_list<T> values) const {
+        std::vector<ExprNode> val_nodes;
+        val_nodes.reserve(values.size());
+        for (const auto& v : values) {
+            val_nodes.push_back(Expr(v).node);
+        }
+        return Expr(std::make_shared<InListExpr>(node, std::move(val_nodes), true));
+    }
 };
 
 // ColumnHandle class representing a table column in expressions
@@ -194,6 +289,42 @@ public:
 
     Expr is_not_null() const {
         return Expr(ref).is_not_null();
+    }
+
+    Expr between(const Expr& low, const Expr& high) const {
+        return Expr(ref).between(low, high);
+    }
+
+    Expr not_between(const Expr& low, const Expr& high) const {
+        return Expr(ref).not_between(low, high);
+    }
+
+    Expr like(const Expr& pattern) const {
+        return Expr(ref).like(pattern);
+    }
+
+    Expr not_like(const Expr& pattern) const {
+        return Expr(ref).not_like(pattern);
+    }
+
+    template <typename T>
+    Expr in_list(const std::vector<T>& values) const {
+        return Expr(ref).in_list(values);
+    }
+
+    template <typename T>
+    Expr in_list(std::initializer_list<T> values) const {
+        return Expr(ref).in_list(values);
+    }
+
+    template <typename T>
+    Expr not_in_list(const std::vector<T>& values) const {
+        return Expr(ref).not_in_list(values);
+    }
+
+    template <typename T>
+    Expr not_in_list(std::initializer_list<T> values) const {
+        return Expr(ref).not_in_list(values);
     }
 };
 

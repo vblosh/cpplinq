@@ -253,3 +253,43 @@ TEST_F(SqliteIntegrationTest, NullAndNotNullFilters) {
         EXPECT_TRUE(u.email.has_value());
     }
 }
+
+TEST_F(SqliteIntegrationTest, BetweenAndLikeFilters) {
+    db->insert(users_table, User{0, "Alice", "alice@example.com", 20});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 30});
+    db->insert(users_table, User{0, "Charlie", "charlie@example.com", 40});
+    db->insert(users_table, User{0, "David", "david@example.com", 50});
+
+    auto between_list = db->from(users_table)
+                          .where(users_table["age"].between(25, 45))
+                          .order_by(users_table["age"])
+                          .to_vector();
+
+    ASSERT_EQ(between_list.size(), 2);
+    EXPECT_EQ(between_list[0].name, "Bob");
+    EXPECT_EQ(between_list[1].name, "Charlie");
+
+    auto like_list = db->from(users_table)
+                       .where(users_table["name"].like("A%"))
+                       .to_vector();
+
+    ASSERT_EQ(like_list.size(), 1);
+    EXPECT_EQ(like_list[0].name, "Alice");
+}
+
+TEST_F(SqliteIntegrationTest, InListAndMultiColumnThenBy) {
+    db->insert(users_table, User{0, "Alice", "a@test.com", 30});
+    db->insert(users_table, User{0, "Bob", "b@test.com", 30});
+    db->insert(users_table, User{0, "Charlie", "c@test.com", 20});
+
+    auto in_list = db->from(users_table)
+                     .where(users_table["age"].in_list({20, 30}))
+                     .order_by(users_table["age"], SortDir::Asc)
+                     .then_by(users_table["name"], SortDir::Desc)
+                     .to_vector();
+
+    ASSERT_EQ(in_list.size(), 3);
+    EXPECT_EQ(in_list[0].name, "Charlie");
+    EXPECT_EQ(in_list[1].name, "Bob");
+    EXPECT_EQ(in_list[2].name, "Alice");
+}

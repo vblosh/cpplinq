@@ -21,23 +21,44 @@ public:
                  const std::tuple<ColumnDefs...>& columns)
         : conn_(conn), table_name_(std::move(table_name)), columns_(columns) {}
 
+    QueryBuilder& distinct() {
+        is_distinct_ = true;
+        return *this;
+    }
+
     QueryBuilder& where(expr::Expr condition) {
         where_clause_ = std::move(condition.node);
         return *this;
     }
 
     QueryBuilder& order_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.clear();
         order_clauses_.emplace_back(std::move(column.node), dir);
         return *this;
     }
 
     QueryBuilder& order_by(expr::OrderByExpr order) {
+        order_clauses_.clear();
         order_clauses_.emplace_back(std::move(order.expr), order.direction);
         return *this;
     }
 
     QueryBuilder& order_by_desc(expr::Expr column) {
         return order_by(std::move(column), expr::SortDir::Desc);
+    }
+
+    QueryBuilder& then_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.emplace_back(std::move(column.node), dir);
+        return *this;
+    }
+
+    QueryBuilder& then_by(expr::OrderByExpr order) {
+        order_clauses_.emplace_back(std::move(order.expr), order.direction);
+        return *this;
+    }
+
+    QueryBuilder& then_by_desc(expr::Expr column) {
+        return then_by(std::move(column), expr::SortDir::Desc);
     }
 
     QueryBuilder& limit(size_t n) {
@@ -55,7 +76,7 @@ public:
         SqlGenerator gen(conn_.dialect());
         auto col_names = get_column_names();
         auto result = gen.generate_select(table_name_, col_names, where_clause_,
-                                          order_clauses_, limit_, offset_);
+                                          order_clauses_, limit_, offset_, is_distinct_);
         auto stmt = conn_.prepare(result.sql);
         bind_params(*stmt, result.params);
         auto reader = stmt->execute_query();
@@ -137,6 +158,7 @@ private:
     std::vector<std::pair<expr::ExprNode, expr::SortDir>> order_clauses_;
     std::optional<size_t> limit_;
     std::optional<size_t> offset_;
+    bool is_distinct_ = false;
 
     std::vector<std::string> get_column_names() const {
         std::vector<std::string> names;

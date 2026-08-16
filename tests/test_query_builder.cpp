@@ -523,3 +523,49 @@ TEST(SqlGeneratorTest, CreateTableMssql) {
     EXPECT_TRUE(result.params.empty());
 }
 
+TEST(SqlGeneratorTest, SelectDistinct) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    auto result = gen.generate_select("users", {"name", "age"}, std::nullopt, std::vector<expr::OrderByExpr>{}, std::nullopt, std::nullopt, true);
+    EXPECT_EQ(result.sql, "SELECT DISTINCT \"name\", \"age\" FROM \"users\"");
+}
+
+TEST(SqlGeneratorTest, WhereBetween) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle age("users", "age");
+    auto result = gen.generate_select("users", {"id"}, age.between(20, 30).node);
+    EXPECT_EQ(result.sql, "SELECT \"id\" FROM \"users\" WHERE (\"users\".\"age\" BETWEEN ? AND ?)");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(result.params[0]), 20);
+    EXPECT_EQ(std::get<int64_t>(result.params[1]), 30);
+}
+
+TEST(SqlGeneratorTest, WhereLikeAndInList) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle name("users", "name");
+    ColumnHandle age("users", "age");
+    auto expr = name.like("A%") && age.in_list({20, 25, 30});
+    auto result = gen.generate_select("users", {"id"}, expr.node);
+    EXPECT_EQ(result.sql, "SELECT \"id\" FROM \"users\" WHERE ((\"users\".\"name\" LIKE ?) AND (\"users\".\"age\" IN (?, ?, ?)))");
+    ASSERT_EQ(result.params.size(), 4);
+    EXPECT_EQ(std::get<std::string>(result.params[0]), "A%");
+    EXPECT_EQ(std::get<int64_t>(result.params[1]), 20);
+    EXPECT_EQ(std::get<int64_t>(result.params[2]), 25);
+    EXPECT_EQ(std::get<int64_t>(result.params[3]), 30);
+}
+
+TEST(SqlGeneratorTest, MultiColumnOrderBy) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle dept("users", "dept");
+    ColumnHandle salary("users", "salary");
+    std::vector<std::pair<expr::ExprNode, expr::SortDir>> order_by = {
+        {dept.ref, expr::SortDir::Asc},
+        {salary.ref, expr::SortDir::Desc}
+    };
+    auto result = gen.generate_select("users", {"id"}, std::nullopt, order_by);
+    EXPECT_EQ(result.sql, "SELECT \"id\" FROM \"users\" ORDER BY \"users\".\"dept\" ASC, \"users\".\"salary\" DESC");
+}
+

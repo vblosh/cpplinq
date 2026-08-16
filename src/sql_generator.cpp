@@ -78,6 +78,29 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
                     return visit(item->operand, params) + " IS NOT NULL";
             }
             return "";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::BetweenExpr>>) {
+            if (!item) return "";
+            std::string expr_str = visit(item->expr, params);
+            std::string low_str = visit(item->low, params);
+            std::string high_str = visit(item->high, params);
+            return "(" + expr_str + (item->is_not ? " NOT BETWEEN " : " BETWEEN ") + low_str + " AND " + high_str + ")";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::LikeExpr>>) {
+            if (!item) return "";
+            std::string expr_str = visit(item->expr, params);
+            std::string pat_str = visit(item->pattern, params);
+            return "(" + expr_str + (item->is_not ? " NOT LIKE " : " LIKE ") + pat_str + ")";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::InListExpr>>) {
+            if (!item) return "";
+            std::string expr_str = visit(item->expr, params);
+            if (item->values.empty()) {
+                return item->is_not ? "(1 = 1)" : "(1 = 0)";
+            }
+            std::string list_str;
+            for (size_t i = 0; i < item->values.size(); ++i) {
+                if (i > 0) list_str += ", ";
+                list_str += visit(item->values[i], params);
+            }
+            return "(" + expr_str + (item->is_not ? " NOT IN (" : " IN (") + list_str + "))";
         }
         return "";
 
@@ -90,12 +113,13 @@ GeneratedSql SqlGenerator::generate_select(
     const std::optional<expr::ExprNode>& where,
     const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by,
     std::optional<size_t> limit,
-    std::optional<size_t> offset
+    std::optional<size_t> offset,
+    bool is_distinct
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
 
-    std::string sql = "SELECT ";
+    std::string sql = is_distinct ? "SELECT DISTINCT " : "SELECT ";
     if (columns.empty()) {
         sql += "*";
     } else {
@@ -140,14 +164,15 @@ GeneratedSql SqlGenerator::generate_select(
     const std::optional<expr::ExprNode>& where,
     const std::vector<expr::OrderByExpr>& order_by,
     std::optional<size_t> limit,
-    std::optional<size_t> offset
+    std::optional<size_t> offset,
+    bool is_distinct
 ) const {
     std::vector<std::pair<expr::ExprNode, expr::SortDir>> pairs;
     pairs.reserve(order_by.size());
     for (const auto& item : order_by) {
         pairs.emplace_back(item.expr, item.direction);
     }
-    return generate_select(table_name, columns, where, pairs, limit, offset);
+    return generate_select(table_name, columns, where, pairs, limit, offset, is_distinct);
 }
 
 GeneratedSql SqlGenerator::generate_insert(

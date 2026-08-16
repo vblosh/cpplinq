@@ -44,7 +44,8 @@ public:
         const std::optional<expr::ExprNode>& where = std::nullopt,
         const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
         std::optional<size_t> limit = std::nullopt,
-        std::optional<size_t> offset = std::nullopt
+        std::optional<size_t> offset = std::nullopt,
+        bool is_distinct = false
     ) const;
 
     GeneratedSql generate_select(
@@ -53,7 +54,8 @@ public:
         const std::optional<expr::ExprNode>& where,
         const std::vector<expr::OrderByExpr>& order_by,
         std::optional<size_t> limit = std::nullopt,
-        std::optional<size_t> offset = std::nullopt
+        std::optional<size_t> offset = std::nullopt,
+        bool is_distinct = false
     ) const;
 
     // INSERT queries

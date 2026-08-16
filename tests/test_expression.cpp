@@ -369,3 +369,44 @@ TEST(ExpressionTest, OrderByDesc) {
     ASSERT_NE(ref, nullptr);
     EXPECT_EQ(ref->column_name, "score");
 }
+
+TEST(ExpressionTest, BetweenAndNotBetween) {
+    ColumnHandle col("users", "age");
+    Expr b = col.between(18, 65);
+    auto* between_ptr = std::get_if<std::shared_ptr<BetweenExpr>>(&b.node);
+    ASSERT_NE(between_ptr, nullptr);
+    EXPECT_FALSE((*between_ptr)->is_not);
+
+    Expr nb = col.not_between(18, 65);
+    auto* not_between_ptr = std::get_if<std::shared_ptr<BetweenExpr>>(&nb.node);
+    ASSERT_NE(not_between_ptr, nullptr);
+    EXPECT_TRUE((*not_between_ptr)->is_not);
+}
+
+TEST(ExpressionTest, LikeAndNotLike) {
+    ColumnHandle col("users", "name");
+    Expr l = col.like("Alice%");
+    auto* like_ptr = std::get_if<std::shared_ptr<LikeExpr>>(&l.node);
+    ASSERT_NE(like_ptr, nullptr);
+    EXPECT_FALSE((*like_ptr)->is_not);
+
+    Expr nl = col.not_like("%Bob%");
+    auto* not_like_ptr = std::get_if<std::shared_ptr<LikeExpr>>(&nl.node);
+    ASSERT_NE(not_like_ptr, nullptr);
+    EXPECT_TRUE((*not_like_ptr)->is_not);
+}
+
+TEST(ExpressionTest, InListAndNotInList) {
+    ColumnHandle col("users", "id");
+    Expr in_expr = col.in_list({1, 2, 3});
+    auto* in_ptr = std::get_if<std::shared_ptr<InListExpr>>(&in_expr.node);
+    ASSERT_NE(in_ptr, nullptr);
+    EXPECT_FALSE((*in_ptr)->is_not);
+    EXPECT_EQ((*in_ptr)->values.size(), 3);
+
+    Expr not_in_expr = col.not_in_list({4, 5});
+    auto* not_in_ptr = std::get_if<std::shared_ptr<InListExpr>>(&not_in_expr.node);
+    ASSERT_NE(not_in_ptr, nullptr);
+    EXPECT_TRUE((*not_in_ptr)->is_not);
+    EXPECT_EQ((*not_in_ptr)->values.size(), 2);
+}
