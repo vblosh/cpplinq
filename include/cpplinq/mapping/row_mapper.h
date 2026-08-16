@@ -14,7 +14,8 @@ namespace cpplinq {
 template <typename Entity, typename... ColumnDefs>
 class RowMapper {
 public:
-    explicit RowMapper(const std::tuple<ColumnDefs...>& columns) : columns_(columns) {}
+    explicit RowMapper(const std::tuple<ColumnDefs...>& columns, int offset = 0)
+        : columns_(columns), offset_(offset) {}
 
     Entity map_row(IDataReader& reader) const {
         Entity entity{};
@@ -22,8 +23,18 @@ public:
         return entity;
     }
 
+    bool is_all_null(IDataReader& reader) const {
+        return check_all_null(reader, std::index_sequence_for<ColumnDefs...>{});
+    }
+
 private:
     const std::tuple<ColumnDefs...>& columns_;
+    int offset_ = 0;
+
+    template <size_t... Is>
+    bool check_all_null(IDataReader& reader, std::index_sequence<Is...>) const {
+        return (reader.is_null(static_cast<int>(Is) + offset_) && ...);
+    }
 
     template <size_t... Is>
     void map_columns(Entity& entity, IDataReader& reader, std::index_sequence<Is...>) const {
@@ -34,7 +45,7 @@ private:
     void map_single_column(Entity& entity, IDataReader& reader) const {
         const auto& col = std::get<I>(columns_);
         using FieldType = std::remove_cvref_t<decltype(entity.*(col.member_ptr))>;
-        int col_idx = static_cast<int>(I);
+        int col_idx = static_cast<int>(I) + offset_;
 
         if (reader.is_null(col_idx)) {
             if constexpr (is_nullable_v<FieldType>) {

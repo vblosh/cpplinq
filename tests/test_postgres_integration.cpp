@@ -17,6 +17,14 @@ struct User {
     bool operator==(const User& other) const = default;
 };
 
+struct Order {
+    int id = 0;
+    int user_id = 0;
+    double amount = 0.0;
+
+    bool operator==(const Order& other) const = default;
+};
+
 // Define table schema for PostgreSQL
 inline const auto users_table = table<User>(
     "test_users",
@@ -24,6 +32,13 @@ inline const auto users_table = table<User>(
     column("name", &User::name, not_null),
     column("email", &User::email),
     column("age", &User::age, not_null)
+);
+
+inline const auto orders_table = table<Order>(
+    "test_orders",
+    column("id", &Order::id, primary_key, auto_increment),
+    column("user_id", &Order::user_id, not_null),
+    column("amount", &Order::amount, not_null)
 );
 
 } // namespace
@@ -51,10 +66,12 @@ protected:
             
             // Clean up table if exists from prior test runs
             try {
+                db->execute_raw("DROP TABLE IF EXISTS \"test_orders\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_users\"");
             } catch (...) {}
             
             db->ensure_table(users_table);
+            db->ensure_table(orders_table);
         } catch (const std::exception& e) {
             GTEST_SKIP() << "Failed to connect to PostgreSQL using CPPLINQ_POSTGRES_ODBC (" << conn_str_ << "): " << e.what();
         }
@@ -63,6 +80,7 @@ protected:
     void TearDown() override {
         if (db) {
             try {
+                db->execute_raw("DROP TABLE IF EXISTS \"test_orders\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_users\"");
             } catch (...) {}
         }
@@ -370,4 +388,43 @@ TEST_F(PostgresIntegrationTest, GroupByAndCountDistinct) {
     ASSERT_EQ(grouped.size(), 2);
     EXPECT_EQ(grouped[0].age, 30);
     EXPECT_EQ(grouped[1].age, 30);
+}
+
+TEST_F(PostgresIntegrationTest, InnerJoinAndLeftJoin) {
+    int64_t u1_id = db->insert(users_table, User{0, "Alice", "alice@example.com", 30});
+    int64_t u2_id = db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+
+    db->insert(orders_table, Order{0, static_cast<int>(u1_id), 99.5});
+    db->insert(orders_table, Order{0, static_cast<int>(u1_id), 150.0});
+
+    // Inner Join: Alice has 2 orders, Bob has 0
+    auto inner_rows = db->from(users_table)
+                        .join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                        .order_by(orders_table["amount"])
+                        .to_vector();
+
+    ASSERT_EQ(inner_rows.size(), 2);
+    EXPECT_EQ(inner_rows[0].first.name, "Alice");
+    EXPECT_DOUBLE_EQ(inner_rows[0].second.amount, 99.5);
+    EXPECT_EQ(inner_rows[1].first.name, "Alice");
+    EXPECT_DOUBLE_EQ(inner_rows[1].second.amount, 150.0);
+
+    // Left Join: Alice has 2 orders, Bob has 0 (nullopt)
+    auto left_rows = db->from(users_table)
+                       .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                       .order_by(users_table["id"])
+                       .then_by(orders_table["amount"])
+                       .to_vector();
+
+    ASSERT_EQ(left_rows.size(), 3);
+    EXPECT_EQ(left_rows[0].first.name, "Alice");
+    ASSERT_TRUE(left_rows[0].second.has_value());
+    EXPECT_DOUBLE_EQ(left_rows[0].second->amount, 99.5);
+
+    EXPECT_EQ(left_rows[1].first.name, "Alice");
+    ASSERT_TRUE(left_rows[1].second.has_value());
+    EXPECT_DOUBLE_EQ(left_rows[1].second->amount, 150.0);
+
+    EXPECT_EQ(left_rows[2].first.name, "Bob");
+    EXPECT_FALSE(left_rows[2].second.has_value());
 }

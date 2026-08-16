@@ -22,6 +22,13 @@ struct GeneratedSql {
     bool operator==(const GeneratedSql& other) const = default;
 };
 
+// Join clause metadata
+struct JoinClause {
+    std::string join_type; // "INNER JOIN", "LEFT JOIN", etc.
+    std::string table_name;
+    expr::ExprNode on_condition;
+};
+
 // Column metadata for schema generation (e.g. CREATE TABLE)
 struct ColumnInfo {
     std::string name;
@@ -60,6 +67,19 @@ public:
         bool is_distinct = false,
         const std::vector<expr::ExprNode>& group_by = {},
         const std::optional<expr::ExprNode>& having = std::nullopt
+    ) const;
+
+    // Joined SELECT queries
+    GeneratedSql generate_joined_select(
+        std::string_view primary_table,
+        const std::vector<std::string>& primary_columns,
+        const std::vector<JoinClause>& joins,
+        const std::vector<std::pair<std::string, std::vector<std::string>>>& joined_tables_columns,
+        const std::optional<expr::ExprNode>& where = std::nullopt,
+        const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
+        std::optional<size_t> limit = std::nullopt,
+        std::optional<size_t> offset = std::nullopt,
+        bool is_distinct = false
     ) const;
 
     // INSERT queries

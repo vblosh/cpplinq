@@ -627,3 +627,28 @@ TEST(SqlGeneratorTest, CountDistinct) {
     EXPECT_TRUE(result.params.empty());
 }
 
+TEST(SqlGeneratorTest, JoinedSelectInnerAndLeft) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle u_id("users", "id");
+    ColumnHandle o_uid("orders", "user_id");
+
+    JoinClause inner_jc{"INNER JOIN", "orders", (u_id == o_uid).node};
+    auto inner_res = gen.generate_joined_select(
+        "users", {"id", "name"},
+        {inner_jc},
+        {{"orders", {"id", "amount"}}}
+    );
+
+    EXPECT_EQ(inner_res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\" FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")");
+
+    JoinClause left_jc{"LEFT JOIN", "orders", (u_id == o_uid).node};
+    auto left_res = gen.generate_joined_select(
+        "users", {"id", "name"},
+        {left_jc},
+        {{"orders", {"id", "amount"}}}
+    );
+
+    EXPECT_EQ(left_res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\" FROM \"users\" LEFT JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")");
+}
+
