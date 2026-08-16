@@ -38,22 +38,38 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Password123!"
+          MSSQL_PID: "Developer"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Install ODBC drivers and test dependencies
         run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo ACCEPT_EULA=Y apt-get install --no-install-recommends -y \
             libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev
+            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev \
+            msodbcsql18
       - name: Configure integration connection strings
         run: |
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPLINQ_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb.sqlite;" >> "$GITHUB_ENV"
           echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
-          echo 'CPPDB_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MYSQL=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
       - name: Build
         run: cmake --build build --parallel
       - name: Test
@@ -90,21 +106,37 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Password123!"
+          MSSQL_PID: "Developer"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Install ODBC drivers and test dependencies
         run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo ACCEPT_EULA=Y apt-get install --no-install-recommends -y \
             libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev
+            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev \
+            msodbcsql18
       - name: Configure integration connection strings
         run: |
           echo 'CPPDB_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPDB_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb-sanitized.sqlite;" >> "$GITHUB_ENV"
           echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
-          echo 'CPPDB_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
       - name: Configure with sanitizers
         run: >-
           cmake -S . -B build-sanitized -G Ninja
@@ -113,6 +145,7 @@ jobs:
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           -DCPPLINQ_ENABLE_SQLITE=ON
           -DCPPLINQ_ENABLE_POSTGRES=ON
+          -DCPPLINQ_ENABLE_MSSQL=ON
           -DCPPLINQ_ENABLE_MYSQL=ON
       - name: Build
         run: cmake --build build-sanitized --parallel
@@ -124,11 +157,17 @@ jobs:
 
   windows:
     name: Windows (unit and compile coverage)
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Start SQL Server LocalDB
+        run: |
+          sqllocaldb create MSSQLLocalDB
+          sqllocaldb start MSSQLLocalDB
+          sqllocaldb info MSSQLLocalDB
+          echo "CPPLINQ_MSSQL_ODBC=MSSQLLocalDB" >> $env:GITHUB_ENV
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
+        run: cmake -S . -B build -A x64 -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
