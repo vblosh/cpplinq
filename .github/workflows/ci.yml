@@ -24,6 +24,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_password
+          MYSQL_DATABASE: cppdb
+          MYSQL_USER: cppdb
+          MYSQL_PASSWORD: cppdb_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -u root -proot_password"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Install ODBC drivers and test dependencies
@@ -31,11 +45,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb postgresql-client unixodbc-dev
+            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev
       - name: Configure integration connection strings
         run: |
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPLINQ_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb.sqlite;" >> "$GITHUB_ENV"
+          echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPDB_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MYSQL=ON
       - name: Build
@@ -60,6 +76,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_password
+          MYSQL_DATABASE: cppdb
+          MYSQL_USER: cppdb
+          MYSQL_PASSWORD: cppdb_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -u root -proot_password"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Install ODBC drivers and test dependencies
@@ -67,12 +97,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb postgresql-client unixodbc-dev
+            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev
       - name: Configure integration connection strings
         run: |
           echo 'CPPDB_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPDB_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb-sanitized.sqlite;" >> "$GITHUB_ENV"
+          echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPDB_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
       - name: Configure with sanitizers
         run: >-
           cmake -S . -B build-sanitized -G Ninja
