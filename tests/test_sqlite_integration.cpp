@@ -71,6 +71,23 @@ inline const auto events_table = table<Event>(
     column("event_date", &Event::event_date)
 );
 
+struct Employee {
+    int id = 0;
+    std::string name;
+    std::string department;
+    int salary = 0;
+
+    bool operator==(const Employee& other) const = default;
+};
+
+inline const auto employees_table = table<Employee>(
+    "employees",
+    column("id", &Employee::id, primary_key, auto_increment),
+    column("name", &Employee::name),
+    column("department", &Employee::department),
+    column("salary", &Employee::salary)
+);
+
 } // namespace
 
 // ============================================================================
@@ -85,6 +102,7 @@ protected:
         db->ensure_table(orders_table);
         db->ensure_table(accounts_table);
         db->ensure_table(events_table);
+        db->ensure_table(employees_table);
     }
 
     std::unique_ptr<DbContext<sqlite>> db;
@@ -509,4 +527,28 @@ TEST_F(SqliteIntegrationTest, DateTimeFunctions) {
                           .to_vector();
     ASSERT_EQ(day10_events.size(), 1);
     EXPECT_EQ(day10_events[0].name, "WinterParty");
+}
+
+TEST_F(SqliteIntegrationTest, WindowFunctions) {
+    db->insert(employees_table, Employee{0, "Alice", "Engineering", 120000});
+    db->insert(employees_table, Employee{0, "Bob", "Engineering", 110000});
+    db->insert(employees_table, Employee{0, "Charlie", "HR", 80000});
+    db->insert(employees_table, Employee{0, "Dave", "HR", 90000});
+
+    // Execute raw window function query and verify
+    auto prep = db->connection().prepare("SELECT name, department, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as rn FROM employees ORDER BY department, rn;");
+    auto reader = prep->execute_query();
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(0), "Alice");
+    EXPECT_EQ(reader->get_int64(3), 1LL);
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(0), "Bob");
+    EXPECT_EQ(reader->get_int64(3), 2LL);
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(0), "Dave");
+    EXPECT_EQ(reader->get_int64(3), 1LL);
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(0), "Charlie");
+    EXPECT_EQ(reader->get_int64(3), 2LL);
+    EXPECT_FALSE(reader->next());
 }

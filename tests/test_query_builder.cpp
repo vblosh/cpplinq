@@ -813,3 +813,28 @@ TEST(SqlGeneratorTest, DateTimeFunctionsMssql) {
     ASSERT_EQ(res.params.size(), 3);
 }
 
+TEST(SqlGeneratorTest, WindowFunctionGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle dept("employees", "department");
+    ColumnHandle salary("employees", "salary");
+
+    // ROW_NUMBER() OVER (PARTITION BY "employees"."department" ORDER BY "employees"."salary" DESC)
+    auto rn = row_number().over().partition_by(dept).order_by(salary.desc());
+    auto rn_res = gen.generate_expression(Expr(rn).node);
+
+    EXPECT_EQ(rn_res.sql, "ROW_NUMBER() OVER (PARTITION BY \"employees\".\"department\" ORDER BY \"employees\".\"salary\" DESC)");
+    EXPECT_TRUE(rn_res.params.empty());
+
+    // DENSE_RANK() OVER (ORDER BY "employees"."salary" DESC)
+    auto dr = dense_rank().over().order_by(salary.desc());
+    auto dr_res = gen.generate_expression(Expr(dr).node);
+    EXPECT_EQ(dr_res.sql, "DENSE_RANK() OVER (ORDER BY \"employees\".\"salary\" DESC)");
+
+    // SUM("employees"."salary") OVER (PARTITION BY "employees"."department")
+    auto sum_w = sum_over(salary).over().partition_by(dept);
+    auto sum_res = gen.generate_expression(Expr(sum_w).node);
+    EXPECT_EQ(sum_res.sql, "SUM(\"employees\".\"salary\") OVER (PARTITION BY \"employees\".\"department\")");
+}
+

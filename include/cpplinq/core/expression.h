@@ -58,6 +58,7 @@ struct ExistsExpr;
 struct InSubqueryExpr;
 struct ExtractExpr;
 struct DateAddExpr;
+struct WindowExpr;
 struct CurrentTimestampExpr;
 struct CurrentDateExpr;
 
@@ -65,6 +66,17 @@ enum class DatePart {
     Year,
     Month,
     Day
+};
+
+enum class WindowFunctionType {
+    RowNumber,
+    Rank,
+    DenseRank,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Count
 };
 
 // Column reference node
@@ -107,9 +119,34 @@ using ExprNode = std::variant<
     std::shared_ptr<InSubqueryExpr>,
     std::shared_ptr<ExtractExpr>,
     std::shared_ptr<DateAddExpr>,
+    std::shared_ptr<WindowExpr>,
     CurrentTimestampExpr,
     CurrentDateExpr
 >;
+
+// Order-by expression
+struct OrderByExpr {
+    ExprNode expr;
+    SortDir direction = SortDir::Asc;
+
+    OrderByExpr(ExprNode e, SortDir dir = SortDir::Asc)
+        : expr(std::move(e)), direction(dir) {}
+};
+
+// Window expression AST node: FUNC(...) OVER (PARTITION BY ... ORDER BY ...)
+struct WindowExpr {
+    WindowFunctionType func;
+    std::optional<ExprNode> arg;
+    std::vector<ExprNode> partition_clauses;
+    std::vector<OrderByExpr> order_clauses;
+
+    WindowExpr(
+        WindowFunctionType f,
+        std::optional<ExprNode> a = std::nullopt,
+        std::vector<ExprNode> part = {},
+        std::vector<OrderByExpr> ord = {}
+    ) : func(f), arg(std::move(a)), partition_clauses(std::move(part)), order_clauses(std::move(ord)) {}
+};
 
 // Extract date part expression AST node: EXTRACT(YEAR/MONTH/DAY FROM expr)
 struct ExtractExpr {
@@ -404,6 +441,14 @@ public:
     Expr add_days(const Expr& days) const {
         return Expr(std::make_shared<DateAddExpr>(node, days.node));
     }
+
+    OrderByExpr asc() const {
+        return OrderByExpr(node, SortDir::Asc);
+    }
+
+    OrderByExpr desc() const {
+        return OrderByExpr(node, SortDir::Desc);
+    }
 };
 
 // ColumnHandle class representing a table column in expressions
@@ -536,6 +581,14 @@ public:
     Expr add_days(const Expr& days) const {
         return Expr(ref).add_days(days);
     }
+
+    OrderByExpr asc() const {
+        return Expr(ref).asc();
+    }
+
+    OrderByExpr desc() const {
+        return Expr(ref).desc();
+    }
 };
 
 // Comparison operators (==, !=, <, <=, >, >=)
@@ -650,18 +703,77 @@ inline Expr date_add_days(const Expr& e, const Expr& days) {
     return e.add_days(days);
 }
 
-// Order-by expression and helpers
-struct OrderByExpr {
-    ExprNode expr;
-    SortDir direction = SortDir::Asc;
-};
-
 inline OrderByExpr asc(const Expr& e) {
     return OrderByExpr{e.node, SortDir::Asc};
 }
 
 inline OrderByExpr desc(const Expr& e) {
     return OrderByExpr{e.node, SortDir::Desc};
+}
+
+// Window builder for fluent window function definitions
+struct WindowBuilder {
+    WindowFunctionType func;
+    std::optional<ExprNode> arg;
+    std::vector<ExprNode> partition_clauses;
+    std::vector<OrderByExpr> order_clauses;
+
+    WindowBuilder(WindowFunctionType f, std::optional<ExprNode> a = std::nullopt)
+        : func(f), arg(std::move(a)) {}
+
+    WindowBuilder& over() {
+        return *this;
+    }
+
+    WindowBuilder& partition_by(const Expr& e) {
+        partition_clauses.push_back(e.node);
+        return *this;
+    }
+
+    template <typename... More>
+    WindowBuilder& partition_by(const Expr& e, const More&... more) {
+        partition_clauses.push_back(e.node);
+        (partition_clauses.push_back(Expr(more).node), ...);
+        return *this;
+    }
+
+    WindowBuilder& order_by(const OrderByExpr& o) {
+        order_clauses.push_back(o);
+        return *this;
+    }
+
+    WindowBuilder& order_by(const Expr& e, SortDir dir = SortDir::Asc) {
+        order_clauses.push_back(OrderByExpr{e.node, dir});
+        return *this;
+    }
+
+    operator Expr() const {
+        return Expr(std::make_shared<WindowExpr>(func, arg, partition_clauses, order_clauses));
+    }
+};
+
+inline WindowBuilder row_number() {
+    return WindowBuilder(WindowFunctionType::RowNumber);
+}
+
+inline WindowBuilder rank() {
+    return WindowBuilder(WindowFunctionType::Rank);
+}
+
+inline WindowBuilder dense_rank() {
+    return WindowBuilder(WindowFunctionType::DenseRank);
+}
+
+inline WindowBuilder sum_over(const Expr& e) {
+    return WindowBuilder(WindowFunctionType::Sum, e.node);
+}
+
+inline WindowBuilder avg_over(const Expr& e) {
+    return WindowBuilder(WindowFunctionType::Avg, e.node);
+}
+
+inline WindowBuilder count_over(const Expr& e = 1) {
+    return WindowBuilder(WindowFunctionType::Count, e.node);
 }
 
 } // namespace expr
@@ -686,6 +798,9 @@ using expr::ExistsExpr;
 using expr::InSubqueryExpr;
 using expr::ExtractExpr;
 using expr::DateAddExpr;
+using expr::WindowExpr;
+using expr::WindowFunctionType;
+using expr::WindowBuilder;
 using expr::CurrentTimestampExpr;
 using expr::CurrentDateExpr;
 using expr::DatePart;
@@ -712,6 +827,12 @@ using expr::extract_year;
 using expr::extract_month;
 using expr::extract_day;
 using expr::date_add_days;
+using expr::row_number;
+using expr::rank;
+using expr::dense_rank;
+using expr::sum_over;
+using expr::avg_over;
+using expr::count_over;
 using expr::asc;
 using expr::desc;
 

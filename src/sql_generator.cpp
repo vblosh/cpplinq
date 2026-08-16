@@ -185,6 +185,40 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
             return dialect_.current_timestamp_func();
         } else if constexpr (std::is_same_v<T, expr::CurrentDateExpr>) {
             return dialect_.current_date_func();
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::WindowExpr>>) {
+            if (!item) return "";
+            std::string sql;
+            switch (item->func) {
+                case expr::WindowFunctionType::RowNumber: sql = "ROW_NUMBER()"; break;
+                case expr::WindowFunctionType::Rank:      sql = "RANK()"; break;
+                case expr::WindowFunctionType::DenseRank:  sql = "DENSE_RANK()"; break;
+                case expr::WindowFunctionType::Sum:       sql = "SUM(" + (item->arg ? visit(*item->arg, params) : "") + ")"; break;
+                case expr::WindowFunctionType::Avg:       sql = "AVG(" + (item->arg ? visit(*item->arg, params) : "") + ")"; break;
+                case expr::WindowFunctionType::Min:       sql = "MIN(" + (item->arg ? visit(*item->arg, params) : "") + ")"; break;
+                case expr::WindowFunctionType::Max:       sql = "MAX(" + (item->arg ? visit(*item->arg, params) : "") + ")"; break;
+                case expr::WindowFunctionType::Count:     sql = "COUNT(" + (item->arg ? visit(*item->arg, params) : "*") + ")"; break;
+            }
+            sql += " OVER (";
+            bool has_clause = false;
+            if (!item->partition_clauses.empty()) {
+                sql += "PARTITION BY ";
+                for (size_t i = 0; i < item->partition_clauses.size(); ++i) {
+                    if (i > 0) sql += ", ";
+                    sql += visit(item->partition_clauses[i], params);
+                }
+                has_clause = true;
+            }
+            if (!item->order_clauses.empty()) {
+                if (has_clause) sql += " ";
+                sql += "ORDER BY ";
+                for (size_t i = 0; i < item->order_clauses.size(); ++i) {
+                    if (i > 0) sql += ", ";
+                    sql += visit(item->order_clauses[i].expr, params);
+                    sql += (item->order_clauses[i].direction == expr::SortDir::Asc ? " ASC" : " DESC");
+                }
+            }
+            sql += ")";
+            return sql;
         }
         return "";
 
@@ -678,6 +712,13 @@ GeneratedSql SqlGenerator::generate_aggregate(
     }
 
     result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_expression(const expr::ExprNode& node) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+    result.sql = visit(node, result.params);
     return result;
 }
 

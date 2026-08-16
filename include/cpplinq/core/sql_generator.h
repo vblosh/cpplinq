@@ -183,6 +183,8 @@ public:
         const std::optional<expr::ExprNode>& where = std::nullopt
     ) const;
 
+    GeneratedSql generate_expression(const expr::ExprNode& node) const;
+
 private:
     std::string visit(const expr::ExprNode& node, std::vector<BoundValue>& params) const;
 
