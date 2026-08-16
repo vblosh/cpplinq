@@ -166,6 +166,25 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
             }
             sql += "))";
             return sql;
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::ExtractExpr>>) {
+            if (!item) return "";
+            std::string part_str;
+            switch (item->part) {
+                case expr::DatePart::Year:  part_str = "YEAR"; break;
+                case expr::DatePart::Month: part_str = "MONTH"; break;
+                case expr::DatePart::Day:   part_str = "DAY"; break;
+            }
+            std::string expr_str = visit(item->expr, params);
+            return dialect_.extract_part_func(part_str, expr_str);
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::DateAddExpr>>) {
+            if (!item) return "";
+            std::string expr_str = visit(item->expr, params);
+            std::string days_str = visit(item->days, params);
+            return dialect_.date_add_days_func(expr_str, days_str);
+        } else if constexpr (std::is_same_v<T, expr::CurrentTimestampExpr>) {
+            return dialect_.current_timestamp_func();
+        } else if constexpr (std::is_same_v<T, expr::CurrentDateExpr>) {
+            return dialect_.current_date_func();
         }
         return "";
 

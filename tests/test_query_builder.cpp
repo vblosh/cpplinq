@@ -48,6 +48,17 @@ public:
     std::string returning_clause(std::string_view column) const override {
         return " RETURNING \"" + std::string(column) + "\"";
     }
+
+    std::string extract_part_func(std::string_view part, std::string_view expr_sql) const override {
+        if (part == "YEAR") return "CAST(strftime('%Y', " + std::string(expr_sql) + ") AS INTEGER)";
+        if (part == "MONTH") return "CAST(strftime('%m', " + std::string(expr_sql) + ") AS INTEGER)";
+        if (part == "DAY") return "CAST(strftime('%d', " + std::string(expr_sql) + ") AS INTEGER)";
+        return "strftime('" + std::string(part) + "', " + std::string(expr_sql) + ")";
+    }
+
+    std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const override {
+        return "date(" + std::string(expr_sql) + ", '+' || (" + std::string(days_sql) + ") || ' days')";
+    }
 };
 
 class MockPostgresDialect : public ISqlDialect {
@@ -188,6 +199,21 @@ public:
         }
         sql += ");";
         return sql;
+    }
+
+    std::string current_date_func() const override {
+        return "CAST(GETDATE() AS DATE)";
+    }
+
+    std::string extract_part_func(std::string_view part, std::string_view expr_sql) const override {
+        if (part == "YEAR") return "YEAR(" + std::string(expr_sql) + ")";
+        if (part == "MONTH") return "MONTH(" + std::string(expr_sql) + ")";
+        if (part == "DAY") return "DAY(" + std::string(expr_sql) + ")";
+        return "DATEPART(" + std::string(part) + ", " + std::string(expr_sql) + ")";
+    }
+
+    std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const override {
+        return "DATEADD(day, " + std::string(days_sql) + ", " + std::string(expr_sql) + ")";
     }
 };
 
@@ -763,5 +789,27 @@ TEST(SqlGeneratorTest, SubqueryGeneration) {
     EXPECT_EQ(in_res.sql, "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" IN (SELECT \"user_id\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)))");
     ASSERT_EQ(in_res.params.size(), 1);
     EXPECT_DOUBLE_EQ(std::get<double>(in_res.params[0]), 50.0);
+}
+
+TEST(SqlGeneratorTest, DateTimeFunctionsSqlite) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle created_at("users", "created_at");
+
+    auto res = gen.generate_select("users", {"id"}, (created_at.year() == 2026 && created_at.month() == 8 && created_at.day() == 16).node);
+    EXPECT_EQ(res.sql, "SELECT \"id\" FROM \"users\" WHERE (((CAST(strftime('%Y', \"users\".\"created_at\") AS INTEGER) = ?) AND (CAST(strftime('%m', \"users\".\"created_at\") AS INTEGER) = ?)) AND (CAST(strftime('%d', \"users\".\"created_at\") AS INTEGER) = ?))");
+    ASSERT_EQ(res.params.size(), 3);
+}
+
+TEST(SqlGeneratorTest, DateTimeFunctionsMssql) {
+    MockMssqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle created_at("users", "created_at");
+
+    auto res = gen.generate_select("users", {"id"}, (created_at.year() == 2026 && created_at.month() == 8 && created_at.day() == 16).node);
+    EXPECT_EQ(res.sql, "SELECT [id] FROM [users] WHERE (((YEAR([users].[created_at]) = ?) AND (MONTH([users].[created_at]) = ?)) AND (DAY([users].[created_at]) = ?))");
+    ASSERT_EQ(res.params.size(), 3);
 }
 

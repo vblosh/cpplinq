@@ -56,6 +56,16 @@ struct FunctionExpr;
 struct SubqueryExpr;
 struct ExistsExpr;
 struct InSubqueryExpr;
+struct ExtractExpr;
+struct DateAddExpr;
+struct CurrentTimestampExpr;
+struct CurrentDateExpr;
+
+enum class DatePart {
+    Year,
+    Month,
+    Day
+};
 
 // Column reference node
 struct ColumnRef {
@@ -78,6 +88,9 @@ struct Literal {
     Literal(SqlValue val) : value(std::move(val)) {}
 };
 
+struct CurrentTimestampExpr {};
+struct CurrentDateExpr {};
+
 // Expression AST node variant
 using ExprNode = std::variant<
     ColumnRef,
@@ -91,8 +104,28 @@ using ExprNode = std::variant<
     std::shared_ptr<FunctionExpr>,
     std::shared_ptr<SubqueryExpr>,
     std::shared_ptr<ExistsExpr>,
-    std::shared_ptr<InSubqueryExpr>
+    std::shared_ptr<InSubqueryExpr>,
+    std::shared_ptr<ExtractExpr>,
+    std::shared_ptr<DateAddExpr>,
+    CurrentTimestampExpr,
+    CurrentDateExpr
 >;
+
+// Extract date part expression AST node: EXTRACT(YEAR/MONTH/DAY FROM expr)
+struct ExtractExpr {
+    DatePart part;
+    ExprNode expr;
+
+    ExtractExpr(DatePart p, ExprNode e) : part(p), expr(std::move(e)) {}
+};
+
+// Date add days expression AST node: date_add(expr, days)
+struct DateAddExpr {
+    ExprNode expr;
+    ExprNode days;
+
+    DateAddExpr(ExprNode e, ExprNode d) : expr(std::move(e)), days(std::move(d)) {}
+};
 
 // Subquery expression AST node: (SELECT col1, col2 FROM tbl WHERE ...)
 struct SubqueryExpr {
@@ -355,6 +388,22 @@ public:
     Expr not_in(SubqueryExpr sub) const {
         return Expr(std::make_shared<InSubqueryExpr>(node, std::move(sub), true));
     }
+
+    Expr year() const {
+        return Expr(std::make_shared<ExtractExpr>(DatePart::Year, node));
+    }
+
+    Expr month() const {
+        return Expr(std::make_shared<ExtractExpr>(DatePart::Month, node));
+    }
+
+    Expr day() const {
+        return Expr(std::make_shared<ExtractExpr>(DatePart::Day, node));
+    }
+
+    Expr add_days(const Expr& days) const {
+        return Expr(std::make_shared<DateAddExpr>(node, days.node));
+    }
 };
 
 // ColumnHandle class representing a table column in expressions
@@ -471,6 +520,22 @@ public:
     Expr coalesce(const Expr& fallback) const {
         return Expr(ref).coalesce(fallback);
     }
+
+    Expr year() const {
+        return Expr(ref).year();
+    }
+
+    Expr month() const {
+        return Expr(ref).month();
+    }
+
+    Expr day() const {
+        return Expr(ref).day();
+    }
+
+    Expr add_days(const Expr& days) const {
+        return Expr(ref).add_days(days);
+    }
 };
 
 // Comparison operators (==, !=, <, <=, >, >=)
@@ -561,6 +626,30 @@ inline Expr not_exists(SubqueryExpr sub) {
     return Expr(std::make_shared<ExistsExpr>(std::move(sub), true));
 }
 
+inline Expr current_timestamp_val() {
+    return Expr(CurrentTimestampExpr{});
+}
+
+inline Expr current_date_val() {
+    return Expr(CurrentDateExpr{});
+}
+
+inline Expr extract_year(const Expr& e) {
+    return e.year();
+}
+
+inline Expr extract_month(const Expr& e) {
+    return e.month();
+}
+
+inline Expr extract_day(const Expr& e) {
+    return e.day();
+}
+
+inline Expr date_add_days(const Expr& e, const Expr& days) {
+    return e.add_days(days);
+}
+
 // Order-by expression and helpers
 struct OrderByExpr {
     ExprNode expr;
@@ -595,6 +684,11 @@ using expr::FunctionExpr;
 using expr::SubqueryExpr;
 using expr::ExistsExpr;
 using expr::InSubqueryExpr;
+using expr::ExtractExpr;
+using expr::DateAddExpr;
+using expr::CurrentTimestampExpr;
+using expr::CurrentDateExpr;
+using expr::DatePart;
 using expr::ExprNode;
 using expr::AssignExpr;
 using expr::Expr;
@@ -612,6 +706,12 @@ using expr::round_val;
 using expr::coalesce;
 using expr::exists;
 using expr::not_exists;
+using expr::current_timestamp_val;
+using expr::current_date_val;
+using expr::extract_year;
+using expr::extract_month;
+using expr::extract_day;
+using expr::date_add_days;
 using expr::asc;
 using expr::desc;
 

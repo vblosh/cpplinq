@@ -42,4 +42,15 @@ std::string SqliteDialect::returning_clause(std::string_view column) const {
     return " RETURNING \"" + std::string(column) + "\"";
 }
 
+std::string SqliteDialect::extract_part_func(std::string_view part, std::string_view expr_sql) const {
+    if (part == "YEAR") return "CAST(strftime('%Y', " + std::string(expr_sql) + ") AS INTEGER)";
+    if (part == "MONTH") return "CAST(strftime('%m', " + std::string(expr_sql) + ") AS INTEGER)";
+    if (part == "DAY") return "CAST(strftime('%d', " + std::string(expr_sql) + ") AS INTEGER)";
+    return "strftime('" + std::string(part) + "', " + std::string(expr_sql) + ")";
+}
+
+std::string SqliteDialect::date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const {
+    return "date(" + std::string(expr_sql) + ", '+' || (" + std::string(days_sql) + ") || ' days')";
+}
+
 } // namespace cpplinq

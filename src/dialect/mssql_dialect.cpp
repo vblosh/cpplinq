@@ -106,4 +106,19 @@ std::string MssqlDialect::generate_upsert(
     return sql;
 }
 
+std::string MssqlDialect::current_date_func() const {
+    return "CAST(GETDATE() AS DATE)";
+}
+
+std::string MssqlDialect::extract_part_func(std::string_view part, std::string_view expr_sql) const {
+    if (part == "YEAR") return "YEAR(" + std::string(expr_sql) + ")";
+    if (part == "MONTH") return "MONTH(" + std::string(expr_sql) + ")";
+    if (part == "DAY") return "DAY(" + std::string(expr_sql) + ")";
+    return "DATEPART(" + std::string(part) + ", " + std::string(expr_sql) + ")";
+}
+
+std::string MssqlDialect::date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const {
+    return "DATEADD(day, " + std::string(days_sql) + ", " + std::string(expr_sql) + ")";
+}
+
 } // namespace cpplinq

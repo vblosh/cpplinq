@@ -46,6 +46,16 @@ public:
         return std::string(func);
     }
 
+    // Date/time functions
+    virtual std::string current_timestamp_func() const { return "CURRENT_TIMESTAMP"; }
+    virtual std::string current_date_func() const { return "CURRENT_DATE"; }
+    virtual std::string extract_part_func(std::string_view part, std::string_view expr_sql) const {
+        return "EXTRACT(" + std::string(part) + " FROM CAST(" + std::string(expr_sql) + " AS TIMESTAMP))";
+    }
+    virtual std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const {
+        return "(CAST(" + std::string(expr_sql) + " AS TIMESTAMP) + (" + std::string(days_sql) + " || ' days')::interval)";
+    }
+
     // UPSERT statement generation
     virtual std::string generate_upsert(
         std::string_view table_name,

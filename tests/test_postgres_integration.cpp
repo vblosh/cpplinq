@@ -56,6 +56,21 @@ inline const auto accounts_table = table<Account>(
     column("points", &Account::points)
 );
 
+struct Event {
+    int id = 0;
+    std::string name;
+    std::string event_date;
+
+    bool operator==(const Event& other) const = default;
+};
+
+inline const auto events_table = table<Event>(
+    "test_events",
+    column("id", &Event::id, primary_key, auto_increment),
+    column("name", &Event::name),
+    column("event_date", &Event::event_date)
+);
+
 } // namespace
 
 // ============================================================================
@@ -81,6 +96,7 @@ protected:
             
             // Clean up table if exists from prior test runs
             try {
+                db->execute_raw("DROP TABLE IF EXISTS \"test_events\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_accounts\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_orders\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_users\"");
@@ -89,6 +105,7 @@ protected:
             db->ensure_table(users_table);
             db->ensure_table(orders_table);
             db->ensure_table(accounts_table);
+            db->ensure_table(events_table);
         } catch (const std::exception& e) {
             GTEST_SKIP() << "Failed to connect to PostgreSQL using CPPLINQ_POSTGRES_ODBC (" << conn_str_ << "): " << e.what();
         }
@@ -97,6 +114,7 @@ protected:
     void TearDown() override {
         if (db) {
             try {
+                db->execute_raw("DROP TABLE IF EXISTS \"test_events\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_accounts\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_orders\"");
                 db->execute_raw("DROP TABLE IF EXISTS \"test_users\"");
@@ -537,4 +555,21 @@ TEST_F(PostgresIntegrationTest, SubqueriesExistsAndIn) {
                        .to_vector();
     ASSERT_EQ(in_orders.size(), 1);
     EXPECT_EQ(in_orders[0].name, "Alice");
+}
+
+TEST_F(PostgresIntegrationTest, DateTimeFunctions) {
+    db->insert(events_table, Event{0, "SummerParty", "2026-08-16 14:00:00"});
+    db->insert(events_table, Event{0, "WinterParty", "2025-01-10 18:00:00"});
+
+    auto aug_events = db->from(events_table)
+                        .where(events_table["event_date"].year() == 2026 && events_table["event_date"].month() == 8)
+                        .to_vector();
+    ASSERT_EQ(aug_events.size(), 1);
+    EXPECT_EQ(aug_events[0].name, "SummerParty");
+
+    auto day10_events = db->from(events_table)
+                          .where(events_table["event_date"].day() == 10)
+                          .to_vector();
+    ASSERT_EQ(day10_events.size(), 1);
+    EXPECT_EQ(day10_events[0].name, "WinterParty");
 }

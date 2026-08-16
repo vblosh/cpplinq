@@ -23,6 +23,9 @@ public:
         const std::vector<std::string>& conflict_columns,
         const std::vector<std::string>& update_columns
     ) const override;
+    std::string current_date_func() const override;
+    std::string extract_part_func(std::string_view part, std::string_view expr_sql) const override;
+    std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const override;
 };
 
 } // namespace cpplinq
