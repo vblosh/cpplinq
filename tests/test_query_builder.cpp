@@ -251,11 +251,11 @@ public:
             case SqlType::Integer: return "INT";
             case SqlType::BigInt:  return "BIGINT";
             case SqlType::Real:    return "DOUBLE";
-            case SqlType::Text:    return "TEXT";
+            case SqlType::Text:    return "VARCHAR(255)";
             case SqlType::Blob:    return "LONGBLOB";
             case SqlType::Boolean: return "TINYINT(1)";
         }
-        return "TEXT";
+        return "VARCHAR(255)";
     }
 
     std::string auto_increment_type() const override {
