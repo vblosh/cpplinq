@@ -838,3 +838,42 @@ TEST(SqlGeneratorTest, WindowFunctionGeneration) {
     EXPECT_EQ(sum_res.sql, "SUM(\"employees\".\"salary\") OVER (PARTITION BY \"employees\".\"department\")");
 }
 
+TEST(SqlGeneratorTest, CteGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle amount("orders", "amount");
+    SubqueryExpr sub("orders", {"user_id", "amount"}, std::make_shared<expr::ExprNode>((amount > 100.0).node), false);
+
+    CteClause cte{"high_value_orders", sub, false};
+    auto res = gen.generate_cte_select({cte}, "high_value_orders", {"user_id"}, std::nullopt);
+
+    EXPECT_EQ(res.sql, "WITH \"high_value_orders\" AS (SELECT \"user_id\", \"amount\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)) SELECT \"user_id\" FROM \"high_value_orders\"");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_EQ(std::get<double>(res.params[0]), 100.0);
+}
+
+TEST(SqlGeneratorTest, MultiTableJoinGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle user_id("users", "id");
+    ColumnHandle order_user_id("orders", "user_id");
+    ColumnHandle order_id("orders", "id");
+    ColumnHandle item_order_id("order_items", "order_id");
+
+    JoinClause j1{"INNER JOIN", "orders", (user_id == order_user_id).node};
+    JoinClause j2{"LEFT JOIN", "order_items", (order_id == item_order_id).node};
+
+    auto res = gen.generate_joined_select(
+        "users",
+        {"id", "name"},
+        {j1, j2},
+        {{"orders", {"id", "amount"}}, {"order_items", {"id", "product"}}},
+        std::nullopt
+    );
+
+    EXPECT_EQ(res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\", \"order_items\".\"id\", \"order_items\".\"product\" FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") LEFT JOIN \"order_items\" ON (\"orders\".\"id\" = \"order_items\".\"order_id\")");
+}
+
+

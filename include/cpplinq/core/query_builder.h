@@ -161,6 +161,15 @@ public:
         return vec.size();
     }
 
+    template <typename OtherEntity, typename... OtherCols>
+    auto join(const TableDef<OtherEntity, OtherCols...>& other_table);
+
+    template <typename OtherEntity, typename... OtherCols>
+    auto left_join(const TableDef<OtherEntity, OtherCols...>& other_table);
+
+    template <JoinType JType2, typename E3, typename... Cols3>
+    auto make_joined_3(const TableDef<E3, Cols3...>& target, expr::Expr condition);
+
 private:
     IConnection& conn_;
     std::string primary_table_;
@@ -193,6 +202,250 @@ private:
     PrimaryQB& qb_;
     const JoinedTableDef& target_;
 };
+
+template <JoinType JType1, JoinType JType2, typename PrimaryQB, typename JoinedTableDef>
+class Join3Proxy {
+public:
+    Join3Proxy(PrimaryQB& qb, const JoinedTableDef& target)
+        : qb_(qb), target_(target) {}
+
+    auto on(expr::Expr condition) {
+        return qb_.template make_joined_3<JType2>(target_, std::move(condition));
+    }
+
+private:
+    PrimaryQB& qb_;
+    const JoinedTableDef& target_;
+};
+
+template <
+    JoinType JType1,
+    JoinType JType2,
+    typename E1,
+    typename E2,
+    typename E3,
+    typename Tuple1,
+    typename Tuple2,
+    typename Tuple3
+>
+class Joined3QueryBuilder {
+public:
+    using T1 = E1;
+    using T2 = std::conditional_t<JType1 == JoinType::Inner, E2, std::optional<E2>>;
+    using T3 = std::conditional_t<JType2 == JoinType::Inner, E3, std::optional<E3>>;
+    using ResultType = std::tuple<T1, T2, T3>;
+
+    Joined3QueryBuilder(
+        IConnection& conn,
+        std::string primary_table,
+        const Tuple1& primary_cols,
+        std::string joined_table2,
+        const Tuple2& joined_cols2,
+        expr::ExprNode on_cond2,
+        std::string joined_table3,
+        const Tuple3& joined_cols3,
+        expr::ExprNode on_cond3,
+        std::optional<expr::ExprNode> where_clause = std::nullopt
+    ) : conn_(conn),
+        primary_table_(std::move(primary_table)),
+        primary_cols_(primary_cols),
+        joined_table2_(std::move(joined_table2)),
+        joined_cols2_(joined_cols2),
+        on_cond2_(std::move(on_cond2)),
+        joined_table3_(std::move(joined_table3)),
+        joined_cols3_(joined_cols3),
+        on_cond3_(std::move(on_cond3)),
+        where_clause_(std::move(where_clause)) {}
+
+    Joined3QueryBuilder& where(expr::Expr condition) {
+        if (where_clause_.has_value()) {
+            where_clause_ = expr::Expr(std::make_shared<expr::LogicExpr>(
+                std::move(*where_clause_),
+                expr::LogicOp::And,
+                std::move(condition.node)
+            )).node;
+        } else {
+            where_clause_ = std::move(condition.node);
+        }
+        return *this;
+    }
+
+    Joined3QueryBuilder& order_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.clear();
+        order_clauses_.emplace_back(std::move(column.node), dir);
+        return *this;
+    }
+
+    Joined3QueryBuilder& order_by_desc(expr::Expr column) {
+        return order_by(std::move(column), expr::SortDir::Desc);
+    }
+
+    Joined3QueryBuilder& then_by(expr::Expr column, expr::SortDir dir = expr::SortDir::Asc) {
+        order_clauses_.emplace_back(std::move(column.node), dir);
+        return *this;
+    }
+
+    Joined3QueryBuilder& then_by_desc(expr::Expr column) {
+        return then_by(std::move(column), expr::SortDir::Desc);
+    }
+
+    Joined3QueryBuilder& limit(size_t n) {
+        limit_ = n;
+        return *this;
+    }
+
+    Joined3QueryBuilder& offset(size_t n) {
+        offset_ = n;
+        return *this;
+    }
+
+    std::vector<ResultType> to_vector() {
+        SqlGenerator gen(conn_.dialect());
+        auto prim_names = get_tuple_column_names(primary_cols_);
+        auto join2_names = get_tuple_column_names(joined_cols2_);
+        auto join3_names = get_tuple_column_names(joined_cols3_);
+
+        std::vector<JoinClause> jcs = {
+            JoinClause{
+                JType1 == JoinType::Inner ? "INNER JOIN" : "LEFT JOIN",
+                joined_table2_,
+                on_cond2_
+            },
+            JoinClause{
+                JType2 == JoinType::Inner ? "INNER JOIN" : "LEFT JOIN",
+                joined_table3_,
+                on_cond3_
+            }
+        };
+
+        std::vector<std::pair<std::string, std::vector<std::string>>> joined_cols = {
+            {joined_table2_, join2_names},
+            {joined_table3_, join3_names}
+        };
+
+        auto result = gen.generate_joined_select(
+            primary_table_,
+            prim_names,
+            jcs,
+            joined_cols,
+            where_clause_,
+            order_clauses_,
+            limit_,
+            offset_
+        );
+
+        auto stmt = conn_.prepare(result.sql);
+        for (size_t i = 0; i < result.params.size(); ++i) {
+            stmt->bind(static_cast<int>(i), result.params[i]);
+        }
+        auto reader = stmt->execute_query();
+
+        int n1 = static_cast<int>(prim_names.size());
+        int n2 = static_cast<int>(join2_names.size());
+        auto mapper1 = create_row_mapper_helper<E1>(primary_cols_, 0);
+        auto mapper2 = create_row_mapper_helper<E2>(joined_cols2_, n1);
+        auto mapper3 = create_row_mapper_helper<E3>(joined_cols3_, n1 + n2);
+
+        std::vector<ResultType> results;
+        if (reader) {
+            while (reader->next()) {
+                E1 e1 = mapper1.map_row(*reader);
+                T2 e2;
+                if constexpr (JType1 == JoinType::Inner) {
+                    e2 = mapper2.map_row(*reader);
+                } else {
+                    if (mapper2.is_all_null(*reader)) {
+                        e2 = std::nullopt;
+                    } else {
+                        e2 = mapper2.map_row(*reader);
+                    }
+                }
+                T3 e3;
+                if constexpr (JType2 == JoinType::Inner) {
+                    e3 = mapper3.map_row(*reader);
+                } else {
+                    if (mapper3.is_all_null(*reader)) {
+                        e3 = std::nullopt;
+                    } else {
+                        e3 = mapper3.map_row(*reader);
+                    }
+                }
+                results.emplace_back(std::move(e1), std::move(e2), std::move(e3));
+            }
+        }
+        return results;
+    }
+
+    std::optional<ResultType> first() {
+        limit_ = 1;
+        auto results = to_vector();
+        if (results.empty()) return std::nullopt;
+        return std::move(results[0]);
+    }
+
+    size_t count() {
+        auto vec = to_vector();
+        return vec.size();
+    }
+
+private:
+    IConnection& conn_;
+    std::string primary_table_;
+    Tuple1 primary_cols_;
+    std::string joined_table2_;
+    Tuple2 joined_cols2_;
+    expr::ExprNode on_cond2_;
+    std::string joined_table3_;
+    Tuple3 joined_cols3_;
+    expr::ExprNode on_cond3_;
+    std::optional<expr::ExprNode> where_clause_;
+    std::vector<std::pair<expr::ExprNode, expr::SortDir>> order_clauses_;
+    std::optional<size_t> limit_;
+    std::optional<size_t> offset_;
+
+    template <typename Entity, typename... Cols>
+    static auto create_row_mapper_helper(const std::tuple<Cols...>& cols, int offset) {
+        return RowMapper<Entity, Cols...>(cols, offset);
+    }
+};
+
+template <JoinType JType, typename E1, typename E2, typename Tuple1, typename Tuple2>
+template <typename OtherEntity, typename... OtherCols>
+auto JoinedQueryBuilder<JType, E1, E2, Tuple1, Tuple2>::join(const TableDef<OtherEntity, OtherCols...>& other_table) {
+    return Join3Proxy<JType, JoinType::Inner, JoinedQueryBuilder, TableDef<OtherEntity, OtherCols...>>(*this, other_table);
+}
+
+template <JoinType JType, typename E1, typename E2, typename Tuple1, typename Tuple2>
+template <typename OtherEntity, typename... OtherCols>
+auto JoinedQueryBuilder<JType, E1, E2, Tuple1, Tuple2>::left_join(const TableDef<OtherEntity, OtherCols...>& other_table) {
+    return Join3Proxy<JType, JoinType::Left, JoinedQueryBuilder, TableDef<OtherEntity, OtherCols...>>(*this, other_table);
+}
+
+template <JoinType JType, typename E1, typename E2, typename Tuple1, typename Tuple2>
+template <JoinType JType2, typename E3, typename... Cols3>
+auto JoinedQueryBuilder<JType, E1, E2, Tuple1, Tuple2>::make_joined_3(const TableDef<E3, Cols3...>& target, expr::Expr condition) {
+    return Joined3QueryBuilder<
+        JType,
+        JType2,
+        E1,
+        E2,
+        E3,
+        Tuple1,
+        Tuple2,
+        std::tuple<Cols3...>
+    >(
+        conn_,
+        primary_table_,
+        primary_cols_,
+        joined_table_,
+        joined_cols_,
+        on_cond_,
+        std::string(target.name),
+        target.columns,
+        std::move(condition.node),
+        where_clause_
+    );
+}
 
 template <typename Entity, typename... ColumnDefs>
 class QueryBuilder;
@@ -495,6 +748,17 @@ public:
         return *this;
     }
 
+    QueryBuilder& with_cte(std::string name, expr::SubqueryExpr subquery) {
+        ctes_.push_back(CteClause{std::move(name), std::move(subquery)});
+        return *this;
+    }
+
+    template <typename OtherEntity, typename... OtherCols>
+    QueryBuilder& with_cte(std::string name, const QueryBuilder<OtherEntity, OtherCols...>& other) {
+        ctes_.push_back(CteClause{std::move(name), other.as_subquery()});
+        return *this;
+    }
+
     QueryBuilder& limit(size_t n) {
         limit_ = n;
         return *this;
@@ -509,9 +773,15 @@ public:
     std::vector<Entity> to_vector() {
         SqlGenerator gen(conn_.dialect());
         auto col_names = get_column_names();
-        auto result = gen.generate_select(table_name_, col_names, where_clause_,
-                                          order_clauses_, limit_, offset_, is_distinct_,
-                                          group_by_clauses_, having_clause_);
+        GeneratedSql result;
+        if (!ctes_.empty()) {
+            result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
+                                             order_clauses_, limit_, offset_, is_distinct_);
+        } else {
+            result = gen.generate_select(table_name_, col_names, where_clause_,
+                                         order_clauses_, limit_, offset_, is_distinct_,
+                                         group_by_clauses_, having_clause_);
+        }
         auto stmt = conn_.prepare(result.sql);
         bind_params(*stmt, result.params);
         auto reader = stmt->execute_query();
@@ -613,6 +883,7 @@ private:
     bool is_distinct_ = false;
     std::vector<expr::ExprNode> group_by_clauses_;
     std::optional<expr::ExprNode> having_clause_;
+    std::vector<CteClause> ctes_;
 
     void bind_params(IPreparedStatement& stmt, const std::vector<BoundValue>& params) {
         for (size_t i = 0; i < params.size(); ++i) {

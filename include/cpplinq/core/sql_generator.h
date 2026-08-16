@@ -37,6 +37,13 @@ enum class SetOpType {
     Except
 };
 
+// CTE clause metadata
+struct CteClause {
+    std::string name;
+    expr::SubqueryExpr subquery;
+    bool is_recursive = false;
+};
+
 // Set operation clause metadata
 struct SetOpClause {
     SetOpType op_type;
@@ -60,6 +67,18 @@ struct ColumnInfo {
 class SqlGenerator {
 public:
     explicit SqlGenerator(const ISqlDialect& dialect);
+
+    // Common Table Expression (CTE) queries (WITH ... SELECT ...)
+    GeneratedSql generate_cte_select(
+        const std::vector<CteClause>& ctes,
+        std::string_view table_name,
+        const std::vector<std::string>& columns = {},
+        const std::optional<expr::ExprNode>& where = std::nullopt,
+        const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
+        std::optional<size_t> limit = std::nullopt,
+        std::optional<size_t> offset = std::nullopt,
+        bool is_distinct = false
+    ) const;
 
     // SELECT queries
     GeneratedSql generate_select(

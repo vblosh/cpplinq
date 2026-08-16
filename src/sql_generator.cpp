@@ -225,6 +225,82 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
     }, node);
 }
 
+GeneratedSql SqlGenerator::generate_cte_select(
+    const std::vector<CteClause>& ctes,
+    std::string_view table_name,
+    const std::vector<std::string>& columns,
+    const std::optional<expr::ExprNode>& where,
+    const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by,
+    std::optional<size_t> limit,
+    std::optional<size_t> offset,
+    bool is_distinct
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql;
+    if (!ctes.empty()) {
+        sql += "WITH ";
+        for (size_t i = 0; i < ctes.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(ctes[i].name) + " AS (SELECT ";
+            if (ctes[i].subquery.is_distinct) sql += "DISTINCT ";
+            if (ctes[i].subquery.select_columns.empty()) {
+                sql += "*";
+            } else {
+                for (size_t j = 0; j < ctes[i].subquery.select_columns.size(); ++j) {
+                    if (j > 0) sql += ", ";
+                    sql += dialect_.quote_id(ctes[i].subquery.select_columns[j]);
+                }
+            }
+            sql += " FROM " + dialect_.quote_id(ctes[i].subquery.table_name);
+            if (ctes[i].subquery.where) {
+                sql += " WHERE " + visit(*ctes[i].subquery.where, result.params);
+            }
+            sql += ")";
+        }
+        sql += " ";
+    }
+
+    sql += is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    if (columns.empty()) {
+        sql += "*";
+    } else {
+        for (size_t i = 0; i < columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(columns[i]);
+        }
+    }
+
+    sql += " FROM ";
+    sql += dialect_.quote_id(table_name);
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    if (!order_by.empty()) {
+        sql += " ORDER BY ";
+        for (size_t i = 0; i < order_by.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += visit(order_by[i].first, result.params);
+            if (order_by[i].second == expr::SortDir::Desc) {
+                sql += " DESC";
+            } else {
+                sql += " ASC";
+            }
+        }
+    } else if ((limit.has_value() || offset.has_value()) && dialect_.limit_offset(limit, offset).find("OFFSET") != std::string::npos) {
+        sql += " ORDER BY (SELECT NULL)";
+    }
+
+    sql += dialect_.limit_offset(limit, offset);
+
+    result.sql = std::move(sql);
+    return result;
+}
+
 GeneratedSql SqlGenerator::generate_select(
     std::string_view table_name,
     const std::vector<std::string>& columns,

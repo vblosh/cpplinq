@@ -3,6 +3,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <tuple>
 
 using namespace cpplinq;
 
@@ -606,5 +607,62 @@ TEST_F(MssqlIntegrationTest, WindowFunctions) {
     ASSERT_TRUE(reader->next());
     EXPECT_EQ(reader->get_string(0), "Charlie");
     EXPECT_EQ(reader->get_int64(3), 2LL);
+    EXPECT_FALSE(reader->next());
+}
+
+TEST_F(MssqlIntegrationTest, MultiTableJoins) {
+    auto u1_id = db->insert(users_table, User{0, "Alice", "alice@test.com", 30});
+    auto u2_id = db->insert(users_table, User{0, "Bob", "bob@test.com", 25});
+
+    db->insert(orders_table, Order{0, static_cast<int>(u1_id), 150.0});
+    db->insert(accounts_table, Account{"Alice", "alice@test.com", 500});
+    db->insert(accounts_table, Account{"Bob", "bob@test.com", 300});
+
+    // 3-Table Inner Join: User + Order + Account
+    auto results = db->from(users_table)
+                     .join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                     .join(accounts_table).on(users_table["name"] == accounts_table["username"])
+                     .to_vector();
+
+    ASSERT_EQ(results.size(), 1);
+    const auto& [user, order, account] = results[0];
+    EXPECT_EQ(user.name, "Alice");
+    EXPECT_DOUBLE_EQ(order.amount, 150.0);
+    EXPECT_EQ(account.points, 500);
+
+    // 3-Table Join with Left Join: User + Order (left) + Account (inner)
+    auto left_results = db->from(users_table)
+                          .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                          .join(accounts_table).on(users_table["name"] == accounts_table["username"])
+                          .order_by(users_table["name"])
+                          .to_vector();
+
+    ASSERT_EQ(left_results.size(), 2);
+    // Alice has order
+    const auto& [u_alice, o_alice, a_alice] = left_results[0];
+    EXPECT_EQ(u_alice.name, "Alice");
+    EXPECT_TRUE(o_alice.has_value());
+    EXPECT_EQ(a_alice.points, 500);
+    // Bob has no order
+    const auto& [u_bob, o_bob, a_bob] = left_results[1];
+    EXPECT_EQ(u_bob.name, "Bob");
+    EXPECT_FALSE(o_bob.has_value());
+    EXPECT_EQ(a_bob.points, 300);
+}
+
+TEST_F(MssqlIntegrationTest, CommonTableExpressions) {
+    db->insert(users_table, User{0, "Alice", "alice@test.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@test.com", 25});
+    db->insert(users_table, User{0, "Charlie", "charlie@test.com", 40});
+
+    auto prep = db->connection().prepare(
+        "WITH active_adults AS (SELECT [id], [name], [age] FROM [test_users] WHERE [age] >= 25) "
+        "SELECT [id], [name], [age] FROM active_adults WHERE [age] >= 30 ORDER BY [name];"
+    );
+    auto reader = prep->execute_query();
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(1), "Alice");
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_string(1), "Charlie");
     EXPECT_FALSE(reader->next());
 }
