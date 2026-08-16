@@ -1,0 +1,63 @@
+#include "dialect/mssql_dialect.h"
+
+namespace cpplinq {
+
+std::string MssqlDialect::quote_id(std::string_view id) const {
+    std::string quoted = "[";
+    for (char c : id) {
+        if (c == ']') {
+            quoted += "]]";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "]";
+    return quoted;
+}
+
+std::string MssqlDialect::placeholder(size_t /*index*/) const {
+    return "?";
+}
+
+std::string MssqlDialect::limit_offset(std::optional<size_t> limit,
+                                       std::optional<size_t> offset) const {
+    std::string result;
+    if (offset.has_value() && limit.has_value()) {
+        result = " OFFSET " + std::to_string(*offset) + " ROWS FETCH NEXT " + std::to_string(*limit) + " ROWS ONLY";
+    } else if (offset.has_value()) {
+        result = " OFFSET " + std::to_string(*offset) + " ROWS";
+    } else if (limit.has_value()) {
+        result = " OFFSET 0 ROWS FETCH NEXT " + std::to_string(*limit) + " ROWS ONLY";
+    }
+    return result;
+}
+
+std::string MssqlDialect::type_name(SqlType type) const {
+    switch (type) {
+        case SqlType::Integer: return "INT";
+        case SqlType::BigInt:  return "BIGINT";
+        case SqlType::Real:    return "FLOAT";
+        case SqlType::Text:    return "NVARCHAR(MAX)";
+        case SqlType::Blob:    return "VARBINARY(MAX)";
+        case SqlType::Boolean: return "BIT";
+    }
+    return "NVARCHAR(MAX)";
+}
+
+std::string MssqlDialect::auto_increment_type() const {
+    return "INT IDENTITY(1,1) PRIMARY KEY";
+}
+
+std::string MssqlDialect::returning_clause(std::string_view /*column*/) const {
+    return "";
+}
+
+std::string MssqlDialect::output_clause(std::string_view column) const {
+    return " OUTPUT INSERTED." + quote_id(column);
+}
+
+std::string MssqlDialect::create_table_prefix(std::string_view table_name) const {
+    return "IF OBJECT_ID(N'" + std::string(table_name) + "', N'U') IS NULL CREATE TABLE " + quote_id(table_name);
+}
+
+} // namespace cpplinq

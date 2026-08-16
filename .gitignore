@@ -1,0 +1,53 @@
+# Build directories
+build/
+build*/
+out/
+bin/
+lib/
+_deps/
+
+# Visual Studio files
+.vs/
+*.sln.docstates
+*.suo
+*.user
+*.userosscache
+*.sln.ide
+*.vcxproj.user
+*.VC.db
+*.VC.opendb
+
+# Compiled object files & libraries
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.so
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# CMake generated files (if generated in root)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/**
+!CMakeLists.txt
+!*/CMakeLists.txt
+
+# Testing & Logs
+Testing/
+*.log
+*.tlog
+
+# IDE & Editor caches
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

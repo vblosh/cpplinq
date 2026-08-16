@@ -1,0 +1,383 @@
+#include "cpplinq/core/sql_generator.h"
+
+#include <type_traits>
+
+namespace cpplinq {
+
+namespace {
+
+BoundValue sql_value_to_bound_value(const expr::SqlValue& val) {
+    return std::visit([](const auto& v) -> BoundValue {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            return std::monostate{};
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, double>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            return v;
+        } else if constexpr (std::is_same_v<T, bool>) {
+            return v;
+        }
+    }, val);
+}
+
+} // namespace
+
+SqlGenerator::SqlGenerator(const ISqlDialect& dialect)
+    : dialect_(dialect)
+    , param_counter_(0)
+{}
+
+std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundValue>& params) const {
+    return std::visit([this, &params](const auto& item) -> std::string {
+        using T = std::decay_t<decltype(item)>;
+        if constexpr (std::is_same_v<T, expr::ColumnRef>) {
+            if (item.table_name.empty()) {
+                return dialect_.quote_id(item.column_name);
+            } else {
+                return dialect_.quote_id(item.table_name) + "." + dialect_.quote_id(item.column_name);
+            }
+        } else if constexpr (std::is_same_v<T, expr::Literal>) {
+            params.push_back(sql_value_to_bound_value(item.value));
+            size_t idx = param_counter_++;
+            return dialect_.placeholder(idx);
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::BinaryExpr>>) {
+            if (!item) return "";
+            std::string op_str;
+            switch (item->op) {
+                case expr::CompareOp::Eq: op_str = " = "; break;
+                case expr::CompareOp::Ne: op_str = " <> "; break;
+                case expr::CompareOp::Lt: op_str = " < "; break;
+                case expr::CompareOp::Le: op_str = " <= "; break;
+                case expr::CompareOp::Gt: op_str = " > "; break;
+                case expr::CompareOp::Ge: op_str = " >= "; break;
+            }
+            std::string left_str = visit(item->left, params);
+            std::string right_str = visit(item->right, params);
+            return "(" + left_str + op_str + right_str + ")";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::LogicExpr>>) {
+            if (!item) return "";
+            std::string op_str;
+            switch (item->op) {
+                case expr::LogicOp::And: op_str = " AND "; break;
+                case expr::LogicOp::Or:  op_str = " OR "; break;
+            }
+            std::string left_str = visit(item->left, params);
+            std::string right_str = visit(item->right, params);
+            return "(" + left_str + op_str + right_str + ")";
+        } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::UnaryExpr>>) {
+            if (!item) return "";
+            switch (item->op) {
+                case expr::UnaryOp::Not:
+                    return "NOT (" + visit(item->operand, params) + ")";
+                case expr::UnaryOp::IsNull:
+                    return visit(item->operand, params) + " IS NULL";
+                case expr::UnaryOp::IsNotNull:
+                    return visit(item->operand, params) + " IS NOT NULL";
+            }
+            return "";
+        }
+        return "";
+
+    }, node);
+}
+
+GeneratedSql SqlGenerator::generate_select(
+    std::string_view table_name,
+    const std::vector<std::string>& columns,
+    const std::optional<expr::ExprNode>& where,
+    const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by,
+    std::optional<size_t> limit,
+    std::optional<size_t> offset
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "SELECT ";
+    if (columns.empty()) {
+        sql += "*";
+    } else {
+        for (size_t i = 0; i < columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(columns[i]);
+        }
+    }
+
+    sql += " FROM ";
+    sql += dialect_.quote_id(table_name);
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    if (!order_by.empty()) {
+        sql += " ORDER BY ";
+        for (size_t i = 0; i < order_by.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += visit(order_by[i].first, result.params);
+            if (order_by[i].second == expr::SortDir::Desc) {
+                sql += " DESC";
+            } else {
+                sql += " ASC";
+            }
+        }
+    } else if ((limit.has_value() || offset.has_value()) && dialect_.limit_offset(limit, offset).find("OFFSET") != std::string::npos) {
+        sql += " ORDER BY (SELECT NULL)";
+    }
+
+    sql += dialect_.limit_offset(limit, offset);
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_select(
+    std::string_view table_name,
+    const std::vector<std::string>& columns,
+    const std::optional<expr::ExprNode>& where,
+    const std::vector<expr::OrderByExpr>& order_by,
+    std::optional<size_t> limit,
+    std::optional<size_t> offset
+) const {
+    std::vector<std::pair<expr::ExprNode, expr::SortDir>> pairs;
+    pairs.reserve(order_by.size());
+    for (const auto& item : order_by) {
+        pairs.emplace_back(item.expr, item.direction);
+    }
+    return generate_select(table_name, columns, where, pairs, limit, offset);
+}
+
+GeneratedSql SqlGenerator::generate_insert(
+    std::string_view table_name,
+    const std::vector<std::string>& column_names,
+    const std::vector<BoundValue>& values,
+    std::optional<std::string_view> returning_column
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "INSERT INTO ";
+    sql += dialect_.quote_id(table_name);
+
+    if (!column_names.empty()) {
+        sql += " (";
+        for (size_t i = 0; i < column_names.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(column_names[i]);
+        }
+        sql += ")";
+
+        if (returning_column.has_value() && !returning_column->empty()) {
+            std::string out_clause = dialect_.output_clause(*returning_column);
+            if (!out_clause.empty()) {
+                sql += out_clause;
+            }
+        }
+
+        sql += " VALUES (";
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i > 0) sql += ", ";
+            size_t idx = param_counter_++;
+            sql += dialect_.placeholder(idx);
+            result.params.push_back(values[i]);
+        }
+        sql += ")";
+    }
+
+    if (returning_column.has_value() && !returning_column->empty()) {
+        std::string ret_clause = dialect_.returning_clause(*returning_column);
+        if (!ret_clause.empty()) {
+            sql += ret_clause;
+        }
+    }
+
+    result.sql = std::move(sql);
+    return result;
+
+}
+
+GeneratedSql SqlGenerator::generate_insert(
+    std::string_view table_name,
+    const std::vector<std::string>& column_names,
+    const std::vector<expr::SqlValue>& values,
+    std::optional<std::string_view> returning_column
+) const {
+    std::vector<BoundValue> bound_values;
+    bound_values.reserve(values.size());
+    for (const auto& val : values) {
+        bound_values.push_back(sql_value_to_bound_value(val));
+    }
+    return generate_insert(table_name, column_names, bound_values, returning_column);
+}
+
+GeneratedSql SqlGenerator::generate_update(
+    std::string_view table_name,
+    const std::vector<expr::AssignExpr>& assignments,
+    const std::optional<expr::ExprNode>& where
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "UPDATE ";
+    sql += dialect_.quote_id(table_name);
+    sql += " SET ";
+
+    for (size_t i = 0; i < assignments.size(); ++i) {
+        if (i > 0) sql += ", ";
+        std::string col_name = assignments[i].column.column_name;
+        if (col_name.empty()) {
+            col_name = assignments[i].column.table_name;
+        }
+        sql += dialect_.quote_id(col_name);
+        sql += " = ";
+        sql += visit(assignments[i].value, result.params);
+    }
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_update(
+    std::string_view table_name,
+    const std::vector<std::pair<std::string, BoundValue>>& assignments,
+    const std::optional<expr::ExprNode>& where
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "UPDATE ";
+    sql += dialect_.quote_id(table_name);
+    sql += " SET ";
+
+    for (size_t i = 0; i < assignments.size(); ++i) {
+        if (i > 0) sql += ", ";
+        sql += dialect_.quote_id(assignments[i].first);
+        sql += " = ";
+        size_t idx = param_counter_++;
+        sql += dialect_.placeholder(idx);
+        result.params.push_back(assignments[i].second);
+    }
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_delete(
+    std::string_view table_name,
+    const std::optional<expr::ExprNode>& where
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "DELETE FROM ";
+    sql += dialect_.quote_id(table_name);
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_create_table(
+    std::string_view table_name,
+    const std::vector<ColumnInfo>& column_infos
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = dialect_.create_table_prefix(table_name);
+    sql += " (";
+
+    for (size_t i = 0; i < column_infos.size(); ++i) {
+        if (i > 0) sql += ", ";
+        const auto& col = column_infos[i];
+        if (col.is_auto_increment) {
+            sql += dialect_.quote_id(col.name) + " " + dialect_.auto_increment_type();
+            if (col.is_unique) {
+                sql += " UNIQUE";
+            }
+        } else {
+            sql += dialect_.quote_id(col.name) + " " + dialect_.type_name(col.sql_type);
+            if (col.is_primary_key) {
+                sql += " PRIMARY KEY";
+            }
+            if (col.is_not_null) {
+                sql += " NOT NULL";
+            }
+            if (col.is_unique) {
+                sql += " UNIQUE";
+            }
+        }
+    }
+
+    sql += ")";
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_count(
+    std::string_view table_name,
+    const std::optional<expr::ExprNode>& where
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "SELECT COUNT(*) FROM ";
+    sql += dialect_.quote_id(table_name);
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+GeneratedSql SqlGenerator::generate_aggregate(
+    std::string_view function_name,
+    std::string_view table_name,
+    std::string_view column_name,
+    const std::optional<expr::ExprNode>& where
+) const {
+    GeneratedSql result;
+    param_counter_ = 0;
+
+    std::string sql = "SELECT ";
+    sql += std::string(function_name);
+    sql += "(";
+    if (column_name == "*") {
+        sql += "*";
+    } else {
+        sql += dialect_.quote_id(column_name);
+    }
+    sql += ") FROM ";
+    sql += dialect_.quote_id(table_name);
+
+    if (where.has_value()) {
+        sql += " WHERE ";
+        sql += visit(*where, result.params);
+    }
+
+    result.sql = std::move(sql);
+    return result;
+}
+
+} // namespace cpplinq
