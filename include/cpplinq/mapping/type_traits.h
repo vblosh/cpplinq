@@ -34,22 +34,18 @@ template <typename T>
 struct sql_type_of;
 
 // Signed integer mappings
-template <> struct sql_type_of<int8_t>      { static constexpr SqlType value = SqlType::Integer; };
-template <> struct sql_type_of<int16_t>     { static constexpr SqlType value = SqlType::Integer; };
-template <> struct sql_type_of<int32_t>     { static constexpr SqlType value = SqlType::Integer; };
-#if !defined(_MSC_VER) || defined(_NATIVE_WCHAR_T_DEFINED)
-template <> struct sql_type_of<long>        { static constexpr SqlType value = (sizeof(long) == 4 ? SqlType::Integer : SqlType::BigInt); };
-#endif
-template <> struct sql_type_of<int64_t>     { static constexpr SqlType value = SqlType::BigInt; };
+template <> struct sql_type_of<signed char>        { static constexpr SqlType value = SqlType::Integer; };
+template <> struct sql_type_of<short>              { static constexpr SqlType value = SqlType::Integer; };
+template <> struct sql_type_of<int>                { static constexpr SqlType value = SqlType::Integer; };
+template <> struct sql_type_of<long>               { static constexpr SqlType value = (sizeof(long) == 4 ? SqlType::Integer : SqlType::BigInt); };
+template <> struct sql_type_of<long long>          { static constexpr SqlType value = SqlType::BigInt; };
 
 // Unsigned integer mappings
-template <> struct sql_type_of<uint8_t>     { static constexpr SqlType value = SqlType::UnsignedBigInt; };
-template <> struct sql_type_of<uint16_t>    { static constexpr SqlType value = SqlType::UnsignedBigInt; };
-template <> struct sql_type_of<uint32_t>    { static constexpr SqlType value = SqlType::UnsignedBigInt; };
-#if !defined(_MSC_VER) || defined(_NATIVE_WCHAR_T_DEFINED)
-template <> struct sql_type_of<unsigned long> { static constexpr SqlType value = SqlType::UnsignedBigInt; };
-#endif
-template <> struct sql_type_of<uint64_t>    { static constexpr SqlType value = SqlType::UnsignedBigInt; };
+template <> struct sql_type_of<unsigned char>      { static constexpr SqlType value = SqlType::UnsignedBigInt; };
+template <> struct sql_type_of<unsigned short>     { static constexpr SqlType value = SqlType::UnsignedBigInt; };
+template <> struct sql_type_of<unsigned int>       { static constexpr SqlType value = SqlType::UnsignedBigInt; };
+template <> struct sql_type_of<unsigned long>      { static constexpr SqlType value = SqlType::UnsignedBigInt; };
+template <> struct sql_type_of<unsigned long long> { static constexpr SqlType value = SqlType::UnsignedBigInt; };
 
 // Floating-point mappings
 template <> struct sql_type_of<float>       { static constexpr SqlType value = SqlType::Real; };

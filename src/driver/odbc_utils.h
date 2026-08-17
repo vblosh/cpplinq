@@ -54,6 +54,53 @@ inline void check_rc(SQLRETURN rc, SQLSMALLINT handle_type, SQLHANDLE handle, co
 }
 
 // ----------------------------------------------------------------------------
+// SQLWCHAR <-> std::wstring conversion helpers
+// ----------------------------------------------------------------------------
+
+inline std::wstring sqlwchar_to_wstring(const SQLWCHAR* buffer, size_t count) {
+    if (!buffer || count == 0) return {};
+    std::wstring result;
+    result.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        uint16_t c1 = static_cast<uint16_t>(buffer[i]);
+        if (c1 == 0) break;
+        if (c1 >= 0xD800 && c1 <= 0xDBFF && i + 1 < count) {
+            uint16_t c2 = static_cast<uint16_t>(buffer[i + 1]);
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+                uint32_t codepoint = 0x10000 + (((c1 & 0x3FF) << 10) | (c2 & 0x3FF));
+#if defined(_WIN32)
+                result.push_back(static_cast<wchar_t>(c1));
+                result.push_back(static_cast<wchar_t>(c2));
+#else
+                result.push_back(static_cast<wchar_t>(codepoint));
+#endif
+                ++i;
+                continue;
+            }
+        }
+        result.push_back(static_cast<wchar_t>(c1));
+    }
+    return result;
+}
+
+inline std::vector<SQLWCHAR> wstring_to_sqlwchar(std::wstring_view wstr) {
+    std::vector<SQLWCHAR> result;
+    result.reserve(wstr.size() + 1);
+    for (wchar_t wc : wstr) {
+        uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp < 0x10000) {
+            result.push_back(static_cast<SQLWCHAR>(cp));
+        } else {
+            cp -= 0x10000;
+            result.push_back(static_cast<SQLWCHAR>(0xD800 | ((cp >> 10) & 0x3FF)));
+            result.push_back(static_cast<SQLWCHAR>(0xDC00 | (cp & 0x3FF)));
+        }
+    }
+    result.push_back(0);
+    return result;
+}
+
+// ----------------------------------------------------------------------------
 // SQL_NUMERIC_STRUCT conversion helpers
 // ----------------------------------------------------------------------------
 
@@ -527,10 +574,11 @@ inline size_t execute_insert_many_batch(
                     dst[v.size()] = '\0';
                     ca.indicators[r] = static_cast<SQLLEN>(v.size());
                 } else if constexpr (std::is_same_v<T, std::wstring>) {
+                    auto sqlwchars = wstring_to_sqlwchar(v);
                     SQLWCHAR* dst = ca.wstr_data.data() + r * (ca.buf_stride / sizeof(SQLWCHAR));
-                    std::memcpy(dst, v.c_str(), v.size() * sizeof(wchar_t));
-                    dst[v.size()] = 0;
-                    ca.indicators[r] = static_cast<SQLLEN>(v.size() * sizeof(SQLWCHAR));
+                    size_t copy_count = std::min(sqlwchars.size(), static_cast<size_t>(ca.buf_stride / sizeof(SQLWCHAR)));
+                    std::memcpy(dst, sqlwchars.data(), copy_count * sizeof(SQLWCHAR));
+                    ca.indicators[r] = static_cast<SQLLEN>((sqlwchars.size() - 1) * sizeof(SQLWCHAR));
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     uint8_t* dst = ca.blob_data.data() + r * ca.buf_stride;
                     if (!v.empty()) std::memcpy(dst, v.data(), v.size());

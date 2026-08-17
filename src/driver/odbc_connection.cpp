@@ -242,7 +242,40 @@ void OdbcDataReader::fetch_row_cache() {
             }
             case SQL_CHAR:
             case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
+            case SQL_LONGVARCHAR: {
+                char buffer[4096] = {0};
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_CHAR, buffer, sizeof(buffer), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
+                        col.str_val = std::string(buffer, static_cast<size_t>(ind));
+                    } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
+                        col.str_val = std::string(buffer, sizeof(buffer) - 1);
+                        SQLLEN remaining = ind - (sizeof(buffer) - 1);
+                        std::vector<char> large_buf(static_cast<size_t>(remaining) + 1);
+                        SQLLEN ind2 = 0;
+                        rc = SQLGetData(hstmt_, i, SQL_C_CHAR, large_buf.data(), large_buf.size(), &ind2);
+                        if (SQL_SUCCEEDED(rc)) {
+                            col.str_val.append(large_buf.data());
+                        }
+                    } else {
+                        col.str_val = std::string(buffer);
+                    }
+                    col.wstr_val = utf8_to_wstring(col.str_val);
+                    col.guid_val = SqlGuid::from_string(col.str_val);
+                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
+                    try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
+                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
+                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "TRUE" || col.str_val == "t" || col.str_val == "T");
+                    col.numeric_val = SqlNumeric(col.str_val);
+                    col.date_val = SqlDate::from_string(col.str_val);
+                    col.time_val = SqlTime::from_string(col.str_val);
+                    col.timestamp_val = SqlTimestamp::from_string(col.str_val);
+                    col.interval_val = SqlInterval::from_string(col.str_val);
+                }
+                break;
+            }
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
@@ -252,19 +285,22 @@ void OdbcDataReader::fetch_row_cache() {
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
                     if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
-                        col.wstr_val = std::wstring(reinterpret_cast<const wchar_t*>(buffer), static_cast<size_t>(ind / sizeof(SQLWCHAR)));
+                        col.wstr_val = detail::odbc::sqlwchar_to_wstring(buffer, static_cast<size_t>(ind / sizeof(SQLWCHAR)));
                     } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
                         size_t initial_wchars = (sizeof(buffer) / sizeof(SQLWCHAR)) - 1;
-                        col.wstr_val = std::wstring(reinterpret_cast<const wchar_t*>(buffer), initial_wchars);
+                        col.wstr_val = detail::odbc::sqlwchar_to_wstring(buffer, initial_wchars);
                         SQLLEN remaining_bytes = ind - static_cast<SQLLEN>(initial_wchars * sizeof(SQLWCHAR));
                         std::vector<SQLWCHAR> large_buf((static_cast<size_t>(remaining_bytes) / sizeof(SQLWCHAR)) + 2, 0);
                         SQLLEN ind2 = 0;
                         rc = SQLGetData(hstmt_, i, SQL_C_WCHAR, large_buf.data(), large_buf.size() * sizeof(SQLWCHAR), &ind2);
                         if (SQL_SUCCEEDED(rc)) {
-                            col.wstr_val.append(reinterpret_cast<const wchar_t*>(large_buf.data()));
+                            size_t extra_chars = (ind2 >= 0) ? static_cast<size_t>(ind2 / sizeof(SQLWCHAR)) : 0;
+                            col.wstr_val.append(detail::odbc::sqlwchar_to_wstring(large_buf.data(), extra_chars));
                         }
                     } else {
-                        col.wstr_val = reinterpret_cast<const wchar_t*>(buffer);
+                        size_t len = 0;
+                        while (buffer[len] != 0) ++len;
+                        col.wstr_val = detail::odbc::sqlwchar_to_wstring(buffer, len);
                     }
                     col.str_val = wstring_to_utf8(col.wstr_val);
                     col.guid_val = SqlGuid::from_string(col.str_val);
@@ -550,13 +586,14 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(string)");
             } else if constexpr (std::is_same_v<T, std::wstring>) {
+                auto sqlwchars = detail::odbc::wstring_to_sqlwchar(val);
                 store.c_type = SQL_C_WCHAR;
                 store.sql_type = SQL_WVARCHAR;
                 store.col_size = val.empty() ? 1 : static_cast<SQLULEN>(val.size());
                 store.dec_digits = 0;
-                store.ind = static_cast<SQLLEN>(val.size() * sizeof(SQLWCHAR));
-                store.buffer.resize((val.size() + 1) * sizeof(SQLWCHAR));
-                std::memcpy(store.buffer.data(), val.c_str(), (val.size() + 1) * sizeof(wchar_t));
+                store.ind = static_cast<SQLLEN>((sqlwchars.size() - 1) * sizeof(SQLWCHAR));
+                store.buffer.resize(sqlwchars.size() * sizeof(SQLWCHAR));
+                std::memcpy(store.buffer.data(), sqlwchars.data(), sqlwchars.size() * sizeof(SQLWCHAR));
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(wstring)");
