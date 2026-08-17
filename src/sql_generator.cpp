@@ -8,18 +8,7 @@ namespace {
 
 BoundValue sql_value_to_bound_value(const expr::SqlValue& val) {
     return std::visit([](const auto& v) -> BoundValue {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, std::monostate>) {
-            return std::monostate{};
-        } else if constexpr (std::is_same_v<T, int64_t>) {
-            return v;
-        } else if constexpr (std::is_same_v<T, double>) {
-            return v;
-        } else if constexpr (std::is_same_v<T, std::string>) {
-            return v;
-        } else if constexpr (std::is_same_v<T, bool>) {
-            return v;
-        }
+        return v;
     }, val);
 }
 
@@ -569,21 +558,6 @@ GeneratedSql SqlGenerator::generate_insert(
 
     result.sql = std::move(sql);
     return result;
-
-}
-
-GeneratedSql SqlGenerator::generate_insert(
-    std::string_view table_name,
-    const std::vector<std::string>& column_names,
-    const std::vector<expr::SqlValue>& values,
-    std::optional<std::string_view> returning_column
-) const {
-    std::vector<BoundValue> bound_values;
-    bound_values.reserve(values.size());
-    for (const auto& val : values) {
-        bound_values.push_back(sql_value_to_bound_value(val));
-    }
-    return generate_insert(table_name, column_names, bound_values, returning_column);
 }
 
 GeneratedSql SqlGenerator::generate_upsert(
@@ -599,21 +573,6 @@ GeneratedSql SqlGenerator::generate_upsert(
     result.sql = dialect_.generate_upsert(table_name, insert_columns, conflict_columns, update_columns);
     result.params = values;
     return result;
-}
-
-GeneratedSql SqlGenerator::generate_upsert(
-    std::string_view table_name,
-    const std::vector<std::string>& insert_columns,
-    const std::vector<expr::SqlValue>& values,
-    const std::vector<std::string>& conflict_columns,
-    const std::vector<std::string>& update_columns
-) const {
-    std::vector<BoundValue> bound_values;
-    bound_values.reserve(values.size());
-    for (const auto& val : values) {
-        bound_values.push_back(sql_value_to_bound_value(val));
-    }
-    return generate_upsert(table_name, insert_columns, bound_values, conflict_columns, update_columns);
 }
 
 GeneratedSql SqlGenerator::generate_update(

@@ -1,5 +1,6 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
+#include "cpplinq/mapping/data_types.h"
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,10 +18,16 @@ namespace cpplinq {
 using BoundValue = std::variant<
     std::monostate,           // NULL
     int64_t,
+    uint64_t,
     double,
     std::string,
     bool,
-    std::vector<uint8_t>      // BLOB
+    std::vector<uint8_t>,     // BLOB
+    SqlNumeric,
+    SqlDate,
+    SqlTime,
+    SqlTimestamp,
+    SqlInterval
 >;
 
 // Database error
@@ -88,12 +95,18 @@ public:
     virtual bool next() = 0;  // advance to next row, returns false when done
     virtual int  column_count() const = 0;
 
-    virtual bool        is_null(int col) const = 0;
-    virtual int64_t     get_int64(int col) const = 0;
-    virtual double      get_double(int col) const = 0;
-    virtual std::string get_string(int col) const = 0;
-    virtual bool        get_bool(int col) const = 0;
+    virtual bool         is_null(int col) const = 0;
+    virtual int64_t      get_int64(int col) const = 0;
+    virtual uint64_t     get_uint64(int col) const = 0;
+    virtual double       get_double(int col) const = 0;
+    virtual std::string  get_string(int col) const = 0;
+    virtual bool         get_bool(int col) const = 0;
     virtual std::vector<uint8_t> get_blob(int col) const = 0;
+    virtual SqlNumeric   get_numeric(int col) const = 0;
+    virtual SqlDate      get_date(int col) const = 0;
+    virtual SqlTime      get_time(int col) const = 0;
+    virtual SqlTimestamp get_timestamp(int col) const = 0;
+    virtual SqlInterval  get_interval(int col) const = 0;
 };
 
 // Prepared statement

@@ -36,12 +36,18 @@ std::string MysqlDialect::limit_offset(std::optional<size_t> limit,
 
 std::string MysqlDialect::type_name(SqlType type) const {
     switch (type) {
-        case SqlType::Integer: return "INT";
-        case SqlType::BigInt:  return "BIGINT";
-        case SqlType::Real:    return "DOUBLE";
-        case SqlType::Text:    return "VARCHAR(255)";
-        case SqlType::Blob:    return "LONGBLOB";
-        case SqlType::Boolean: return "TINYINT(1)";
+        case SqlType::Integer:        return "INT";
+        case SqlType::BigInt:         return "BIGINT";
+        case SqlType::UnsignedBigInt: return "BIGINT UNSIGNED";
+        case SqlType::Real:           return "DOUBLE";
+        case SqlType::Decimal:        return "DECIMAL(28, 10)";
+        case SqlType::Text:           return "VARCHAR(255)";
+        case SqlType::Blob:           return "LONGBLOB";
+        case SqlType::Boolean:        return "TINYINT(1)";
+        case SqlType::Date:           return "DATE";
+        case SqlType::Time:           return "TIME";
+        case SqlType::Timestamp:      return "DATETIME";
+        case SqlType::Interval:       return "VARCHAR(100)";
     }
     return "VARCHAR(255)";
 }

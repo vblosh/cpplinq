@@ -24,12 +24,18 @@ std::string SqliteDialect::limit_offset(std::optional<size_t> limit,
 
 std::string SqliteDialect::type_name(SqlType type) const {
     switch (type) {
-        case SqlType::Integer: return "INTEGER";
-        case SqlType::BigInt:  return "INTEGER";
-        case SqlType::Real:    return "REAL";
-        case SqlType::Text:    return "TEXT";
-        case SqlType::Blob:    return "BLOB";
-        case SqlType::Boolean: return "INTEGER";
+        case SqlType::Integer:        return "INTEGER";
+        case SqlType::BigInt:         return "INTEGER";
+        case SqlType::UnsignedBigInt: return "INTEGER";
+        case SqlType::Real:           return "REAL";
+        case SqlType::Decimal:        return "TEXT";
+        case SqlType::Text:           return "TEXT";
+        case SqlType::Blob:           return "BLOB";
+        case SqlType::Boolean:        return "INTEGER";
+        case SqlType::Date:           return "TEXT";
+        case SqlType::Time:           return "TEXT";
+        case SqlType::Timestamp:      return "TEXT";
+        case SqlType::Interval:       return "TEXT";
     }
     return "TEXT";
 }
