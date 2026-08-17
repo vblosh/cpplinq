@@ -23,17 +23,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Release (GCC)
-            build_dir: build-release
+          - name: Clang Release
+            build_dir: build-clang
             build_type: Release
+            c_compiler: clang
+            cxx_compiler: clang++
             cxx_flags: "-Wall -Wextra"
             linker_flags: ""
             asan_options: ""
             ubsan_options: ""
 
-          - name: ASan + UBSan + LSan
+          - name: GCC (ASan + UBSan + LSan)
             build_dir: build-asan
             build_type: Debug
+            c_compiler: gcc
+            cxx_compiler: g++
             cxx_flags: >-
               -fsanitize=address,undefined
               -fno-omit-frame-pointer
@@ -104,6 +108,7 @@ jobs:
           sudo apt-get update
 
           sudo ACCEPT_EULA=Y apt-get install --no-install-recommends -y \
+            clang \
             ccache \
             ninja-build \
             libsqliteodbc \
@@ -141,6 +146,9 @@ jobs:
             -B "${{ matrix.build_dir }}" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
+            -DCMAKE_C_COMPILER="${{ matrix.c_compiler }}" \
+            -DCMAKE_CXX_COMPILER="${{ matrix.cxx_compiler }}" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}" \
