@@ -31,6 +31,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 
 - [**Architecture & Design**](doc/architecture.md) — Internal design, AST engine, dialect system, driver layer, and connection pooling.
 - [**Querying & Filtering Guide**](doc/query_guide.md) — Where filters, boolean logic, ranges (`BETWEEN`), patterns (`LIKE`), lists (`IN`), sorting (`ORDER BY`), and paging (`LIMIT`/`OFFSET`).
+- [**Row Materialization & Memory Management**](doc/materialization.md) — `.to_vector()`, `ChunkedBuffer` zero-reallocation engine, `.first()`, `.count()`, `.stream()`, and compile-time struct hydration.
 - [**Joins, Subqueries & CTEs**](doc/joins_and_relationships.md) — 2-table & 3-table joins, tuple mapping, correlated subqueries, `EXISTS`, and Common Table Expressions.
 - [**Functions, Aggregates & Window Functions**](doc/functions_and_aggregates.md) — Scalar SQL functions, date/time operations, `GROUP BY`/`HAVING`, and window functions (`ROW_NUMBER`, `RANK`, etc.).
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
@@ -169,8 +170,10 @@ ctest --test-dir build --output-on-failure -C Release
 | `test_expression` | AST construction, boolean operators, date/time AST, window function AST |
 | `test_query_builder` | Dialect-aware SQL generator (SELECT, INSERT, CTEs, Joins, Windows, UPSERT, Set Ops) |
 | `test_row_mapper` | Struct and tuple row materialization, optional NULL handling |
+| `test_chunked_buffer` | Zero-reallocation chunk-based buffer, placement new, and exact-fit vector extraction |
 | `test_sqlite_integration` | End-to-end SQLite in-memory integration testing (CRUD, joins, CTEs, subqueries) |
 | `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
+| `test_streaming` | Single-pass C++20 input ranges, timeouts, and cooperative stop_token cancellation |
 | `test_postgres_integration` | Live PostgreSQL integration test suite |
 | `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
 | `test_mysql_integration` | Live MySQL / MariaDB integration test suite |
