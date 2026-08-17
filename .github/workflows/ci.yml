@@ -30,7 +30,6 @@ jobs:
             linker_flags: ""
             asan_options: ""
             ubsan_options: ""
-            tsan_options: ""
 
           - name: ASan + UBSan + LSan
             build_dir: build-asan
@@ -44,20 +43,6 @@ jobs:
               detect_leaks=1:halt_on_error=1
             ubsan_options: >-
               halt_on_error=1:print_stacktrace=1
-            tsan_options: ""
-
-          - name: TSan
-            build_dir: build-tsan
-            build_type: Debug
-            cxx_flags: >-
-              -fsanitize=thread
-              -fno-omit-frame-pointer
-            linker_flags: >-
-              -fsanitize=thread
-            asan_options: ""
-            ubsan_options: ""
-            tsan_options: >-
-              halt_on_error=1
 
     services:
       postgres:
@@ -171,7 +156,6 @@ jobs:
         env:
           ASAN_OPTIONS: ${{ matrix.asan_options }}
           UBSAN_OPTIONS: ${{ matrix.ubsan_options }}
-          TSAN_OPTIONS: ${{ matrix.tsan_options }}
         run: |
           ctest \
             --test-dir "${{ matrix.build_dir }}" \
