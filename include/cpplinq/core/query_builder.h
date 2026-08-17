@@ -100,7 +100,7 @@ public:
         return *this;
     }
 
-    std::vector<ResultType> to_vector() {
+    ChunkedList<ResultType, 64> to_list() {
         SqlGenerator gen(conn_.dialect());
         auto prim_names = get_tuple_column_names(primary_cols_);
         auto join_names = get_tuple_column_names(joined_cols_);
@@ -132,56 +132,36 @@ public:
         auto mapper1 = create_row_mapper_helper<E1>(primary_cols_, 0);
         auto mapper2 = create_row_mapper_helper<E2>(joined_cols_, n1);
 
-        if (limit_.has_value() && *limit_ > 0) {
-            std::vector<ResultType> results;
-            results.reserve(*limit_);
-            if (reader) {
-                while (reader->next()) {
-                    E1 e1 = mapper1.map_row(*reader);
-                    if constexpr (JType == JoinType::Inner) {
-                        E2 e2 = mapper2.map_row(*reader);
-                        results.emplace_back(std::move(e1), std::move(e2));
+        ChunkedList<ResultType, 64> list;
+        if (reader) {
+            while (reader->next()) {
+                auto& item = list.emplace_back();
+                mapper1.map_row(*reader, item.first);
+                if constexpr (JType == JoinType::Inner) {
+                    mapper2.map_row(*reader, item.second);
+                } else {
+                    if (mapper2.is_all_null(*reader)) {
+                        item.second = std::nullopt;
                     } else {
-                        if (mapper2.is_all_null(*reader)) {
-                            results.emplace_back(std::move(e1), std::nullopt);
-                        } else {
-                            results.emplace_back(std::move(e1), mapper2.map_row(*reader));
-                        }
+                        item.second.emplace();
+                        mapper2.map_row(*reader, *item.second);
                     }
                 }
             }
-            return results;
-        } else {
-            ChunkedBuffer<ResultType, 64> buffer;
-            if (reader) {
-                while (reader->next()) {
-                    E1 e1 = mapper1.map_row(*reader);
-                    if constexpr (JType == JoinType::Inner) {
-                        E2 e2 = mapper2.map_row(*reader);
-                        buffer.emplace_back(std::move(e1), std::move(e2));
-                    } else {
-                        if (mapper2.is_all_null(*reader)) {
-                            buffer.emplace_back(std::move(e1), std::nullopt);
-                        } else {
-                            buffer.emplace_back(std::move(e1), mapper2.map_row(*reader));
-                        }
-                    }
-                }
-            }
-            return buffer.to_vector();
         }
+        return list;
     }
 
     std::optional<ResultType> first() {
         limit_ = 1;
-        auto results = to_vector();
+        auto results = to_list();
         if (results.empty()) return std::nullopt;
         return std::move(results[0]);
     }
 
     size_t count() {
-        auto vec = to_vector();
-        return vec.size();
+        auto list = to_list();
+        return list.size();
     }
 
     template <typename OtherEntity, typename... OtherCols>
@@ -322,7 +302,7 @@ public:
         return *this;
     }
 
-    std::vector<ResultType> to_vector() {
+    ChunkedList<ResultType, 64> to_list() {
         SqlGenerator gen(conn_.dialect());
         auto prim_names = get_tuple_column_names(primary_cols_);
         auto join2_names = get_tuple_column_names(joined_cols2_);
@@ -369,78 +349,46 @@ public:
         auto mapper2 = create_row_mapper_helper<E2>(joined_cols2_, n1);
         auto mapper3 = create_row_mapper_helper<E3>(joined_cols3_, n1 + n2);
 
-        if (limit_.has_value() && *limit_ > 0) {
-            std::vector<ResultType> results;
-            results.reserve(*limit_);
-            if (reader) {
-                while (reader->next()) {
-                    E1 e1 = mapper1.map_row(*reader);
-                    T2 e2;
-                    if constexpr (JType1 == JoinType::Inner) {
-                        e2 = mapper2.map_row(*reader);
+        ChunkedList<ResultType, 64> list;
+        if (reader) {
+            while (reader->next()) {
+                auto& item = list.emplace_back();
+                mapper1.map_row(*reader, std::get<0>(item));
+                if constexpr (JType1 == JoinType::Inner) {
+                    mapper2.map_row(*reader, std::get<1>(item));
+                } else {
+                    if (mapper2.is_all_null(*reader)) {
+                        std::get<1>(item) = std::nullopt;
                     } else {
-                        if (mapper2.is_all_null(*reader)) {
-                            e2 = std::nullopt;
-                        } else {
-                            e2 = mapper2.map_row(*reader);
-                        }
+                        std::get<1>(item).emplace();
+                        mapper2.map_row(*reader, *std::get<1>(item));
                     }
-                    T3 e3;
-                    if constexpr (JType2 == JoinType::Inner) {
-                        e3 = mapper3.map_row(*reader);
+                }
+                if constexpr (JType2 == JoinType::Inner) {
+                    mapper3.map_row(*reader, std::get<2>(item));
+                } else {
+                    if (mapper3.is_all_null(*reader)) {
+                        std::get<2>(item) = std::nullopt;
                     } else {
-                        if (mapper3.is_all_null(*reader)) {
-                            e3 = std::nullopt;
-                        } else {
-                            e3 = mapper3.map_row(*reader);
-                        }
+                        std::get<2>(item).emplace();
+                        mapper3.map_row(*reader, *std::get<2>(item));
                     }
-                    results.emplace_back(std::move(e1), std::move(e2), std::move(e3));
                 }
             }
-            return results;
-        } else {
-            ChunkedBuffer<ResultType, 64> buffer;
-            if (reader) {
-                while (reader->next()) {
-                    E1 e1 = mapper1.map_row(*reader);
-                    T2 e2;
-                    if constexpr (JType1 == JoinType::Inner) {
-                        e2 = mapper2.map_row(*reader);
-                    } else {
-                        if (mapper2.is_all_null(*reader)) {
-                            e2 = std::nullopt;
-                        } else {
-                            e2 = mapper2.map_row(*reader);
-                        }
-                    }
-                    T3 e3;
-                    if constexpr (JType2 == JoinType::Inner) {
-                        e3 = mapper3.map_row(*reader);
-                    } else {
-                        if (mapper3.is_all_null(*reader)) {
-                            e3 = std::nullopt;
-                        } else {
-                            e3 = mapper3.map_row(*reader);
-                        }
-                    }
-                    buffer.emplace_back(std::move(e1), std::move(e2), std::move(e3));
-                }
-            }
-            return buffer.to_vector();
         }
+        return list;
     }
 
     std::optional<ResultType> first() {
         limit_ = 1;
-        auto results = to_vector();
+        auto results = to_list();
         if (results.empty()) return std::nullopt;
         return std::move(results[0]);
     }
 
     size_t count() {
-        auto vec = to_vector();
-        return vec.size();
+        auto list = to_list();
+        return list.size();
     }
 
 private:
@@ -563,7 +511,7 @@ public:
         return *this;
     }
 
-    std::vector<Entity> to_vector() {
+    ChunkedList<Entity, 64> to_list() {
         SqlGenerator gen(conn_.dialect());
         auto base_cols = get_tuple_column_names(columns_);
         auto result = gen.generate_set_operation(
@@ -578,36 +526,25 @@ public:
         auto reader = stmt->execute_query();
 
         RowMapper<Entity, ColumnDefs...> mapper(columns_);
-        if (limit_.has_value() && *limit_ > 0) {
-            std::vector<Entity> entities;
-            entities.reserve(*limit_);
-            if (reader) {
-                while (reader->next()) {
-                    entities.push_back(mapper.map_row(*reader));
-                }
+        ChunkedList<Entity, 64> list;
+        if (reader) {
+            while (reader->next()) {
+                mapper.map_row(*reader, list.emplace_back());
             }
-            return entities;
-        } else {
-            ChunkedBuffer<Entity, 64> buffer;
-            if (reader) {
-                while (reader->next()) {
-                    buffer.emplace_back(mapper.map_row(*reader));
-                }
-            }
-            return buffer.to_vector();
         }
+        return list;
     }
 
     std::optional<Entity> first() {
         limit_ = 1;
-        auto results = to_vector();
+        auto results = to_list();
         if (results.empty()) return std::nullopt;
         return std::move(results[0]);
     }
 
     size_t count() {
-        auto vec = to_vector();
-        return vec.size();
+        auto list = to_list();
+        return list.size();
     }
 
 private:
@@ -835,8 +772,8 @@ public:
         return *this;
     }
 
-    // Terminal: SELECT * -> vector<Entity>
-    std::vector<Entity> to_vector() {
+    // Terminal: SELECT * -> ChunkedList<Entity, 64>
+    ChunkedList<Entity, 64> to_list() {
         SqlGenerator gen(conn_.dialect());
         auto col_names = get_column_names();
         GeneratedSql result;
@@ -853,24 +790,13 @@ public:
         auto reader = stmt->execute_query();
         
         RowMapper<Entity, ColumnDefs...> mapper(columns_);
-        if (limit_.has_value() && *limit_ > 0) {
-            std::vector<Entity> entities;
-            entities.reserve(*limit_);
-            if (reader) {
-                while (reader->next()) {
-                    entities.push_back(mapper.map_row(*reader));
-                }
+        ChunkedList<Entity, 64> list;
+        if (reader) {
+            while (reader->next()) {
+                mapper.map_row(*reader, list.emplace_back());
             }
-            return entities;
-        } else {
-            ChunkedBuffer<Entity, 64> buffer;
-            if (reader) {
-                while (reader->next()) {
-                    buffer.emplace_back(mapper.map_row(*reader));
-                }
-            }
-            return buffer.to_vector();
         }
+        return list;
     }
 
     // Terminal: stream query results as a single-pass C++20 input range
@@ -904,7 +830,7 @@ public:
     // Terminal: first result
     std::optional<Entity> first() {
         limit_ = 1;
-        auto results = to_vector();
+        auto results = to_list();
         if (results.empty()) return std::nullopt;
         return std::move(results[0]);
     }

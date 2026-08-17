@@ -111,7 +111,7 @@ ConnectionPool<sqlite> pool(":memory:", 2, 10, std::chrono::seconds(5));
     auto conn = pool.acquire();
 
     DbContext<sqlite> db(*conn);
-    auto users = db.from(users_table).to_vector();
+    auto users = db.from(users_table).to_list();
 
     // conn is automatically returned to the pool when it goes out of scope!
 }

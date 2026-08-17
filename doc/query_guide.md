@@ -22,7 +22,7 @@ Supported operators: `==`, `!=`, `<`, `<=`, `>`, `>=`
 ```cpp
 auto adults = db.from(users_table)
                 .where(users_table["age"] >= 18)
-                .to_vector();
+                .to_list();
 ```
 
 ### 2.2 Boolean Logic
@@ -31,7 +31,7 @@ Chaining with `&&`, `||`, `!`:
 ```cpp
 auto active_young_users = db.from(users_table)
                             .where((users_table["age"] >= 18 && users_table["age"] <= 30) || users_table["is_admin"] == true)
-                            .to_vector();
+                            .to_list();
 ```
 
 ### 2.3 NULL Checks
@@ -39,19 +39,19 @@ auto active_young_users = db.from(users_table)
 // IS NULL
 auto unverified = db.from(users_table)
                     .where(users_table["email"].is_null())
-                    .to_vector();
+                    .to_list();
 
 // IS NOT NULL
 auto verified = db.from(users_table)
                   .where(users_table["email"].is_not_null())
-                  .to_vector();
+                  .to_list();
 ```
 
 ### 2.4 Range Testing (`BETWEEN`)
 ```cpp
 auto prime_age = db.from(users_table)
                    .where(users_table["age"].between(25, 35))
-                   .to_vector();
+                   .to_list();
 ```
 
 ### 2.5 Pattern Matching (`LIKE` & `NOT LIKE`)
@@ -59,12 +59,12 @@ auto prime_age = db.from(users_table)
 // Names starting with 'A'
 auto a_users = db.from(users_table)
                  .where(users_table["name"].like("A%"))
-                 .to_vector();
+                 .to_list();
 
 // Emails not from spam.com
 auto clean = db.from(users_table)
                .where(users_table["email"].not_like("%@spam.com"))
-               .to_vector();
+               .to_list();
 ```
 
 ### 2.6 List Containment (`IN` & `NOT IN`)
@@ -72,12 +72,12 @@ auto clean = db.from(users_table)
 // IN list of constants
 auto selected = db.from(users_table)
                   .where(users_table["age"].in_list({20, 30, 40}))
-                  .to_vector();
+                  .to_list();
 
 // NOT IN list
 auto rest = db.from(users_table)
               .where(users_table["age"].not_in_list({10, 20}))
-              .to_vector();
+              .to_list();
 ```
 
 ---
@@ -91,7 +91,7 @@ Sorting supports multiple columns and directions:
 auto sorted = db.from(users_table)
                 .order_by(users_table["department"])
                 .then_by_desc(users_table["salary"])
-                .to_vector();
+                .to_list();
 ```
 
 Alternatively using `.asc()` / `.desc()`:
@@ -99,7 +99,7 @@ Alternatively using `.asc()` / `.desc()`:
 auto sorted = db.from(users_table)
                 .order_by(users_table["salary"].desc())
                 .then_by(users_table["name"].asc())
-                .to_vector();
+                .to_list();
 ```
 
 ---
@@ -112,7 +112,7 @@ auto page2 = db.from(users_table)
                .order_by(users_table["id"])
                .limit(10)
                .offset(10)
-               .to_vector();
+               .to_list();
 ```
 
 ---
@@ -122,7 +122,7 @@ auto page2 = db.from(users_table)
 ```cpp
 auto distinct_users = db.from(users_table)
                         .distinct()
-                        .to_vector();
+                        .to_list();
 ```
 
 ---
@@ -131,7 +131,8 @@ auto distinct_users = db.from(users_table)
 
 | Method | Return Type | Description |
 |---|---|---|
-| `.to_vector()` | `std::vector<Entity>` | Executes query and returns all matching entities |
+| `.to_list()` | `ChunkedList<Entity, 64>` | Executes query and returns all matching entities zero-copy |
+| `.stream()` | `EntityStream<Entity>` | Returns lazy C++20 input range for zero-heap streaming |
 | `.first()` | `std::optional<Entity>` | Executes query with `LIMIT 1` and returns the first entity, or `std::nullopt` |
 | `.count()` | `size_t` | Executes `SELECT COUNT(*)` |
 | `.count_distinct(col)` | `size_t` | Executes `SELECT COUNT(DISTINCT col)` |

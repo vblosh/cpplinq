@@ -47,12 +47,12 @@ int main() {
               << id_alice << ", " << id_bob << ", " << id_charlie << ", "
               << id_diana << ", " << id_evan << std::endl << std::endl;
 
-    // 6. Query with Fluent Filtering & Sorting
+    // 6. Query with Fluent Filtering & Sorting (Zero-Copy .to_list())
     std::cout << "--> Query: Users with age >= 25, ordered by age desc:" << std::endl;
     auto adults = db.from(users_table)
                     .where(users_table["age"] >= 25)
                     .order_by_desc(users_table["age"])
-                    .to_vector();
+                    .to_list();
 
     for (const auto& u : adults) {
         std::cout << "    [" << u.id << "] " << u.name
@@ -61,13 +61,14 @@ int main() {
     }
     std::cout << std::endl;
 
-    // 7. Query with Combined Logic & Pagination
+    // 7. Query with Combined Logic & Pagination (and .to_vector() conversion if contiguous buffer needed)
     std::cout << "--> Query: Limit 2, Offset 1, ordered by name:" << std::endl;
-    auto paged = db.from(users_table)
-                   .order_by(users_table["name"])
-                   .limit(2)
-                   .offset(1)
-                   .to_vector();
+    std::vector<User> paged = db.from(users_table)
+                                .order_by(users_table["name"])
+                                .limit(2)
+                                .offset(1)
+                                .to_list()
+                                .to_vector();
 
     for (const auto& u : paged) {
         std::cout << "    [" << u.id << "] " << u.name << " (Age: " << u.age << ")" << std::endl;

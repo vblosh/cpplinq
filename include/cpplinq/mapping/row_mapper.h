@@ -23,6 +23,10 @@ public:
         return entity;
     }
 
+    void map_row(IDataReader& reader, Entity& entity) const {
+        map_columns(entity, reader, std::index_sequence_for<ColumnDefs...>{});
+    }
+
     bool is_all_null(IDataReader& reader) const {
         return check_all_null(reader, std::index_sequence_for<ColumnDefs...>{});
     }

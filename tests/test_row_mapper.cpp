@@ -142,6 +142,32 @@ TEST(RowMapperTest, MapPrimitiveFields) {
     EXPECT_FALSE(reader.next());
 }
 
+TEST(RowMapperTest, MapInPlaceExistingEntity) {
+    auto cols = std::make_tuple(
+        column("id", &Person::id),
+        column("name", &Person::name),
+        column("age", &Person::age),
+        column("score", &Person::score),
+        column("is_active", &Person::is_active)
+    );
+
+    auto mapper = create_mapper<Person>(cols);
+
+    std::vector<MockDataReader::Row> data = {
+        {int64_t(42), std::string("Charlie"), int64_t(33), double(88.5), true}
+    };
+
+    MockDataReader reader(data);
+    ASSERT_TRUE(reader.next());
+    Person p;
+    mapper.map_row(reader, p);
+    EXPECT_EQ(p.id, 42);
+    EXPECT_EQ(p.name, "Charlie");
+    EXPECT_EQ(p.age, 33);
+    EXPECT_DOUBLE_EQ(p.score, 88.5);
+    EXPECT_TRUE(p.is_active);
+}
+
 // ============================================================================
 // RowMapper Nullable / Optional Tests
 // ============================================================================

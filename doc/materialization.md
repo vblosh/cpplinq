@@ -1,6 +1,6 @@
 # Row Materialization & Memory Management Guide
 
-`cpplinq` uses compile-time metaprogramming and member pointer reflection to materialize database rows into strongly-typed C++ structs, pairs, and tuples with **zero runtime reflection overhead, zero intermediate string parsing, and zero redundant memory reallocations**.
+`cpplinq` uses compile-time metaprogramming and member pointer reflection to materialize database rows into strongly-typed C++ structs, pairs, and tuples with **true zero-copy in-place hydration, zero runtime reflection overhead, zero intermediate string parsing, and zero redundant memory reallocations**.
 
 ---
 
@@ -24,56 +24,52 @@ All queries in `cpplinq` are constructed using **deferred execution**. Query bui
                   │   RowMapper<Entity, Cols...>  │
                   └──────────────┬────────────────┘
                                  │
-       ┌─────────────────────────┼─────────────────────────┐
-       ▼                         ▼                         ▼
-.to_vector()                  .first()                 .stream()
-(ChunkedBuffer -> vector)     (Single std::optional)   (Lazy C++20 Range)
+        ┌────────────────────────┼────────────────────────┐
+        ▼                        ▼                        ▼
+    .to_list()                .first()                .stream()
+(ChunkedList Zero-Copy)   (Single std::optional)   (Lazy C++20 Range)
 ```
 
 ---
 
 ## 2. Materialization Methods
 
-### 2.1 `.to_vector()` — Complete Collection Materialization
+### 2.1 `.to_list()` — Zero-Copy In-Place Row Materialization
 
-Executes the query and materializes all matching database rows into a contiguous `std::vector<Entity>` (or `std::vector<std::pair<...>>` / `std::vector<std::tuple<...>>` for joins).
+Executes the query and materializes database rows directly into a **`cpplinq::ChunkedList<Entity, 64>`**. 
 
 ```cpp
 auto users = db.from(users_table)
                .where(users_table["age"] >= 18)
                .order_by(users_table["name"])
-               .to_vector();
+               .to_list();
 ```
 
-#### High-Performance Zero-Reallocation Architecture:
-Standard `std::vector::push_back` causes $O(\log N)$ memory reallocations during cursor iteration, repeatedly moving and copying all previously fetched structs. `cpplinq` avoids this through a dual-path engine:
+#### Pure Zero-Copy & In-Place Hydration Architecture:
+Standard `std::vector::push_back` causes $O(\log N)$ memory reallocations during cursor iteration, repeatedly moving and copying all previously fetched structs. Furthermore, copying or moving structs out of cursor readers into temporary objects adds unnecessary overhead.
 
-1. **Known Limit Fast-Path**: If `.limit(N)` is defined on the query, `cpplinq` immediately calls `results.reserve(*limit_)`. The destination vector is allocated **exactly once** upfront.
-2. **Chunked Buffer Architecture (`ChunkedBuffer<Entity, 64>` / `ChunkedList<Entity, 64>`)**: When row count is unknown upfront, `cpplinq` uses a block-allocated chunk buffer:
-   - Rows are constructed in-place into fixed 64-element blocks.
-   - When a block fills up, a new block is allocated; **existing elements are never moved or copied** while streaming from the database.
-   - Once cursor iteration finishes and the exact count $N$ is known, `cpplinq` allocates the final `std::vector<Entity>` **exactly once** and moves elements sequentially in a single cache-friendly pass.
+`cpplinq` achieves **true zero-copy materialization**:
+1. **In-Place Chunk Construction**: As the cursor advances, `list.emplace_back()` constructs the destination entity directly in fixed-size 64-element heap chunk blocks.
+2. **Direct Field Writing**: `RowMapper::map_row(*reader, entity_ref)` writes column data directly into the newly constructed memory slot inside the chunk. **Zero temporary entity copies, zero struct moves.**
+3. **$O(1)$ Container Return**: When returning from `.to_list()`, `ChunkedList` is transferred by value in $O(1)$ by swapping the chunk pointer table. The entities inside the chunks never move.
 
 ```cpp
-// Direct usage of ChunkedBuffer / ChunkedList as a standalone container:
-cpplinq::ChunkedList<User, 64> buffer;
-buffer.emplace_back(1, "Alice", "alice@example.com", 30);
-buffer.emplace_back(2, "Bob", "bob@example.com", 25);
+// Direct usage of ChunkedList as a rich container:
+for (const auto& user : users) {
+    std::cout << user.name << "\n";
+}
 
-// 1. Forward iteration:
-for (const auto& user : buffer) { /* ... */ }
+// Full Random-Access and Indexing:
+User& first_user = users[0];
+User& checked_user = users.at(1);
 
-// 2. Reverse iteration:
-for (auto it = buffer.rbegin(); it != buffer.rend(); ++it) { /* ... */ }
-
-// 3. Random access iterators & standard algorithms:
-std::sort(buffer.begin(), buffer.end(), [](const auto& a, const auto& b) {
+// Standard Algorithms and C++20 Ranges Views:
+std::sort(users.begin(), users.end(), [](const auto& a, const auto& b) {
     return a.age < b.age;
 });
 
-// 4. Element access:
-User& first_user = buffer[0];
-User& checked_user = buffer.at(1);
+// Conversion to contiguous std::vector when required:
+std::vector<User> vec = users.to_vector();
 ```
 
 ---
@@ -136,32 +132,31 @@ for (const User& user : db.from(users_table)
 
 ## 3. Multi-Table Join & Outer Join Materialization
 
-When joining tables, `cpplinq` inspects join types at compile time and materializes appropriate compound types:
+When joining tables, `cpplinq` inspects join types at compile time and materializes appropriate compound types directly inside `ChunkedList`:
 
-### Inner Joins $\to$ `std::pair<E1, E2>` / `std::tuple<E1, E2, E3>`
+### Inner Joins $\to$ `ChunkedList<std::pair<E1, E2>>` / `ChunkedList<std::tuple<E1, E2, E3>>`
 ```cpp
 // 2 Tables Inner Join
-std::vector<std::pair<User, Order>> pairs = 
+cpplinq::ChunkedList<std::pair<User, Order>> pairs = 
     db.from(users_table)
-      .inner_join(orders_table).on(users_table["id"] == orders_table["user_id"])
-      .to_vector();
+      .join(orders_table).on(users_table["id"] == orders_table["user_id"])
+      .to_list();
 
 // 3 Tables Inner Join
-std::vector<std::tuple<User, Order, Item>> triplets = 
+cpplinq::ChunkedList<std::tuple<User, Order, Account>> triplets = 
     db.from(users_table)
-      .inner_join(orders_table).on(users_table["id"] == orders_table["user_id"])
-      .inner_join(items_table).on(orders_table["id"] == items_table["order_id"])
-      .to_vector();
+      .join(orders_table).on(users_table["id"] == orders_table["user_id"])
+      .join(accounts_table).on(users_table["name"] == accounts_table["username"])
+      .to_list();
 ```
 
-### Left Outer Joins $\to$ `std::pair<E1, std::optional<E2>>`
+### Left Outer Joins $\to$ `ChunkedList<std::pair<E1, std::optional<E2>>>`
 For outer joins where the right-hand entity may not match, `cpplinq` wraps the joined entity in `std::optional`:
 
 ```cpp
-std::vector<std::pair<User, std::optional<Order>>> results = 
-    db.from(users_table)
-      .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
-      .to_vector();
+auto results = db.from(users_table)
+                 .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
+                 .to_list();
 
 for (const auto& [user, order_opt] : results) {
     if (order_opt.has_value()) {
@@ -223,9 +218,10 @@ void map_single_column(Entity& entity, IDataReader& reader) const {
 
 ## 5. Comparison Matrix of Materialization Methods
 
-| Method | Return Type | Memory Footprint | Reallocations | Best Use Case |
+| Method | Return Type | Memory Footprint | Move/Copy Overhead | Best Use Case |
 |---|---|---|---|---|
-| **`.to_vector()`** | `std::vector<Entity>` | Contiguous buffer of all rows | **0** during fetch (via `ChunkedBuffer` or `.limit()`) | Standard querying, small-to-medium result sets, random access |
+| **`.to_list()`** | `ChunkedList<Entity, 64>` | Block-allocated chunks | **0 moves, 0 copies** (in-place hydration) | Primary querying, sorting, ranges algorithms, high throughput |
+| **`list.to_vector()`** | `std::vector<Entity>` | Contiguous array | 1 sequential move pass | Legacy APIs or C-libraries requiring `data()` contiguous pointers |
 | **`.first()`** | `std::optional<Entity>` | $O(1)$ single struct | **0** | Finding by primary key, unique constraint, or existence check |
 | **`.count()`** | `size_t` | $O(1)$ scalar | **0** | Pagination counters, cardinality checks |
-| **`.stream()`** | `EntityStream` (C++20 Range) | $O(1)$ active row buffer | **0** (no vector allocated) | Large datasets, continuous data processing, pipeline transforms |
+| **`.stream()`** | `EntityStream` (C++20 Range) | $O(1)$ active row buffer | **0** (no container allocated) | Large datasets, continuous data processing, pipeline transforms |

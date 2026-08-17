@@ -256,3 +256,24 @@ TEST(ChunkedBufferTest, ProperDestructionOnClear) {
     }
     EXPECT_EQ(DestructorTracker::destruct_count, 10);
 }
+
+TEST(ChunkedBufferTest, ZeroMoveConstructionAndValueReturn) {
+    DestructorTracker::reset();
+    auto make_list = []() -> ChunkedList<DestructorTracker, 4> {
+        ChunkedList<DestructorTracker, 4> list;
+        for (int i = 0; i < 10; ++i) {
+            auto& elem = list.emplace_back();
+            elem.value = i;
+        }
+        return list; // Return ChunkedList by value (O(1) pointer transfer)
+    };
+
+    auto list = make_list();
+    EXPECT_EQ(list.size(), 10u);
+    EXPECT_EQ(DestructorTracker::construct_count, 10);
+    EXPECT_EQ(DestructorTracker::move_count, 0); // Elements inside chunks are never moved!
+
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_EQ(list[i].value, i);
+    }
+}

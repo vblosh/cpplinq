@@ -66,7 +66,7 @@ Without a pool, under high concurrency (e.g., hundreds of concurrent API request
 {
     auto conn = pool->acquire();
     auto db = conn.get_context(); // Or DbContext<Backend>(conn.get())
-    auto users = db.from(users_table).to_vector();
+    auto users = db.from(users_table).to_list();
     
     // As soon as `conn` goes out of scope, its destructor returns the
     // physical connection back to the idle queue automatically.

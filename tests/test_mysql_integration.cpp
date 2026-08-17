@@ -154,7 +154,7 @@ TEST_F(MysqlIntegrationTest, InsertAndSelectAutoIncrement) {
 
     auto users = db->from(users_table)
                    .order_by(users_table["id"])
-                   .to_vector();
+                   .to_list();
 
     ASSERT_EQ(users.size(), 2);
     EXPECT_EQ(users[0].name, "Alice");
@@ -174,7 +174,7 @@ TEST_F(MysqlIntegrationTest, FilteringAndSorting) {
     auto filtered = db->from(users_table)
                       .where(users_table["age"] >= 30)
                       .order_by_desc(users_table["age"])
-                      .to_vector();
+                      .to_list();
 
     ASSERT_EQ(filtered.size(), 2);
     EXPECT_EQ(filtered[0].name, "Charlie");
@@ -190,7 +190,7 @@ TEST_F(MysqlIntegrationTest, Pagination) {
                   .order_by(users_table["id"])
                   .limit(3)
                   .offset(3)
-                  .to_vector();
+                  .to_list();
 
     ASSERT_EQ(page.size(), 3);
     EXPECT_EQ(page[0].name, "User4");
@@ -259,7 +259,7 @@ TEST_F(MysqlIntegrationTest, Joins) {
     // 2-table INNER JOIN
     auto user_orders = db->from(users_table)
                          .join(orders_table).on(users_table["id"] == orders_table["user_id"])
-                         .to_vector();
+                         .to_list();
 
     ASSERT_EQ(user_orders.size(), 1);
     EXPECT_EQ(user_orders[0].first.name, "Alice");
@@ -269,7 +269,7 @@ TEST_F(MysqlIntegrationTest, Joins) {
     auto multi_res = db->from(users_table)
                        .join(orders_table).on(users_table["id"] == orders_table["user_id"])
                        .join(accounts_table).on(users_table["name"] == accounts_table["username"])
-                       .to_vector();
+                       .to_list();
 
     ASSERT_EQ(multi_res.size(), 1);
     const auto& [u, o, a] = multi_res[0];
@@ -289,7 +289,7 @@ TEST_F(MysqlIntegrationTest, Subqueries) {
                         db->from(orders_table)
                           .where(orders_table["user_id"] == users_table["id"])
                     ))
-                    .to_vector();
+                    .to_list();
 
     ASSERT_EQ(buyers.size(), 1);
     EXPECT_EQ(buyers[0].name, "Alice");

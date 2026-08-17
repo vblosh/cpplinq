@@ -117,7 +117,7 @@ TEST_F(SqliteIntegrationTest, EnsureTableAndInsertSingle) {
     int64_t id2 = db->insert(users_table, u2);
     EXPECT_GT(id2, id1);
 
-    auto all = db->from(users_table).to_vector();
+    auto all = db->from(users_table).to_list();
     ASSERT_EQ(all.size(), 2);
     EXPECT_EQ(all[0].id, id1);
     EXPECT_EQ(all[0].name, "Alice");
@@ -151,7 +151,7 @@ TEST_F(SqliteIntegrationTest, QueryWhereFilter) {
     auto adults = db->from(users_table)
                     .where(users_table["age"] >= 25)
                     .order_by(users_table["age"])
-                    .to_vector();
+                    .to_list();
 
     ASSERT_EQ(adults.size(), 2);
     EXPECT_EQ(adults[0].name, "Alice");
@@ -167,12 +167,13 @@ TEST_F(SqliteIntegrationTest, QueryOrderByAndLimitOffset) {
     db->insert(users_table, User{0, "User4", std::nullopt, 50});
     db->insert(users_table, User{0, "User5", std::nullopt, 40});
 
-    // Descending order with limit and offset
-    auto page = db->from(users_table)
-                  .order_by_desc(users_table["age"])
-                  .limit(2)
-                  .offset(1)
-                  .to_vector();
+    // Descending order with limit and offset, also testing .to_list().to_vector()
+    std::vector<User> page = db->from(users_table)
+                               .order_by_desc(users_table["age"])
+                               .limit(2)
+                               .offset(1)
+                               .to_list()
+                               .to_vector();
 
     ASSERT_EQ(page.size(), 2);
     EXPECT_EQ(page[0].age, 40); // second highest
@@ -303,7 +304,7 @@ TEST_F(SqliteIntegrationTest, NullAndNotNullFilters) {
 
     auto null_list = db->from(users_table)
                        .where(users_table["email"].is_null())
-                       .to_vector();
+                       .to_list();
 
     EXPECT_EQ(null_list.size(), 2);
     for (const auto& u : null_list) {
@@ -312,7 +313,7 @@ TEST_F(SqliteIntegrationTest, NullAndNotNullFilters) {
 
     auto not_null_list = db->from(users_table)
                            .where(users_table["email"].is_not_null())
-                           .to_vector();
+                           .to_list();
 
     EXPECT_EQ(not_null_list.size(), 2);
     for (const auto& u : not_null_list) {
@@ -329,7 +330,7 @@ TEST_F(SqliteIntegrationTest, BetweenAndLikeFilters) {
     auto between_list = db->from(users_table)
                           .where(users_table["age"].between(25, 45))
                           .order_by(users_table["age"])
-                          .to_vector();
+                          .to_list();
 
     ASSERT_EQ(between_list.size(), 2);
     EXPECT_EQ(between_list[0].name, "Bob");
@@ -337,7 +338,7 @@ TEST_F(SqliteIntegrationTest, BetweenAndLikeFilters) {
 
     auto like_list = db->from(users_table)
                        .where(users_table["name"].like("A%"))
-                       .to_vector();
+                       .to_list();
 
     ASSERT_EQ(like_list.size(), 1);
     EXPECT_EQ(like_list[0].name, "Alice");
@@ -352,7 +353,7 @@ TEST_F(SqliteIntegrationTest, InListAndMultiColumnThenBy) {
                      .where(users_table["age"].in_list({20, 30}))
                      .order_by(users_table["age"], SortDir::Asc)
                      .then_by(users_table["name"], SortDir::Desc)
-                     .to_vector();
+                     .to_list();
 
     ASSERT_EQ(in_list.size(), 3);
     EXPECT_EQ(in_list[0].name, "Charlie");
@@ -366,14 +367,14 @@ TEST_F(SqliteIntegrationTest, SqlFunctionsFilter) {
 
     auto res = db->from(users_table)
                  .where(users_table["name"].lower() == "alice")
-                 .to_vector();
+                 .to_list();
 
     ASSERT_EQ(res.size(), 1);
     EXPECT_EQ(res[0].name, "ALICE");
 
     auto len_res = db->from(users_table)
                      .where(length(users_table["name"]) == 3)
-                     .to_vector();
+                     .to_list();
 
     ASSERT_EQ(len_res.size(), 1);
     EXPECT_EQ(len_res[0].name, "Bob");
@@ -390,7 +391,7 @@ TEST_F(SqliteIntegrationTest, GroupByAndCountDistinct) {
     auto grouped = db->from(users_table)
                      .group_by(users_table["id"], users_table["name"], users_table["email"], users_table["age"])
                      .having(users_table["age"] >= 30)
-                     .to_vector();
+                     .to_list();
 
     ASSERT_EQ(grouped.size(), 2);
     EXPECT_EQ(grouped[0].age, 30);
@@ -408,7 +409,7 @@ TEST_F(SqliteIntegrationTest, InnerJoinAndLeftJoin) {
     auto inner_rows = db->from(users_table)
                         .join(orders_table).on(users_table["id"] == orders_table["user_id"])
                         .order_by(orders_table["amount"])
-                        .to_vector();
+                        .to_list();
 
     ASSERT_EQ(inner_rows.size(), 2);
     EXPECT_EQ(inner_rows[0].first.name, "Alice");
@@ -421,7 +422,7 @@ TEST_F(SqliteIntegrationTest, InnerJoinAndLeftJoin) {
                        .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
                        .order_by(users_table["id"])
                        .then_by(orders_table["amount"])
-                       .to_vector();
+                       .to_list();
 
     ASSERT_EQ(left_rows.size(), 3);
     EXPECT_EQ(left_rows[0].first.name, "Alice");
@@ -463,22 +464,22 @@ TEST_F(SqliteIntegrationTest, SetOperations) {
     auto q1 = db->from(users_table).where(users_table["age"] <= 20);
     auto q2 = db->from(users_table).where(users_table["age"] >= 30);
 
-    auto union_rows = q1.union_with(q2).order_by(users_table["age"]).to_vector();
+    auto union_rows = q1.union_with(q2).order_by(users_table["age"]).to_list();
     ASSERT_EQ(union_rows.size(), 3);
     EXPECT_EQ(union_rows[0].name, "Alice");
     EXPECT_EQ(union_rows[1].name, "Bob");
     EXPECT_EQ(union_rows[2].name, "Charlie");
 
-    auto union_all_rows = q1.union_all(q1).to_vector();
+    auto union_all_rows = q1.union_all(q1).to_list();
     ASSERT_EQ(union_all_rows.size(), 2);
     EXPECT_EQ(union_all_rows[0].name, "Alice");
     EXPECT_EQ(union_all_rows[1].name, "Alice");
 
-    auto intersect_rows = q1.intersect(db->from(users_table).where(users_table["age"] < 30)).to_vector();
+    auto intersect_rows = q1.intersect(db->from(users_table).where(users_table["age"] < 30)).to_list();
     ASSERT_EQ(intersect_rows.size(), 1);
     EXPECT_EQ(intersect_rows[0].name, "Alice");
 
-    auto except_rows = db->from(users_table).except_from(q1).order_by(users_table["age"]).to_vector();
+    auto except_rows = db->from(users_table).except_from(q1).order_by(users_table["age"]).to_list();
     ASSERT_EQ(except_rows.size(), 2);
     EXPECT_EQ(except_rows[0].name, "Bob");
     EXPECT_EQ(except_rows[1].name, "Charlie");
@@ -493,21 +494,21 @@ TEST_F(SqliteIntegrationTest, SubqueriesExistsAndIn) {
     // EXISTS: Alice has orders, Bob does not
     auto has_orders = db->from(users_table)
                         .where(exists(db->from(orders_table).where(orders_table["user_id"] == users_table["id"])))
-                        .to_vector();
+                        .to_list();
     ASSERT_EQ(has_orders.size(), 1);
     EXPECT_EQ(has_orders[0].name, "Alice");
 
     // NOT EXISTS: Bob has no orders
     auto no_orders = db->from(users_table)
                        .where(not_exists(db->from(orders_table).where(orders_table["user_id"] == users_table["id"])))
-                       .to_vector();
+                       .to_list();
     ASSERT_EQ(no_orders.size(), 1);
     EXPECT_EQ(no_orders[0].name, "Bob");
 
     // IN (subquery): Alice's id is in orders
     auto in_orders = db->from(users_table)
                        .where(users_table["id"].in(db->from(orders_table).where(orders_table["amount"] > 100.0).as_subquery(orders_table["user_id"])))
-                       .to_vector();
+                       .to_list();
     ASSERT_EQ(in_orders.size(), 1);
     EXPECT_EQ(in_orders[0].name, "Alice");
 }
@@ -518,13 +519,13 @@ TEST_F(SqliteIntegrationTest, DateTimeFunctions) {
 
     auto aug_events = db->from(events_table)
                         .where(events_table["event_date"].year() == 2026 && events_table["event_date"].month() == 8)
-                        .to_vector();
+                        .to_list();
     ASSERT_EQ(aug_events.size(), 1);
     EXPECT_EQ(aug_events[0].name, "SummerParty");
 
     auto day10_events = db->from(events_table)
                           .where(events_table["event_date"].day() == 10)
-                          .to_vector();
+                          .to_list();
     ASSERT_EQ(day10_events.size(), 1);
     EXPECT_EQ(day10_events[0].name, "WinterParty");
 }
@@ -565,7 +566,7 @@ TEST_F(SqliteIntegrationTest, MultiTableJoins) {
     auto results = db->from(users_table)
                      .join(orders_table).on(users_table["id"] == orders_table["user_id"])
                      .join(accounts_table).on(users_table["name"] == accounts_table["username"])
-                     .to_vector();
+                     .to_list();
 
     ASSERT_EQ(results.size(), 1);
     const auto& [user, order, account] = results[0];
@@ -578,7 +579,7 @@ TEST_F(SqliteIntegrationTest, MultiTableJoins) {
                           .left_join(orders_table).on(users_table["id"] == orders_table["user_id"])
                           .join(accounts_table).on(users_table["name"] == accounts_table["username"])
                           .order_by(users_table["name"])
-                          .to_vector();
+                          .to_list();
 
     ASSERT_EQ(left_results.size(), 2);
     // Alice has order

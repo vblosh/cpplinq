@@ -31,7 +31,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 
 - [**Architecture & Design**](doc/architecture.md) — Internal design, AST engine, dialect system, driver layer, and connection pooling.
 - [**Querying & Filtering Guide**](doc/query_guide.md) — Where filters, boolean logic, ranges (`BETWEEN`), patterns (`LIKE`), lists (`IN`), sorting (`ORDER BY`), and paging (`LIMIT`/`OFFSET`).
-- [**Row Materialization & Memory Management**](doc/materialization.md) — `.to_vector()`, `ChunkedBuffer` zero-reallocation engine, `.first()`, `.count()`, `.stream()`, and compile-time struct hydration.
+- [**Row Materialization & Memory Management**](doc/materialization.md) — `.to_list()`, `ChunkedList` zero-copy in-place hydration, `.first()`, `.count()`, `.stream()`, and compile-time struct hydration.
 - [**Joins, Subqueries & CTEs**](doc/joins_and_relationships.md) — 2-table & 3-table joins, tuple mapping, correlated subqueries, `EXISTS`, and Common Table Expressions.
 - [**Functions, Aggregates & Window Functions**](doc/functions_and_aggregates.md) — Scalar SQL functions, date/time operations, `GROUP BY`/`HAVING`, and window functions (`ROW_NUMBER`, `RANK`, etc.).
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
@@ -93,17 +93,17 @@ int main() {
     int64_t bob_id   = db.insert(users_table, User{0, "Bob",   std::nullopt,        25});
     db.insert(orders_table, Order{0, static_cast<int>(alice_id), 199.99});
 
-    // 5. Type-Safe Query with Filters & Sorting
+    // 5. Type-Safe Query with Filters & Sorting (Zero-Copy .to_list())
     auto adults = db.from(users_table)
                     .where(users_table["age"] >= 25 && users_table["email"].is_not_null())
                     .order_by_desc(users_table["age"])
-                    .to_vector();
+                    .to_list();
 
-    // 6. Multi-Table INNER JOIN (returns std::pair<User, Order>)
+    // 6. Multi-Table INNER JOIN (returns ChunkedList<std::pair<User, Order>>)
     auto user_orders = db.from(users_table)
                          .join(orders_table).on(users_table["id"] == orders_table["user_id"])
                          .where(orders_table["amount"] > 100.0)
-                         .to_vector();
+                         .to_list();
 
     for (const auto& [user, order] : user_orders) {
         std::cout << user.name << " bought Order #" << order.id << " ($" << order.amount << ")\n";
@@ -115,7 +115,7 @@ int main() {
                         db.from(orders_table)
                           .where(orders_table["user_id"] == users_table["id"])
                     ))
-                    .to_vector();
+                    .to_list();
 
     // 8. Cross-Dialect UPSERT
     db.upsert(

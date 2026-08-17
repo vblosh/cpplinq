@@ -38,16 +38,16 @@ current_timestamp()
 auto aug_events = db.from(events_table)
                     .where(events_table["created_at"].year() == 2026 &&
                            events_table["created_at"].month() == 8)
-                    .to_vector();
+                    .to_list();
 
 auto day_events = db.from(events_table)
                     .where(events_table["created_at"].day() == 16)
-                    .to_vector();
+                    .to_list();
 
 // Date arithmetic:
 auto upcoming = db.from(events_table)
                   .where(events_table["created_at"].add_days(7) >= now())
-                  .to_vector();
+                  .to_list();
 ```
 
 ---
@@ -71,7 +71,7 @@ auto dept_groups = db.from(employees_table)
                      .group_by(employees_table["department"])
                      .having(employees_table["salary"].avg() > 75000.0)
                      .order_by(employees_table["department"])
-                     .to_vector();
+                     .to_list();
 ```
 
 ---
