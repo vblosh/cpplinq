@@ -28,6 +28,8 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
         return static_cast<U>(reader.get_double(col_idx));
     } else if constexpr (std::is_same_v<U, std::string>) {
         return reader.get_string(col_idx);
+    } else if constexpr (std::is_same_v<U, std::wstring>) {
+        return reader.get_wstring(col_idx);
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         return reader.get_blob(col_idx);
     } else if constexpr (std::is_same_v<U, SqlNumeric>) {
@@ -42,7 +44,9 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
         return reader.get_timestamp(col_idx).to_time_point();
     } else if constexpr (std::is_same_v<U, SqlInterval>) {
         return reader.get_interval(col_idx);
-    } else if constexpr (requires(SqlInterval iv) { iv.template to_duration<U>(); }) {
+    } else if constexpr (std::is_same_v<U, SqlGuid>) {
+        return reader.get_guid(col_idx);
+    } else if constexpr (is_chrono_duration_v<U>) {
         return reader.get_interval(col_idx).template to_duration<U>();
     } else {
         return U{};
@@ -68,6 +72,12 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{std::string(val)};
     } else if constexpr (std::is_same_v<U, const char*>) {
         return BoundValue{std::string(val ? val : "")};
+    } else if constexpr (std::is_same_v<U, std::wstring>) {
+        return BoundValue{val};
+    } else if constexpr (std::is_same_v<U, std::wstring_view>) {
+        return BoundValue{std::wstring(val)};
+    } else if constexpr (std::is_same_v<U, const wchar_t*>) {
+        return BoundValue{std::wstring(val ? val : L"")};
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, SqlNumeric>) {
@@ -84,6 +94,8 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{val};
     } else if constexpr (requires { SqlInterval::from_duration(val); }) {
         return BoundValue{SqlInterval::from_duration(val)};
+    } else if constexpr (std::is_same_v<U, SqlGuid>) {
+        return BoundValue{val};
     } else {
         return BoundValue{std::monostate{}};
     }

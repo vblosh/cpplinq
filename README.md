@@ -8,18 +8,19 @@
 
 - 🛡️ **Type-Safe Expression AST**: Operator overloading (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) builds a strongly-typed expression tree, preventing syntax and runtime type errors.
 - ⚡ **Zero-Overhead Struct Mapping**: Maps database records directly into plain C++ structs and tuples (`std::pair`, `std::tuple`) without macros, code generators, or reflection boilerplate.
+- 💎 **Rich Cross-Database Data Types**: Full native support for exact-precision `SqlNumeric` (decimals), dates (`SqlDate`, `std::chrono::year_month_day`), times (`SqlTime`, `std::chrono::hh_mm_ss`), timestamps (`SqlTimestamp`, `std::chrono::system_clock::time_point`), intervals/durations (`SqlInterval`, `std::chrono::duration`), native UUIDs/GUIDs (`SqlGuid`), UTF-16 Unicode wide strings (`std::wstring`), BLOBs (`std::vector<uint8_t>`), and nullables (`std::optional<T>`).
 - 🔗 **Multi-Table Joins & Relationships**: Type-safe `INNER JOIN` and `LEFT JOIN` (2 and 3+ tables) with tuple/pair hydration and nullable `std::optional<T>` mapping.
 - 🧱 **Common Table Expressions (CTEs)**: Fluent `WITH cte AS (...) SELECT ...` queries via `.with_cte()`.
 - 🪟 **Window Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, and aggregate window functions (`SUM/AVG/COUNT OVER`) with `.over().partition_by(...).order_by(...)`.
-- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, and SQL Server.
+- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, SQL Server, and MySQL.
 - 🔍 **Subqueries & Predicates**: `EXISTS`, `NOT EXISTS`, `IN (subquery)`, `LIKE`, `BETWEEN`, `IN (list)`, and scalar subqueries.
-- 🔄 **Cross-Dialect UPSERT**: Atomic insert-or-update operations (`INSERT ON CONFLICT DO UPDATE` on SQLite/PostgreSQL, `MERGE INTO` on MSSQL).
+- 🔄 **Cross-Dialect UPSERT & Bulk Operations**: Atomic single and batch upserts (`insert_many`, `update_many`, `delete_many`, `upsert_many`, `truncate`) with driver-accelerated ODBC array parameter binding.
 - 🔀 **SQL Set Operations**: `union_with` (`UNION`), `union_all` (`UNION ALL`), `intersect` (`INTERSECT`), and `except_from` (`EXCEPT`).
 - 🏊 **Thread-Safe Connection Pool**: High-performance `ConnectionPool<Backend>` with RAII leasing (`PooledConnection`), acquisition timeouts, and recycling.
 - 📊 **Full Aggregations & Grouping**: `count()`, `count_distinct()`, `sum()`, `avg()`, `min_val()`, `max_val()`, `group_by()`, and `having()`.
 - 💾 **Multi-Database Support**:
   - **SQLite** (built-in amalgamation, in-memory & file databases)
-  - **PostgreSQL** (native driver with dollar-sign parameter binding `$1` and `RETURNING`)
+  - **PostgreSQL** (native ODBC/libpq with parameter binding and `RETURNING`)
   - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
   - **MySQL / MariaDB** (native ODBC driver with backtick quoting `` `table` ``, `ON DUPLICATE KEY UPDATE`, `LAST_INSERT_ID()`)
 
@@ -155,7 +156,7 @@ cmake --build build --config Release --parallel
 
 ### Run Test Suite
 ```bash
-# Run all 8 test suites
+# Run all 10 test suites
 ctest --test-dir build --output-on-failure -C Release
 
 # Optional: Run against live PostgreSQL, Microsoft SQL Server, or MySQL instances

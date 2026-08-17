@@ -20,13 +20,15 @@ public:
         uint64_t,
         double,
         std::string,
+        std::wstring,
         bool,
         std::vector<uint8_t>,
         SqlNumeric,
         SqlDate,
         SqlTime,
         SqlTimestamp,
-        SqlInterval
+        SqlInterval,
+        SqlGuid
     >;
     using Row = std::vector<CellValue>;
 
@@ -75,6 +77,14 @@ public:
     std::string get_string(int col) const override {
         const auto& cell = rows_[current_row_][col];
         if (std::holds_alternative<std::string>(cell)) return std::get<std::string>(cell);
+        if (std::holds_alternative<std::wstring>(cell)) return wstring_to_utf8(std::get<std::wstring>(cell));
+        return {};
+    }
+
+    std::wstring get_wstring(int col) const override {
+        const auto& cell = rows_[current_row_][col];
+        if (std::holds_alternative<std::wstring>(cell)) return std::get<std::wstring>(cell);
+        if (std::holds_alternative<std::string>(cell)) return utf8_to_wstring(std::get<std::string>(cell));
         return {};
     }
 
@@ -126,6 +136,13 @@ public:
         return SqlInterval();
     }
 
+    SqlGuid get_guid(int col) const override {
+        const auto& cell = rows_[current_row_][col];
+        if (std::holds_alternative<SqlGuid>(cell)) return std::get<SqlGuid>(cell);
+        if (std::holds_alternative<std::string>(cell)) return SqlGuid::from_string(std::get<std::string>(cell));
+        return SqlGuid();
+    }
+
 private:
     std::vector<Row> rows_;
     int current_row_;
@@ -161,6 +178,8 @@ struct AdvancedTypesRecord {
     SqlInterval session_duration;
     std::chrono::system_clock::time_point chrono_timestamp;
     std::chrono::seconds chrono_duration{0};
+    SqlGuid guid_val;
+    std::wstring wide_text;
 };
 
 template <typename Entity, typename... Cols>
@@ -437,13 +456,16 @@ TEST(RowMapperTest, MapAdvancedTypes) {
         column("created_at", &AdvancedTypesRecord::created_at),
         column("session_duration", &AdvancedTypesRecord::session_duration),
         column("chrono_timestamp", &AdvancedTypesRecord::chrono_timestamp),
-        column("chrono_duration", &AdvancedTypesRecord::chrono_duration)
+        column("chrono_duration", &AdvancedTypesRecord::chrono_duration),
+        column("guid_val", &AdvancedTypesRecord::guid_val),
+        column("wide_text", &AdvancedTypesRecord::wide_text)
     );
 
     auto mapper = create_mapper<AdvancedTypesRecord>(cols);
 
     SqlTimestamp ref_ts(2026, 8, 17, 18, 30, 45, 0);
     SqlInterval ref_iv = SqlInterval::from_day_second(1, 2, 30, 15);
+    SqlGuid ref_guid("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
 
     MockDataReader reader({
         {
@@ -454,7 +476,9 @@ TEST(RowMapperTest, MapAdvancedTypes) {
             ref_ts,
             ref_iv,
             ref_ts,
-            ref_iv
+            ref_iv,
+            ref_guid,
+            std::wstring(L"Unicode \u30c6\u30b9\u30c8")
         }
     });
 
@@ -469,6 +493,8 @@ TEST(RowMapperTest, MapAdvancedTypes) {
     EXPECT_EQ(rec.session_duration.to_string(), "1 02:30:15");
     EXPECT_EQ(SqlTimestamp::from_time_point(rec.chrono_timestamp).to_string(), "2026-08-17 18:30:45");
     EXPECT_EQ(rec.chrono_duration.count(), 86400 + 7200 + 1800 + 15);
+    EXPECT_EQ(rec.guid_val.to_string(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+    EXPECT_EQ(rec.wide_text, L"Unicode \u30c6\u30b9\u30c8");
 }
 
 // ============================================================================
@@ -518,6 +544,8 @@ TEST(RowMapperTest, FieldToBoundValueAdvancedTypes) {
     rec.start_time = SqlTime(14, 0, 0);
     rec.created_at = SqlTimestamp(2026, 8, 17, 14, 0, 0);
     rec.session_duration = SqlInterval::from_day_second(0, 1, 30, 0);
+    rec.guid_val = SqlGuid("12345678-1234-1234-1234-123456789abc");
+    rec.wide_text = L"WideStringTest";
 
     BoundValue bv_u = field_to_bound_value(rec, &AdvancedTypesRecord::unsigned_id);
     EXPECT_EQ(std::get<uint64_t>(bv_u), 999999999999999ULL);
@@ -536,4 +564,10 @@ TEST(RowMapperTest, FieldToBoundValueAdvancedTypes) {
 
     BoundValue bv_iv = field_to_bound_value(rec, &AdvancedTypesRecord::session_duration);
     EXPECT_EQ(std::get<SqlInterval>(bv_iv).to_string(), "0 01:30:00");
+
+    BoundValue bv_g = field_to_bound_value(rec, &AdvancedTypesRecord::guid_val);
+    EXPECT_EQ(std::get<SqlGuid>(bv_g).to_string(), "12345678-1234-1234-1234-123456789abc");
+
+    BoundValue bv_w = field_to_bound_value(rec, &AdvancedTypesRecord::wide_text);
+    EXPECT_EQ(std::get<std::wstring>(bv_w), L"WideStringTest");
 }

@@ -97,6 +97,8 @@ struct Measurement {
     SqlTime recorded_time;
     SqlTimestamp recorded_at;
     SqlInterval duration;
+    SqlGuid device_id;
+    std::wstring localized_label;
 
     bool operator==(const Measurement& other) const = default;
 };
@@ -109,7 +111,9 @@ inline const auto measurements_table = table<Measurement>(
     column("recorded_date", &Measurement::recorded_date),
     column("recorded_time", &Measurement::recorded_time),
     column("recorded_at", &Measurement::recorded_at),
-    column("duration", &Measurement::duration)
+    column("duration", &Measurement::duration),
+    column("device_id", &Measurement::device_id),
+    column("localized_label", &Measurement::localized_label)
 );
 
 } // namespace
@@ -125,16 +129,37 @@ protected:
         if (!env_conn || env_conn[0] == '\0') {
             env_conn = std::getenv("CPPDB_POSTGRES_ODBC");
         }
-        if (!env_conn || env_conn[0] == '\0') {
-            GTEST_SKIP() << "CPPLINQ_POSTGRES_ODBC (or CPPDB_POSTGRES_ODBC) environment variable is not defined. Skipping PostgreSQL integration tests.";
+
+        std::vector<std::string> candidates;
+        if (env_conn && env_conn[0] != '\0') {
+            candidates.push_back(env_conn);
+        } else {
+            candidates.push_back("DSN=PostgreSQL35W;");
+            candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
+            candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
+            candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
+            candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
+        }
+
+        std::string last_error;
+        for (const auto& conn_str : candidates) {
+            try {
+                conn_str_ = conn_str;
+                db = std::make_unique<DbContext<postgres>>(conn_str_);
+                break;
+            } catch (const std::exception& e) {
+                last_error = e.what();
+                db.reset();
+            }
+        }
+
+        if (!db) {
+            std::cout << "[SKIPPED] PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << last_error << ")" << std::endl;
+            GTEST_SKIP() << "PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << last_error << ")";
             return;
         }
 
-        conn_str_ = env_conn;
         try {
-            // Connect to PostgreSQL using CPPLINQ_POSTGRES_ODBC DSN / connection string
-            db = std::make_unique<DbContext<postgres>>(conn_str_);
-            
             // Clean up table if exists from prior test runs
             try {
                 db->execute_raw("DROP TABLE IF EXISTS \"test_measurements\"");
@@ -152,7 +177,8 @@ protected:
             db->ensure_table(employees_table);
             db->ensure_table(measurements_table);
         } catch (const std::exception& e) {
-            GTEST_SKIP() << "Failed to connect to PostgreSQL using CPPLINQ_POSTGRES_ODBC (" << conn_str_ << "): " << e.what();
+            std::cout << "[SKIPPED] PostgreSQL table setup failed: " << e.what() << std::endl;
+            GTEST_SKIP() << "PostgreSQL table setup failed: " << e.what();
         }
     }
 
@@ -771,6 +797,8 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
     m1.recorded_time = SqlTime(19, 45, 30);
     m1.recorded_at = SqlTimestamp(2026, 8, 17, 19, 45, 30, 0);
     m1.duration = SqlInterval::from_day_second(2, 5, 30, 0);
+    m1.device_id = SqlGuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    m1.localized_label = L"Postgres \u03a9 Alpha";
 
     Measurement m2;
     m2.large_counter = 42ULL;
@@ -779,6 +807,8 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
     m2.recorded_time = SqlTime(23, 59, 59);
     m2.recorded_at = SqlTimestamp(2025, 12, 31, 23, 59, 59, 0);
     m2.duration = SqlInterval::from_day_second(0, 0, 0, 15);
+    m2.device_id = SqlGuid("00000000-0000-0000-0000-000000000042");
+    m2.localized_label = L"Beta Sensor";
 
     db->insert(measurements_table, m1);
     db->insert(measurements_table, m2);
@@ -790,11 +820,15 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
     EXPECT_EQ(all_measurements[0].recorded_date.to_string(), "2026-08-17");
     EXPECT_EQ(all_measurements[0].recorded_time.to_string(), "19:45:30");
     EXPECT_EQ(all_measurements[0].recorded_at.to_string(), "2026-08-17 19:45:30");
+    EXPECT_EQ(all_measurements[0].device_id.to_string(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    EXPECT_EQ(all_measurements[0].localized_label, L"Postgres \u03a9 Alpha");
 
     EXPECT_EQ(all_measurements[1].large_counter, 42ULL);
     EXPECT_EQ(all_measurements[1].recorded_date.to_string(), "2025-12-31");
     EXPECT_EQ(all_measurements[1].recorded_time.to_string(), "23:59:59");
     EXPECT_EQ(all_measurements[1].recorded_at.to_string(), "2025-12-31 23:59:59");
+    EXPECT_EQ(all_measurements[1].device_id.to_string(), "00000000-0000-0000-0000-000000000042");
+    EXPECT_EQ(all_measurements[1].localized_label, L"Beta Sensor");
 
     // Filter queries with new types
     auto found_date = db->from(measurements_table)
@@ -802,6 +836,12 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
         .first();
     ASSERT_TRUE(found_date.has_value());
     EXPECT_EQ(found_date->large_counter, 18446744073709551600ULL);
+
+    auto found_guid = db->from(measurements_table)
+        .where(measurements_table["device_id"] == SqlGuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890"))
+        .first();
+    ASSERT_TRUE(found_guid.has_value());
+    EXPECT_EQ(found_guid->localized_label, L"Postgres \u03a9 Alpha");
 
     auto found_time = db->from(measurements_table)
         .where(measurements_table["recorded_time"] == SqlTime(23, 59, 59))
@@ -818,10 +858,12 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
     // Update with new types
     found_date->high_precision_val = SqlNumeric("555.777");
     found_date->duration = SqlInterval::from_day_second(1, 0, 0, 0);
+    found_date->localized_label = L"Updated Postgres";
     size_t updated = db->update_many(measurements_table, std::vector<Measurement>{*found_date});
     EXPECT_EQ(updated, 1);
 
     auto reloaded = db->from(measurements_table).where(measurements_table["id"] == found_date->id).first();
     ASSERT_TRUE(reloaded.has_value());
     EXPECT_EQ(reloaded->duration.to_string(), "1 00:00:00");
+    EXPECT_EQ(reloaded->localized_label, L"Updated Postgres");
 }

@@ -276,6 +276,29 @@ inline SqlInterval odbc_struct_to_interval(const SQL_INTERVAL_STRUCT& s) {
     return iv;
 }
 
+inline SQLGUID guid_to_odbc_struct(const SqlGuid& g) {
+    SQLGUID s{};
+    s.Data1 = (static_cast<uint32_t>(g.bytes[0]) << 24) | (static_cast<uint32_t>(g.bytes[1]) << 16) | (static_cast<uint32_t>(g.bytes[2]) << 8) | static_cast<uint32_t>(g.bytes[3]);
+    s.Data2 = static_cast<uint16_t>((static_cast<uint16_t>(g.bytes[4]) << 8) | static_cast<uint16_t>(g.bytes[5]));
+    s.Data3 = static_cast<uint16_t>((static_cast<uint16_t>(g.bytes[6]) << 8) | static_cast<uint16_t>(g.bytes[7]));
+    std::memcpy(s.Data4, &g.bytes[8], 8);
+    return s;
+}
+
+inline SqlGuid odbc_struct_to_guid(const SQLGUID& s) {
+    SqlGuid g;
+    g.bytes[0] = static_cast<uint8_t>((s.Data1 >> 24) & 0xFF);
+    g.bytes[1] = static_cast<uint8_t>((s.Data1 >> 16) & 0xFF);
+    g.bytes[2] = static_cast<uint8_t>((s.Data1 >> 8) & 0xFF);
+    g.bytes[3] = static_cast<uint8_t>(s.Data1 & 0xFF);
+    g.bytes[4] = static_cast<uint8_t>((s.Data2 >> 8) & 0xFF);
+    g.bytes[5] = static_cast<uint8_t>(s.Data2 & 0xFF);
+    g.bytes[6] = static_cast<uint8_t>((s.Data3 >> 8) & 0xFF);
+    g.bytes[7] = static_cast<uint8_t>(s.Data3 & 0xFF);
+    std::memcpy(&g.bytes[8], s.Data4, 8);
+    return g;
+}
+
 inline size_t execute_insert_many_batch(
     SQLHDBC hdbc,
     std::string_view sql,
@@ -320,6 +343,7 @@ inline size_t execute_insert_many_batch(
         std::vector<uint64_t>            uint_data;
         std::vector<double>              dbl_data;
         std::vector<char>                str_data;
+        std::vector<SQLWCHAR>            wstr_data;
         std::vector<uint8_t>             blob_data;
         std::vector<uint8_t>             bit_data;
         std::vector<SQL_NUMERIC_STRUCT>  num_data;
@@ -327,6 +351,7 @@ inline size_t execute_insert_many_batch(
         std::vector<TIME_STRUCT>         time_data;
         std::vector<TIMESTAMP_STRUCT>    ts_data;
         std::vector<SQL_INTERVAL_STRUCT> interval_data;
+        std::vector<SQLGUID>             guid_data;
         std::vector<SQLLEN>              indicators;
         SQLSMALLINT c_type = 0;
         SQLSMALLINT sql_type = 0;
@@ -349,7 +374,12 @@ inline size_t execute_insert_many_batch(
                 if constexpr (std::is_same_v<T, int64_t>) {
                     ct = SQL_C_SBIGINT; st = SQL_BIGINT;
                 } else if constexpr (std::is_same_v<T, uint64_t>) {
-                    ct = SQL_C_UBIGINT; st = SQL_BIGINT;
+                    if (v > 0x7FFFFFFFFFFFFFFF) {
+                        ct = SQL_C_CHAR; st = SQL_VARCHAR;
+                        max_len = std::max(max_len, size_t{25});
+                    } else if (ct == SQL_C_DEFAULT) {
+                        ct = SQL_C_UBIGINT; st = SQL_BIGINT;
+                    }
                 } else if constexpr (std::is_same_v<T, double>) {
                     ct = SQL_C_DOUBLE; st = SQL_DOUBLE;
                 } else if constexpr (std::is_same_v<T, bool>) {
@@ -357,11 +387,15 @@ inline size_t execute_insert_many_batch(
                 } else if constexpr (std::is_same_v<T, std::string>) {
                     ct = SQL_C_CHAR; st = SQL_VARCHAR;
                     max_len = std::max(max_len, v.size() + 1);
+                } else if constexpr (std::is_same_v<T, std::wstring>) {
+                    ct = SQL_C_WCHAR; st = SQL_WVARCHAR;
+                    max_len = std::max(max_len, v.size() + 1);
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     ct = SQL_C_BINARY; st = SQL_VARBINARY;
                     max_len = std::max(max_len, v.size() > 0 ? v.size() : 1);
                 } else if constexpr (std::is_same_v<T, SqlNumeric>) {
-                    ct = SQL_C_NUMERIC; st = SQL_NUMERIC;
+                    ct = SQL_C_CHAR; st = SQL_NUMERIC;
+                    max_len = std::max(max_len, v.to_string().size() + 1);
                 } else if constexpr (std::is_same_v<T, SqlDate>) {
                     ct = SQL_C_TYPE_DATE; st = SQL_TYPE_DATE;
                 } else if constexpr (std::is_same_v<T, SqlTime>) {
@@ -369,7 +403,11 @@ inline size_t execute_insert_many_batch(
                 } else if constexpr (std::is_same_v<T, SqlTimestamp>) {
                     ct = SQL_C_TYPE_TIMESTAMP; st = SQL_TYPE_TIMESTAMP;
                 } else if constexpr (std::is_same_v<T, SqlInterval>) {
-                    ct = SQL_C_INTERVAL_DAY_TO_SECOND; st = SQL_INTERVAL_DAY_TO_SECOND;
+                    ct = SQL_C_CHAR; st = SQL_VARCHAR;
+                    max_len = std::max(max_len, v.to_string().size() + 1);
+                } else if constexpr (std::is_same_v<T, SqlGuid>) {
+                    ct = SQL_C_CHAR; st = SQL_VARCHAR;
+                    max_len = std::max(max_len, size_t{37});
                 }
             }, flat_params[r * col_count + c]);
         }
@@ -400,6 +438,17 @@ inline size_t execute_insert_many_batch(
             case SQL_C_CHAR:
                 ca.str_data.resize(row_count * max_len, 0);
                 ca.buf_stride = max_len;
+                if (ca.sql_type == SQL_NUMERIC) {
+                    ca.col_size = 28;
+                    ca.dec_digits = 6;
+                } else {
+                    ca.col_size = max_len > 1 ? max_len - 1 : 1;
+                    ca.dec_digits = 0;
+                }
+                break;
+            case SQL_C_WCHAR:
+                ca.wstr_data.resize(row_count * max_len, 0);
+                ca.buf_stride = max_len * sizeof(SQLWCHAR);
                 ca.col_size = max_len > 1 ? max_len - 1 : 1;
                 break;
             case SQL_C_BINARY:
@@ -421,7 +470,8 @@ inline size_t execute_insert_many_batch(
             case SQL_C_TYPE_TIME:
                 ca.time_data.resize(row_count);
                 ca.buf_stride = sizeof(TIME_STRUCT);
-                ca.col_size = 8;
+                ca.col_size = 0;
+                ca.dec_digits = 0;
                 break;
             case SQL_C_TYPE_TIMESTAMP:
                 ca.ts_data.resize(row_count);
@@ -434,6 +484,11 @@ inline size_t execute_insert_many_batch(
                 ca.buf_stride = sizeof(SQL_INTERVAL_STRUCT);
                 ca.col_size = 30;
                 ca.dec_digits = 6;
+                break;
+            case SQL_C_GUID:
+                ca.guid_data.resize(row_count);
+                ca.buf_stride = sizeof(SQLGUID);
+                ca.col_size = 36;
                 break;
         }
     }
@@ -450,8 +505,16 @@ inline size_t execute_insert_many_batch(
                     ca.int_data[r] = v;
                     ca.indicators[r] = sizeof(int64_t);
                 } else if constexpr (std::is_same_v<T, uint64_t>) {
-                    ca.uint_data[r] = v;
-                    ca.indicators[r] = sizeof(uint64_t);
+                    if (ca.c_type == SQL_C_CHAR) {
+                        std::string s = std::to_string(v);
+                        char* dst = ca.str_data.data() + r * ca.buf_stride;
+                        std::memcpy(dst, s.c_str(), s.size());
+                        dst[s.size()] = '\0';
+                        ca.indicators[r] = static_cast<SQLLEN>(s.size());
+                    } else {
+                        ca.uint_data[r] = v;
+                        ca.indicators[r] = sizeof(uint64_t);
+                    }
                 } else if constexpr (std::is_same_v<T, double>) {
                     ca.dbl_data[r] = v;
                     ca.indicators[r] = sizeof(double);
@@ -463,13 +526,21 @@ inline size_t execute_insert_many_batch(
                     std::memcpy(dst, v.c_str(), v.size());
                     dst[v.size()] = '\0';
                     ca.indicators[r] = static_cast<SQLLEN>(v.size());
+                } else if constexpr (std::is_same_v<T, std::wstring>) {
+                    SQLWCHAR* dst = ca.wstr_data.data() + r * (ca.buf_stride / sizeof(SQLWCHAR));
+                    std::memcpy(dst, v.c_str(), v.size() * sizeof(wchar_t));
+                    dst[v.size()] = 0;
+                    ca.indicators[r] = static_cast<SQLLEN>(v.size() * sizeof(SQLWCHAR));
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     uint8_t* dst = ca.blob_data.data() + r * ca.buf_stride;
                     if (!v.empty()) std::memcpy(dst, v.data(), v.size());
                     ca.indicators[r] = static_cast<SQLLEN>(v.size());
                 } else if constexpr (std::is_same_v<T, SqlNumeric>) {
-                    ca.num_data[r] = string_to_numeric_struct(v.to_string(), 28, 6);
-                    ca.indicators[r] = sizeof(SQL_NUMERIC_STRUCT);
+                    std::string s = v.to_string();
+                    char* dst = ca.str_data.data() + r * ca.buf_stride;
+                    std::memcpy(dst, s.c_str(), s.size());
+                    dst[s.size()] = '\0';
+                    ca.indicators[r] = static_cast<SQLLEN>(s.size());
                 } else if constexpr (std::is_same_v<T, SqlDate>) {
                     ca.date_data[r] = DATE_STRUCT{v.year, v.month, v.day};
                     ca.indicators[r] = sizeof(DATE_STRUCT);
@@ -480,8 +551,17 @@ inline size_t execute_insert_many_batch(
                     ca.ts_data[r] = TIMESTAMP_STRUCT{v.year, v.month, v.day, v.hour, v.minute, v.second, v.fraction};
                     ca.indicators[r] = sizeof(TIMESTAMP_STRUCT);
                 } else if constexpr (std::is_same_v<T, SqlInterval>) {
-                    ca.interval_data[r] = interval_to_odbc_struct(v);
-                    ca.indicators[r] = sizeof(SQL_INTERVAL_STRUCT);
+                    std::string s = v.to_string();
+                    char* dst = ca.str_data.data() + r * ca.buf_stride;
+                    std::memcpy(dst, s.c_str(), s.size());
+                    dst[s.size()] = '\0';
+                    ca.indicators[r] = static_cast<SQLLEN>(s.size());
+                } else if constexpr (std::is_same_v<T, SqlGuid>) {
+                    std::string s = v.to_string();
+                    char* dst = ca.str_data.data() + r * ca.buf_stride;
+                    std::memcpy(dst, s.c_str(), s.size());
+                    dst[s.size()] = '\0';
+                    ca.indicators[r] = static_cast<SQLLEN>(s.size());
                 }
             }, flat_params[r * col_count + c]);
         }
@@ -497,12 +577,14 @@ inline size_t execute_insert_many_batch(
             case SQL_C_DOUBLE:                    ptr = ca.dbl_data.data();      break;
             case SQL_C_BIT:                       ptr = ca.bit_data.data();      break;
             case SQL_C_CHAR:                      ptr = ca.str_data.data();      break;
+            case SQL_C_WCHAR:                     ptr = ca.wstr_data.data();     break;
             case SQL_C_BINARY:                    ptr = ca.blob_data.data();     break;
             case SQL_C_NUMERIC:                   ptr = ca.num_data.data();      break;
             case SQL_C_TYPE_DATE:                 ptr = ca.date_data.data();     break;
             case SQL_C_TYPE_TIME:                 ptr = ca.time_data.data();     break;
             case SQL_C_TYPE_TIMESTAMP:            ptr = ca.ts_data.data();       break;
             case SQL_C_INTERVAL_DAY_TO_SECOND:    ptr = ca.interval_data.data(); break;
+            case SQL_C_GUID:                      ptr = ca.guid_data.data();     break;
         }
 
         rc = SQLBindParameter(
@@ -526,7 +608,7 @@ inline size_t execute_insert_many_batch(
 
     SQLLEN affected = -1;
     SQLRowCount(hstmt, &affected);
-    return affected >= 0 ? static_cast<size_t>(affected) : row_count;
+    return (affected >= static_cast<SQLLEN>(row_count)) ? static_cast<size_t>(affected) : row_count;
 }
 
 } // namespace cpplinq::detail::odbc

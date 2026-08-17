@@ -19,12 +19,14 @@ enum class SqlType {
     Real,
     Decimal,
     Text,
+    WString,
     Blob,
     Boolean,
     Date,
     Time,
     Timestamp,
-    Interval
+    Interval,
+    Guid
 };
 
 // Primary trait: map C++ type -> SQL type
@@ -56,9 +58,10 @@ template <> struct sql_type_of<double>      { static constexpr SqlType value = S
 // Decimal mapping
 template <> struct sql_type_of<SqlNumeric>  { static constexpr SqlType value = SqlType::Decimal; };
 
-// Text, Boolean, Blob mappings
-template <> struct sql_type_of<std::string> { static constexpr SqlType value = SqlType::Text; };
-template <> struct sql_type_of<bool>        { static constexpr SqlType value = SqlType::Boolean; };
+// Text, Wide Text, Boolean, Blob mappings
+template <> struct sql_type_of<std::string>  { static constexpr SqlType value = SqlType::Text; };
+template <> struct sql_type_of<std::wstring> { static constexpr SqlType value = SqlType::WString; };
+template <> struct sql_type_of<bool>         { static constexpr SqlType value = SqlType::Boolean; };
 template <> struct sql_type_of<std::vector<uint8_t>> { static constexpr SqlType value = SqlType::Blob; };
 
 // Date / Time mappings
@@ -67,10 +70,11 @@ template <> struct sql_type_of<SqlTime>      { static constexpr SqlType value = 
 template <> struct sql_type_of<SqlTimestamp> { static constexpr SqlType value = SqlType::Timestamp; };
 template <> struct sql_type_of<std::chrono::system_clock::time_point> { static constexpr SqlType value = SqlType::Timestamp; };
 
-// Interval mappings
+// Interval & Guid mappings
 template <> struct sql_type_of<SqlInterval>  { static constexpr SqlType value = SqlType::Interval; };
 template <typename Rep, typename Period>
 struct sql_type_of<std::chrono::duration<Rep, Period>> { static constexpr SqlType value = SqlType::Interval; };
+template <> struct sql_type_of<SqlGuid>      { static constexpr SqlType value = SqlType::Guid; };
 
 // Optional<T> -> same SQL type as T, but nullable
 template <typename T>

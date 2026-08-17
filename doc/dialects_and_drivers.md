@@ -44,17 +44,17 @@ auto db = cpplinq::connect<cpplinq::mysql>("MySQLDSN");
 
 ---
 
-## 2. Environment Variables for Integration Tests
+## 2. Environment Variables & Fallback Discovery for Integration Tests
 
-The integration test suites automatically discover connections via environment variables:
+The integration test suites automatically discover connections via environment variables with fallback candidates:
 
-| Environment Variable | Target Database | Example Values |
-|---|---|---|
-| `CPPLINQ_POSTGRES_ODBC` / `CPPDB_POSTGRES_ODBC` | PostgreSQL | `"PostgreSQL35W"` or `"Driver={PostgreSQL Unicode};Server=localhost;Database=cppdb;Uid=postgres;Pwd=secret;"` |
-| `CPPLINQ_MSSQL_ODBC` / `CPPDB_MSSQL_ODBC` | MSSQL Server | `"MSSQLLocalDB"` or `"Driver={ODBC Driver 17 for SQL Server};Server=(localdb)\MSSQLLocalDB;Database=master;Trusted_Connection=yes;"` |
-| `CPPLINQ_MYSQL_ODBC` / `CPPDB_MYSQL_ODBC` | MySQL / MariaDB | `"MySQLDSN"` or `"Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Database=cppdb;Uid=root;Pwd=secret;"` |
+| Environment Variable | Target Database | Default Fallbacks Checked | Example Values |
+|---|---|---|---|
+| `CPPLINQ_POSTGRES_ODBC` / `CPPDB_POSTGRES_ODBC` | PostgreSQL | `PostgreSQL35W`, `PostgreSQL Unicode`, localhost:5432 | `"PostgreSQL35W"` or `"Driver={PostgreSQL Unicode};Server=localhost;Database=cppdb;Uid=postgres;Pwd=secret;"` |
+| `CPPLINQ_MSSQL_ODBC` / `CPPDB_MSSQL_ODBC` | MSSQL Server | `(localdb)\MSSQLLocalDB`, `MSQLLocalDB`, `MSSQLLocalDB` | `"MSSQLLocalDB"` or `"Driver={ODBC Driver 18 for SQL Server};Server=(localdb)\MSSQLLocalDB;Database=master;Trusted_Connection=yes;"` |
+| `CPPLINQ_MYSQL_ODBC` / `CPPDB_MYSQL_ODBC` | MySQL / MariaDB | `MySQLtestdb`, `MySQLDSN`, localhost:3306 | `"MySQLtestdb"` or `"Driver={MySQL ODBC 26.7 Unicode Driver};Server=localhost;Database=cppdb;Uid=root;Pwd=secret;"` |
 
-If an environment variable is not defined, the corresponding integration test suite will be skipped cleanly with `GTEST_SKIP()`.
+If neither the environment variable nor any local fallback connection can be reached, the test suite outputs `[SKIPPED] <reason>` and calls `GTEST_SKIP()`.
 
 ---
 

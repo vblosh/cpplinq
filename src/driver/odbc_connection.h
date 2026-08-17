@@ -36,6 +36,7 @@ public:
     uint64_t get_uint64(int col) const override;
     double get_double(int col) const override;
     std::string get_string(int col) const override;
+    std::wstring get_wstring(int col) const override;
     bool get_bool(int col) const override;
     std::vector<uint8_t> get_blob(int col) const override;
     SqlNumeric get_numeric(int col) const override;
@@ -43,6 +44,7 @@ public:
     SqlTime get_time(int col) const override;
     SqlTimestamp get_timestamp(int col) const override;
     SqlInterval get_interval(int col) const override;
+    SqlGuid get_guid(int col) const override;
 
 private:
     struct CachedCol {
@@ -51,6 +53,7 @@ private:
         uint64_t uint_val = 0;
         double double_val = 0.0;
         std::string str_val;
+        std::wstring wstr_val;
         bool bool_val = false;
         std::vector<uint8_t> blob_val;
         SqlNumeric numeric_val;
@@ -58,6 +61,7 @@ private:
         SqlTime time_val;
         SqlTimestamp timestamp_val;
         SqlInterval interval_val;
+        SqlGuid guid_val;
     };
 
     void fetch_row_cache();

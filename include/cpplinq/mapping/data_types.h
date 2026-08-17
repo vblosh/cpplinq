@@ -8,11 +8,198 @@
 #include <iomanip>
 #include <algorithm>
 #include <vector>
+#include <array>
+#include <random>
 #include <cctype>
 #include <cmath>
 #include <ctime>
+#include <cstring>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace cpplinq {
+
+// ----------------------------------------------------------------------------
+// Chrono duration trait
+// ----------------------------------------------------------------------------
+template <typename T>
+struct is_chrono_duration : std::false_type {};
+
+template <typename Rep, typename Period>
+struct is_chrono_duration<std::chrono::duration<Rep, Period>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_chrono_duration_v = is_chrono_duration<T>::value;
+
+// ----------------------------------------------------------------------------
+// Unicode / UTF-8 / UTF-16 helpers
+// ----------------------------------------------------------------------------
+
+inline std::string wstring_to_utf8(std::wstring_view wstr) {
+    if (wstr.empty()) return {};
+#if defined(_WIN32)
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string str(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), str.data(), len, nullptr, nullptr);
+    return str;
+#else
+    std::string str;
+    str.reserve(wstr.size() * 2);
+    for (wchar_t wc : wstr) {
+        if (wc < 0x80) {
+            str.push_back(static_cast<char>(wc));
+        } else if (wc < 0x800) {
+            str.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
+            str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        } else {
+            str.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
+            str.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+            str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        }
+    }
+    return str;
+#endif
+}
+
+inline std::wstring utf8_to_wstring(std::string_view str) {
+    if (str.empty()) return {};
+#if defined(_WIN32)
+    int len = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring wstr(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), wstr.data(), len);
+    return wstr;
+#else
+    std::wstring wstr;
+    wstr.reserve(str.size());
+    for (size_t i = 0; i < str.size();) {
+        unsigned char c = static_cast<unsigned char>(str[i]);
+        if (c < 0x80) {
+            wstr.push_back(static_cast<wchar_t>(c));
+            i += 1;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < str.size()) {
+            wchar_t wc = ((c & 0x1F) << 6) | (static_cast<unsigned char>(str[i + 1]) & 0x3F);
+            wstr.push_back(wc);
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < str.size()) {
+            wchar_t wc = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(str[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(str[i + 2]) & 0x3F);
+            wstr.push_back(wc);
+            i += 3;
+        } else {
+            wstr.push_back(static_cast<wchar_t>(c));
+            i += 1;
+        }
+    }
+    return wstr;
+#endif
+}
+
+// ----------------------------------------------------------------------------
+// SqlGuid: 128-bit UUID / GUID
+// ----------------------------------------------------------------------------
+struct SqlGuid {
+    std::array<uint8_t, 16> bytes{};
+
+    SqlGuid() = default;
+
+    explicit SqlGuid(const std::array<uint8_t, 16>& b) : bytes(b) {}
+    explicit SqlGuid(const uint8_t* b) {
+        if (b) std::memcpy(bytes.data(), b, 16);
+    }
+
+    explicit SqlGuid(std::string_view str) {
+        *this = from_string(str);
+    }
+
+    SqlGuid(uint32_t data1, uint16_t data2, uint16_t data3, const uint8_t data4[8]) {
+        bytes[0] = static_cast<uint8_t>((data1 >> 24) & 0xFF);
+        bytes[1] = static_cast<uint8_t>((data1 >> 16) & 0xFF);
+        bytes[2] = static_cast<uint8_t>((data1 >> 8) & 0xFF);
+        bytes[3] = static_cast<uint8_t>(data1 & 0xFF);
+        bytes[4] = static_cast<uint8_t>((data2 >> 8) & 0xFF);
+        bytes[5] = static_cast<uint8_t>(data2 & 0xFF);
+        bytes[6] = static_cast<uint8_t>((data3 >> 8) & 0xFF);
+        bytes[7] = static_cast<uint8_t>(data3 & 0xFF);
+        if (data4) {
+            std::memcpy(&bytes[8], data4, 8);
+        }
+    }
+
+    bool is_nil() const {
+        for (uint8_t b : bytes) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
+    std::string to_string(bool with_hyphens = true, bool upper_case = false) const {
+        static const char* hex_lower = "0123456789abcdef";
+        static const char* hex_upper = "0123456789ABCDEF";
+        const char* hex = upper_case ? hex_upper : hex_lower;
+
+        std::string s;
+        s.reserve(with_hyphens ? 36 : 32);
+
+        for (size_t i = 0; i < 16; ++i) {
+            if (with_hyphens && (i == 4 || i == 6 || i == 8 || i == 10)) {
+                s.push_back('-');
+            }
+            s.push_back(hex[(bytes[i] >> 4) & 0x0F]);
+            s.push_back(hex[bytes[i] & 0x0F]);
+        }
+        return s;
+    }
+
+    static SqlGuid from_string(std::string_view str) {
+        SqlGuid g;
+        if (str.empty()) return g;
+
+        std::string hex_only;
+        hex_only.reserve(32);
+        for (char c : str) {
+            if (std::isxdigit(static_cast<unsigned char>(c))) {
+                hex_only.push_back(c);
+            }
+        }
+
+        if (hex_only.size() != 32) return g;
+
+        auto hex_val = [](char c) -> uint8_t {
+            if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+            if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+            return 0;
+        };
+
+        for (size_t i = 0; i < 16; ++i) {
+            g.bytes[i] = static_cast<uint8_t>((hex_val(hex_only[i * 2]) << 4) | hex_val(hex_only[i * 2 + 1]));
+        }
+        return g;
+    }
+
+    static SqlGuid new_guid() {
+        SqlGuid g;
+        static thread_local std::mt19937_64 rng(std::random_device{}());
+        uint64_t r1 = rng();
+        uint64_t r2 = rng();
+        std::memcpy(&g.bytes[0], &r1, 8);
+        std::memcpy(&g.bytes[8], &r2, 8);
+        g.bytes[6] = static_cast<uint8_t>((g.bytes[6] & 0x0F) | 0x40);
+        g.bytes[8] = static_cast<uint8_t>((g.bytes[8] & 0x3F) | 0x80);
+        return g;
+    }
+
+    bool operator==(const SqlGuid& other) const = default;
+    auto operator<=>(const SqlGuid& other) const = default;
+};
 
 // ----------------------------------------------------------------------------
 // SqlNumeric: Exact arbitrary-precision decimal
@@ -471,7 +658,7 @@ struct SqlInterval {
             s.erase(s.begin());
         }
         
-        if (s.find('-') != std::string::npos && s.find(':') == std::string::npos) {
+        if (s.find('-') != std::string::npos && s.find(':') == std::string::npos && s.find("day") == std::string::npos) {
             iv.type = IntervalType::YearToMonth;
             int y = 0, mo = 0;
             char sep = 0;
@@ -479,6 +666,20 @@ struct SqlInterval {
             if (iss >> y >> sep >> mo) {
                 iv.years = static_cast<uint32_t>(y);
                 iv.months = static_cast<uint32_t>(mo);
+            }
+        } else if (s.find("day") != std::string::npos || s.find("days") != std::string::npos) {
+            iv.type = IntervalType::DayToSecond;
+            int d = 0;
+            std::istringstream iss(s);
+            std::string day_word;
+            iss >> d >> day_word;
+            iv.days = static_cast<uint32_t>(d);
+            int h = 0, mi = 0, sec = 0;
+            char sep1 = 0, sep2 = 0;
+            if (iss >> h >> sep1 >> mi >> sep2 >> sec) {
+                iv.hours = static_cast<uint32_t>(h);
+                iv.minutes = static_cast<uint32_t>(mi);
+                iv.seconds = static_cast<uint32_t>(sec);
             }
         } else {
             iv.type = IntervalType::DayToSecond;

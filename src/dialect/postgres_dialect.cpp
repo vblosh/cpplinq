@@ -8,8 +8,8 @@ std::string PostgresDialect::quote_id(std::string_view id) const {
     return "\"" + std::string(id) + "\"";
 }
 
-std::string PostgresDialect::placeholder(size_t index) const {
-    return "$" + std::to_string(index + 1);
+std::string PostgresDialect::placeholder(size_t /*index*/) const {
+    return "?";
 }
 
 std::string PostgresDialect::limit_offset(std::optional<size_t> limit,
@@ -32,12 +32,14 @@ std::string PostgresDialect::type_name(SqlType type) const {
         case SqlType::Real:           return "DOUBLE PRECISION";
         case SqlType::Decimal:        return "NUMERIC";
         case SqlType::Text:           return "TEXT";
+        case SqlType::WString:        return "TEXT";
         case SqlType::Blob:           return "BYTEA";
         case SqlType::Boolean:        return "BOOLEAN";
         case SqlType::Date:           return "DATE";
         case SqlType::Time:           return "TIME";
         case SqlType::Timestamp:      return "TIMESTAMP";
         case SqlType::Interval:       return "INTERVAL";
+        case SqlType::Guid:           return "UUID";
     }
     return "TEXT";
 }

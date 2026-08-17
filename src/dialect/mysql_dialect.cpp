@@ -42,12 +42,14 @@ std::string MysqlDialect::type_name(SqlType type) const {
         case SqlType::Real:           return "DOUBLE";
         case SqlType::Decimal:        return "DECIMAL(28, 10)";
         case SqlType::Text:           return "VARCHAR(255)";
+        case SqlType::WString:        return "VARCHAR(255) CHARACTER SET utf8mb4";
         case SqlType::Blob:           return "LONGBLOB";
         case SqlType::Boolean:        return "TINYINT(1)";
         case SqlType::Date:           return "DATE";
         case SqlType::Time:           return "TIME";
         case SqlType::Timestamp:      return "DATETIME";
         case SqlType::Interval:       return "VARCHAR(100)";
+        case SqlType::Guid:           return "VARCHAR(36)";
     }
     return "VARCHAR(255)";
 }

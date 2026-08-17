@@ -21,13 +21,15 @@ using BoundValue = std::variant<
     uint64_t,
     double,
     std::string,
+    std::wstring,
     bool,
     std::vector<uint8_t>,     // BLOB
     SqlNumeric,
     SqlDate,
     SqlTime,
     SqlTimestamp,
-    SqlInterval
+    SqlInterval,
+    SqlGuid
 >;
 
 // Database error
@@ -100,6 +102,7 @@ public:
     virtual uint64_t     get_uint64(int col) const = 0;
     virtual double       get_double(int col) const = 0;
     virtual std::string  get_string(int col) const = 0;
+    virtual std::wstring get_wstring(int col) const = 0;
     virtual bool         get_bool(int col) const = 0;
     virtual std::vector<uint8_t> get_blob(int col) const = 0;
     virtual SqlNumeric   get_numeric(int col) const = 0;
@@ -107,6 +110,7 @@ public:
     virtual SqlTime      get_time(int col) const = 0;
     virtual SqlTimestamp get_timestamp(int col) const = 0;
     virtual SqlInterval  get_interval(int col) const = 0;
+    virtual SqlGuid      get_guid(int col) const = 0;
 };
 
 // Prepared statement

@@ -22,13 +22,15 @@ using SqlValue = std::variant<
     uint64_t,
     double,
     std::string,
+    std::wstring,
     bool,
     std::vector<uint8_t>,
     SqlNumeric,
     SqlDate,
     SqlTime,
     SqlTimestamp,
-    SqlInterval
+    SqlInterval,
+    SqlGuid
 >;
 
 // Comparison operators
@@ -326,6 +328,9 @@ public:
     Expr(const char* val) : node(Literal{SqlValue(std::string(val))}) {}
     Expr(std::string val) : node(Literal{SqlValue(std::move(val))}) {}
     Expr(std::string_view val) : node(Literal{SqlValue(std::string(val))}) {}
+    Expr(const wchar_t* val) : node(Literal{SqlValue(std::wstring(val ? val : L""))}) {}
+    Expr(std::wstring val) : node(Literal{SqlValue(std::move(val))}) {}
+    Expr(std::wstring_view val) : node(Literal{SqlValue(std::wstring(val))}) {}
     Expr(bool val) : node(Literal{SqlValue(val)}) {}
     Expr(std::vector<uint8_t> val) : node(Literal{SqlValue(std::move(val))}) {}
     Expr(SqlNumeric val) : node(Literal{SqlValue(std::move(val))}) {}
@@ -334,6 +339,7 @@ public:
     Expr(SqlTimestamp val) : node(Literal{SqlValue(val)}) {}
     Expr(std::chrono::system_clock::time_point val) : node(Literal{SqlValue(SqlTimestamp(val))}) {}
     Expr(SqlInterval val) : node(Literal{SqlValue(val)}) {}
+    Expr(SqlGuid val) : node(Literal{SqlValue(val)}) {}
     Expr(std::nullopt_t) : node(Literal{SqlValue(std::monostate{})}) {}
 
     template <typename T>

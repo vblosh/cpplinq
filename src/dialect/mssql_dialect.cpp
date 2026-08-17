@@ -39,15 +39,17 @@ std::string MssqlDialect::type_name(SqlType type) const {
         case SqlType::UnsignedBigInt: return "NUMERIC(20, 0)";
         case SqlType::Real:           return "FLOAT";
         case SqlType::Decimal:        return "DECIMAL(28, 10)";
-        case SqlType::Text:           return "NVARCHAR(MAX)";
+        case SqlType::Text:           return "NVARCHAR(255)";
+        case SqlType::WString:        return "NVARCHAR(255)";
         case SqlType::Blob:           return "VARBINARY(MAX)";
         case SqlType::Boolean:        return "BIT";
         case SqlType::Date:           return "DATE";
         case SqlType::Time:           return "TIME";
         case SqlType::Timestamp:      return "DATETIME2";
         case SqlType::Interval:       return "VARCHAR(100)";
+        case SqlType::Guid:           return "UNIQUEIDENTIFIER";
     }
-    return "NVARCHAR(MAX)";
+    return "NVARCHAR(255)";
 }
 
 std::string MssqlDialect::auto_increment_type() const {

@@ -206,13 +206,23 @@ void map_single_column(Entity& entity, IDataReader& reader) const {
 }
 ```
 
-### Supported Types:
-- **Integers**: `int`, `int64_t`, `int32_t`, `uint32_t`, `uint64_t`
-- **Floating-Point**: `double`, `float`
-- **Strings**: `std::string`
-- **Booleans**: `bool`
-- **Binary Data**: `std::vector<uint8_t>` (BLOB)
-- **Nullables**: `std::optional<T>` for any of the above
+### Supported Data Types & Conversions:
+| C++ Type | SQL / ODBC Mapping | Description / Cross-Dialect Handling |
+|---|---|---|
+| `int`, `int32_t`, `int64_t`, `int16_t`, `int8_t` | `INTEGER`, `BIGINT`, `SMALLINT`, `TINYINT` | Signed integral types |
+| `uint32_t`, `uint64_t`, `uint16_t`, `uint8_t` | `INTEGER`, `BIGINT UNSIGNED`, `NUMERIC(20,0)` | Unsigned integrals with transparent fallback across databases |
+| `double`, `float` | `DOUBLE PRECISION`, `FLOAT`, `REAL` | IEEE-754 floating-point numbers |
+| `bool` | `BOOLEAN`, `BIT`, `INTEGER` | Truth values (native boolean / bit / int flags) |
+| `std::string` | `VARCHAR`, `TEXT`, `NVARCHAR` | UTF-8 string data |
+| `std::wstring` | `NVARCHAR`, `WCHAR`, `WVARCHAR` | UTF-16 Unicode wide string data |
+| `std::vector<uint8_t>`, `std::vector<char>`, `std::vector<std::byte>` | `BLOB`, `BYTEA`, `VARBINARY(MAX)` | Raw binary byte storage |
+| `cpplinq::SqlNumeric` | `NUMERIC(p, s)`, `DECIMAL(p, s)` | Exact-precision fixed-point decimal arithmetic |
+| `cpplinq::SqlDate`, `std::chrono::year_month_day` | `DATE` | Gregorian calendar date (`YYYY-MM-DD`) |
+| `cpplinq::SqlTime`, `std::chrono::hh_mm_ss` | `TIME` | Wall-clock time (`HH:MM:SS`) |
+| `cpplinq::SqlTimestamp`, `std::chrono::system_clock::time_point` | `TIMESTAMP`, `DATETIME`, `DATETIME2` | Date and time instant (`YYYY-MM-DD HH:MM:SS.ffffff`) |
+| `cpplinq::SqlInterval`, `std::chrono::duration` | `INTERVAL`, `VARCHAR` | Time interval / duration (`D HH:MM:SS`) |
+| `cpplinq::SqlGuid` | `UUID`, `UNIQUEIDENTIFIER`, `VARCHAR(36)` | Standard 128-bit RFC 4122 UUID / GUID |
+| `std::optional<T>` | `NULL` | Nullable representation for any of the above types |
 
 ---
 

@@ -37,12 +37,14 @@ public:
             case SqlType::Real:           return "REAL";
             case SqlType::Decimal:        return "NUMERIC";
             case SqlType::Text:           return "TEXT";
+            case SqlType::WString:        return "TEXT";
             case SqlType::Blob:           return "BLOB";
             case SqlType::Boolean:        return "INTEGER";
             case SqlType::Date:           return "TEXT";
             case SqlType::Time:           return "TEXT";
             case SqlType::Timestamp:      return "TEXT";
             case SqlType::Interval:       return "TEXT";
+            case SqlType::Guid:           return "TEXT";
         }
         return "TEXT";
     }

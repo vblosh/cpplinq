@@ -228,6 +228,58 @@ void OdbcDataReader::fetch_row_cache() {
                 }
                 break;
             }
+            case SQL_GUID: {
+                SQLGUID g{};
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_GUID, &g, sizeof(g), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    col.guid_val = detail::odbc::odbc_struct_to_guid(g);
+                    col.str_val = col.guid_val.to_string();
+                    col.wstr_val = utf8_to_wstring(col.str_val);
+                }
+                break;
+            }
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR: {
+                SQLWCHAR buffer[2048] = {0};
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_WCHAR, buffer, sizeof(buffer), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
+                        col.wstr_val = std::wstring(reinterpret_cast<const wchar_t*>(buffer), static_cast<size_t>(ind / sizeof(SQLWCHAR)));
+                    } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
+                        size_t initial_wchars = (sizeof(buffer) / sizeof(SQLWCHAR)) - 1;
+                        col.wstr_val = std::wstring(reinterpret_cast<const wchar_t*>(buffer), initial_wchars);
+                        SQLLEN remaining_bytes = ind - static_cast<SQLLEN>(initial_wchars * sizeof(SQLWCHAR));
+                        std::vector<SQLWCHAR> large_buf((static_cast<size_t>(remaining_bytes) / sizeof(SQLWCHAR)) + 2, 0);
+                        SQLLEN ind2 = 0;
+                        rc = SQLGetData(hstmt_, i, SQL_C_WCHAR, large_buf.data(), large_buf.size() * sizeof(SQLWCHAR), &ind2);
+                        if (SQL_SUCCEEDED(rc)) {
+                            col.wstr_val.append(reinterpret_cast<const wchar_t*>(large_buf.data()));
+                        }
+                    } else {
+                        col.wstr_val = reinterpret_cast<const wchar_t*>(buffer);
+                    }
+                    col.str_val = wstring_to_utf8(col.wstr_val);
+                    col.guid_val = SqlGuid::from_string(col.str_val);
+                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
+                    try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
+                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
+                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "TRUE" || col.str_val == "t" || col.str_val == "T");
+                    col.numeric_val = SqlNumeric(col.str_val);
+                    col.date_val = SqlDate::from_string(col.str_val);
+                    col.time_val = SqlTime::from_string(col.str_val);
+                    col.timestamp_val = SqlTimestamp::from_string(col.str_val);
+                    col.interval_val = SqlInterval::from_string(col.str_val);
+                }
+                break;
+            }
             default: {
                 char buffer[4096];
                 SQLLEN ind = 0;
@@ -248,6 +300,8 @@ void OdbcDataReader::fetch_row_cache() {
                     } else {
                         col.str_val = std::string(buffer);
                     }
+                    col.wstr_val = utf8_to_wstring(col.str_val);
+                    col.guid_val = SqlGuid::from_string(col.str_val);
                     try { col.int_val = std::stoll(col.str_val); } catch (...) {}
                     try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
                     try { col.double_val = std::stod(col.str_val); } catch (...) {}
@@ -307,6 +361,12 @@ std::string OdbcDataReader::get_string(int col) const {
     return row_cache_[col].str_val;
 }
 
+std::wstring OdbcDataReader::get_wstring(int col) const {
+    if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return {};
+    if (!row_cache_[col].wstr_val.empty()) return row_cache_[col].wstr_val;
+    return utf8_to_wstring(row_cache_[col].str_val);
+}
+
 bool OdbcDataReader::get_bool(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return false;
     return row_cache_[col].bool_val;
@@ -340,6 +400,12 @@ SqlTimestamp OdbcDataReader::get_timestamp(int col) const {
 SqlInterval OdbcDataReader::get_interval(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlInterval();
     return row_cache_[col].interval_val;
+}
+
+SqlGuid OdbcDataReader::get_guid(int col) const {
+    if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlGuid();
+    if (!row_cache_[col].guid_val.is_nil()) return row_cache_[col].guid_val;
+    return SqlGuid::from_string(row_cache_[col].str_val);
 }
 
 // ============================================================================
@@ -437,16 +503,30 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, store.buffer.data(), sizeof(int64_t), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(int64)");
             } else if constexpr (std::is_same_v<T, uint64_t>) {
-                store.c_type = SQL_C_UBIGINT;
-                store.sql_type = SQL_BIGINT;
-                store.col_size = 20;
-                store.dec_digits = 0;
-                store.ind = sizeof(uint64_t);
-                store.buffer.resize(sizeof(uint64_t));
-                std::memcpy(store.buffer.data(), &val, sizeof(uint64_t));
-                SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                                store.col_size, store.dec_digits, store.buffer.data(), sizeof(uint64_t), &store.ind);
-                check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(uint64)");
+                if (val > 0x7FFFFFFFFFFFFFFF) {
+                    std::string s = std::to_string(val);
+                    store.c_type = SQL_C_CHAR;
+                    store.sql_type = SQL_NUMERIC;
+                    store.col_size = 20;
+                    store.dec_digits = 0;
+                    store.ind = static_cast<SQLLEN>(s.size());
+                    store.buffer.resize(s.size() + 1);
+                    std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
+                    SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                    store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                    check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(uint64)");
+                } else {
+                    store.c_type = SQL_C_UBIGINT;
+                    store.sql_type = SQL_BIGINT;
+                    store.col_size = 20;
+                    store.dec_digits = 0;
+                    store.ind = sizeof(uint64_t);
+                    store.buffer.resize(sizeof(uint64_t));
+                    std::memcpy(store.buffer.data(), &val, sizeof(uint64_t));
+                    SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                    store.col_size, store.dec_digits, store.buffer.data(), sizeof(uint64_t), &store.ind);
+                    check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(uint64)");
+                }
             } else if constexpr (std::is_same_v<T, double>) {
                 store.c_type = SQL_C_DOUBLE;
                 store.sql_type = SQL_DOUBLE;
@@ -469,6 +549,17 @@ void OdbcPreparedStatement::apply_bindings() {
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(string)");
+            } else if constexpr (std::is_same_v<T, std::wstring>) {
+                store.c_type = SQL_C_WCHAR;
+                store.sql_type = SQL_WVARCHAR;
+                store.col_size = val.empty() ? 1 : static_cast<SQLULEN>(val.size());
+                store.dec_digits = 0;
+                store.ind = static_cast<SQLLEN>(val.size() * sizeof(SQLWCHAR));
+                store.buffer.resize((val.size() + 1) * sizeof(SQLWCHAR));
+                std::memcpy(store.buffer.data(), val.c_str(), (val.size() + 1) * sizeof(wchar_t));
+                SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(wstring)");
             } else if constexpr (std::is_same_v<T, bool>) {
                 store.c_type = SQL_C_BIT;
                 store.sql_type = SQL_BIT;
@@ -491,16 +582,16 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(blob)");
             } else if constexpr (std::is_same_v<T, SqlNumeric>) {
-                store.c_type = SQL_C_NUMERIC;
+                std::string s = val.to_string();
+                store.c_type = SQL_C_CHAR;
                 store.sql_type = SQL_NUMERIC;
                 store.col_size = val.precision > 0 ? val.precision : 28;
                 store.dec_digits = val.scale >= 0 ? val.scale : 6;
-                store.ind = sizeof(SQL_NUMERIC_STRUCT);
-                store.buffer.resize(sizeof(SQL_NUMERIC_STRUCT));
-                SQL_NUMERIC_STRUCT ns = detail::odbc::string_to_numeric_struct(val.to_string(), store.col_size, store.dec_digits);
-                std::memcpy(store.buffer.data(), &ns, sizeof(SQL_NUMERIC_STRUCT));
+                store.ind = static_cast<SQLLEN>(s.size());
+                store.buffer.resize(s.size() + 1);
+                std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                                store.col_size, store.dec_digits, store.buffer.data(), sizeof(SQL_NUMERIC_STRUCT), &store.ind);
+                                                store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(numeric)");
             } else if constexpr (std::is_same_v<T, SqlDate>) {
                 store.c_type = SQL_C_TYPE_DATE;
@@ -517,7 +608,7 @@ void OdbcPreparedStatement::apply_bindings() {
             } else if constexpr (std::is_same_v<T, SqlTime>) {
                 store.c_type = SQL_C_TYPE_TIME;
                 store.sql_type = SQL_TYPE_TIME;
-                store.col_size = 8;
+                store.col_size = 0;
                 store.dec_digits = 0;
                 store.ind = sizeof(TIME_STRUCT);
                 store.buffer.resize(sizeof(TIME_STRUCT));
@@ -525,6 +616,11 @@ void OdbcPreparedStatement::apply_bindings() {
                 std::memcpy(store.buffer.data(), &ts, sizeof(TIME_STRUCT));
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
                                                 store.col_size, store.dec_digits, store.buffer.data(), sizeof(TIME_STRUCT), &store.ind);
+                if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+                    store.col_size = 8;
+                    rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                          store.col_size, store.dec_digits, store.buffer.data(), sizeof(TIME_STRUCT), &store.ind);
+                }
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(time)");
             } else if constexpr (std::is_same_v<T, SqlTimestamp>) {
                 store.c_type = SQL_C_TYPE_TIMESTAMP;
@@ -539,17 +635,34 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, store.buffer.data(), sizeof(TIMESTAMP_STRUCT), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(timestamp)");
             } else if constexpr (std::is_same_v<T, SqlInterval>) {
-                store.c_type = SQL_C_INTERVAL_DAY_TO_SECOND;
-                store.sql_type = SQL_INTERVAL_DAY_TO_SECOND;
-                store.col_size = 30;
-                store.dec_digits = 6;
-                store.ind = sizeof(SQL_INTERVAL_STRUCT);
-                store.buffer.resize(sizeof(SQL_INTERVAL_STRUCT));
-                SQL_INTERVAL_STRUCT ivs = detail::odbc::interval_to_odbc_struct(val);
-                std::memcpy(store.buffer.data(), &ivs, sizeof(SQL_INTERVAL_STRUCT));
+                std::string s = val.to_string();
+                store.c_type = SQL_C_CHAR;
+                store.sql_type = SQL_VARCHAR;
+                store.col_size = static_cast<SQLULEN>(s.size() > 0 ? s.size() : 1);
+                store.dec_digits = 0;
+                store.ind = static_cast<SQLLEN>(s.size());
+                store.buffer.resize(s.size() + 1);
+                std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                                store.col_size, store.dec_digits, store.buffer.data(), sizeof(SQL_INTERVAL_STRUCT), &store.ind);
+                                                store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(interval)");
+            } else if constexpr (std::is_same_v<T, SqlGuid>) {
+                std::string s = val.to_string();
+                store.c_type = SQL_C_CHAR;
+                store.sql_type = SQL_GUID;
+                store.col_size = 36;
+                store.dec_digits = 0;
+                store.ind = static_cast<SQLLEN>(s.size());
+                store.buffer.resize(s.size() + 1);
+                std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
+                SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+                    store.sql_type = SQL_VARCHAR;
+                    rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                          store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                }
+                check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(guid)");
             }
         }, p);
     }
