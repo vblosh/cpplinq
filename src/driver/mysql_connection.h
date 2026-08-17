@@ -6,6 +6,9 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 #include <sql.h>
@@ -108,6 +111,13 @@ public:
 
     DriverInfo info() const override;
     DriverCapabilities capabilities() const override;
+
+    size_t insert_many_batch(
+        std::string_view sql,
+        const std::vector<BoundValue>& flat_params,
+        size_t col_count,
+        size_t row_count
+    ) override;
 
 private:
     std::string conn_str_;

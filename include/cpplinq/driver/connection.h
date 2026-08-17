@@ -71,6 +71,8 @@ struct DriverCapabilities {
     bool returning_clause = false;
     bool output_clause = false;
     bool upsert = false;
+    bool array_batch_insert = false;
+    size_t default_batch_chunk_size = 1000;
     bool window_functions = true;
     bool ctes = true;
 };
@@ -133,6 +135,14 @@ public:
     // Driver capabilities & information
     virtual DriverInfo info() const = 0;
     virtual DriverCapabilities capabilities() const = 0;
+
+    // Batch insert/update using array binding (or fallback loop)
+    virtual size_t insert_many_batch(
+        std::string_view sql,
+        const std::vector<BoundValue>& flat_params,
+        size_t col_count,
+        size_t row_count
+    );
 
     // Streaming range over raw query
     virtual RowStream stream(

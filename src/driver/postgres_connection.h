@@ -3,7 +3,16 @@
 #include "dialect/postgres_dialect.h"
 
 #ifdef CPPLINQ_HAS_POSTGRES
-#include <libpq-fe.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+#include <sql.h>
+#include <sqlext.h>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -16,7 +25,7 @@ namespace cpplinq {
 
 class PgDataReader : public IDataReader {
 public:
-    explicit PgDataReader(PGresult* res);
+    explicit PgDataReader(SQLHSTMT hstmt, bool owns_stmt = false);
     ~PgDataReader() override;
 
     bool next() override;
@@ -30,15 +39,27 @@ public:
     std::vector<uint8_t> get_blob(int col) const override;
 
 private:
-    PGresult* res_;
-    int current_row_ = -1;
-    int total_rows_ = 0;
+    struct CachedCol {
+        bool is_null = true;
+        int64_t int_val = 0;
+        double double_val = 0.0;
+        std::string str_val;
+        bool bool_val = false;
+        std::vector<uint8_t> blob_val;
+    };
+
+    void fetch_row_cache();
+
+    SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
+    bool owns_stmt_ = false;
+    SQLSMALLINT col_count_ = 0;
+    std::vector<CachedCol> row_cache_;
 };
 
 class PgPreparedStatement : public IPreparedStatement {
 public:
-    PgPreparedStatement(PGconn* conn, std::string_view sql);
-    ~PgPreparedStatement() override = default;
+    PgPreparedStatement(SQLHDBC hdbc, std::string_view sql);
+    ~PgPreparedStatement() override;
 
     void bind(int index, const BoundValue& value) override;
     std::unique_ptr<IDataReader> execute_query() override;
@@ -50,10 +71,22 @@ public:
     void set_stop_token(std::stop_token token) override;
 
 private:
-    PGconn* conn_;
+    struct ParamStorage {
+        std::vector<uint8_t> buffer;
+        SQLLEN ind = 0;
+        SQLSMALLINT c_type = 0;
+        SQLSMALLINT sql_type = 0;
+        SQLULEN col_size = 0;
+        SQLSMALLINT dec_digits = 0;
+    };
+
+    void apply_bindings();
+
+    SQLHDBC hdbc_ = SQL_NULL_HDBC;
+    SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     std::string sql_;
-    std::string stmt_name_;
     std::vector<BoundValue> params_;
+    std::vector<ParamStorage> storage_;
     std::optional<std::stop_token> stop_token_;
     std::optional<std::stop_callback<std::function<void()>>> stop_cb_;
 };
@@ -79,11 +112,23 @@ public:
     DriverInfo info() const override;
     DriverCapabilities capabilities() const override;
 
+    size_t insert_many_batch(
+        std::string_view sql,
+        const std::vector<BoundValue>& flat_params,
+        size_t col_count,
+        size_t row_count
+    ) override;
+
 private:
     std::string connection_string_;
-    PGconn* conn_ = nullptr;
+    SQLHENV henv_ = SQL_NULL_HENV;
+    SQLHDBC hdbc_ = SQL_NULL_HDBC;
+    bool is_open_ = false;
     PostgresDialect dialect_;
 };
+
+template <>
+std::unique_ptr<IConnection> make_connection<postgres>(const std::string& connection_string);
 
 } // namespace cpplinq
 

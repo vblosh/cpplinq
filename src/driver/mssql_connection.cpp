@@ -1,4 +1,5 @@
 #include "driver/mssql_connection.h"
+#include "driver/odbc_utils.h"
 
 #ifdef CPPLINQ_HAS_MSSQL
 
@@ -8,32 +9,8 @@
 
 namespace cpplinq {
 
-namespace {
-
-std::string get_odbc_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
-    if (handle == SQL_NULL_HANDLE) return "Unknown ODBC error";
-    SQLCHAR sqlstate[6] = {0};
-    SQLINTEGER native_error = 0;
-    SQLCHAR message[1024] = {0};
-    SQLSMALLINT text_length = 0;
-    std::string full_msg;
-
-    SQLSMALLINT i = 1;
-    while (SQLGetDiagRecA(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length) == SQL_SUCCESS) {
-        if (!full_msg.empty()) full_msg += "; ";
-        full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] " + std::string(reinterpret_cast<char*>(message));
-    }
-    return full_msg.empty() ? "ODBC error (no diagnostic info)" : full_msg;
-}
-
-void check_rc(SQLRETURN rc, SQLSMALLINT handle_type, SQLHANDLE handle, const char* context) {
-    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-        std::string err = get_odbc_error(handle_type, handle);
-        throw DbException(std::string(context) + ": " + err);
-    }
-}
-
-} // namespace
+using detail::odbc::get_odbc_error;
+using detail::odbc::check_rc;
 
 // ----------------------------------------------------------------------------
 // MssqlDataReader
@@ -539,9 +516,22 @@ DriverCapabilities MssqlConnection::capabilities() const {
     caps.returning_clause = false;
     caps.output_clause = true;
     caps.upsert = true;
+    caps.array_batch_insert = true;
+    caps.default_batch_chunk_size = 1000;
     caps.window_functions = true;
     caps.ctes = true;
     return caps;
+}
+
+size_t MssqlConnection::insert_many_batch(
+    std::string_view sql,
+    const std::vector<BoundValue>& flat_params,
+    size_t col_count,
+    size_t row_count
+) {
+    return detail::odbc::execute_insert_many_batch(
+        hdbc_, sql, flat_params, col_count, row_count, "MssqlConnection"
+    );
 }
 
 // ----------------------------------------------------------------------------

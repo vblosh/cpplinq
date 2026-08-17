@@ -1,99 +1,213 @@
 #include "driver/postgres_connection.h"
+#include "driver/odbc_utils.h"
 
 #ifdef CPPLINQ_HAS_POSTGRES
 
-#include <atomic>
-#include <cstdlib>
-#include <type_traits>
-#include <utility>
+#include <cstring>
+#include <sstream>
+#include <stdexcept>
+#include <algorithm>
 
 namespace cpplinq {
+
+using detail::odbc::get_odbc_error;
+using detail::odbc::check_rc;
 
 // ----------------------------------------------------------------------------
 // PgDataReader
 // ----------------------------------------------------------------------------
 
-PgDataReader::PgDataReader(PGresult* res)
-    : res_(res)
-    , current_row_(-1)
-    , total_rows_(res ? PQntuples(res) : 0)
-{}
+PgDataReader::PgDataReader(SQLHSTMT hstmt, bool owns_stmt)
+    : hstmt_(hstmt)
+    , owns_stmt_(owns_stmt)
+{
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLNumResultCols(hstmt_, &col_count_);
+    }
+}
 
 PgDataReader::~PgDataReader() {
-    if (res_) {
-        PQclear(res_);
+    if (owns_stmt_ && hstmt_ != SQL_NULL_HSTMT) {
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt_);
+        hstmt_ = SQL_NULL_HSTMT;
+    }
+}
+
+void PgDataReader::fetch_row_cache() {
+    row_cache_.assign(col_count_, CachedCol{});
+    for (SQLSMALLINT i = 1; i <= col_count_; ++i) {
+        auto& col = row_cache_[i - 1];
+
+        SQLCHAR col_name[256];
+        SQLSMALLINT name_len = 0;
+        SQLSMALLINT data_type = 0;
+        SQLULEN col_size = 0;
+        SQLSMALLINT dec_digits = 0;
+        SQLSMALLINT nullable = 0;
+
+        SQLDescribeColA(hstmt_, i, col_name, sizeof(col_name), &name_len, &data_type, &col_size, &dec_digits, &nullable);
+
+        switch (data_type) {
+            case SQL_BIGINT:
+            case SQL_INTEGER:
+            case SQL_SMALLINT:
+            case SQL_TINYINT: {
+                int64_t val = 0;
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_SBIGINT, &val, sizeof(val), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    col.int_val = val;
+                    col.double_val = static_cast<double>(val);
+                    col.str_val = std::to_string(val);
+                    col.bool_val = (val != 0);
+                }
+                break;
+            }
+            case SQL_FLOAT:
+            case SQL_REAL:
+            case SQL_DOUBLE:
+            case SQL_DECIMAL:
+            case SQL_NUMERIC: {
+                double val = 0.0;
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_DOUBLE, &val, sizeof(val), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    col.double_val = val;
+                    col.int_val = static_cast<int64_t>(val);
+                    col.str_val = std::to_string(val);
+                    col.bool_val = (val != 0.0);
+                }
+                break;
+            }
+            case SQL_BIT: {
+                unsigned char val = 0;
+                SQLLEN ind = 0;
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_BIT, &val, sizeof(val), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    col.bool_val = (val != 0);
+                    col.int_val = val ? 1 : 0;
+                    col.double_val = val ? 1.0 : 0.0;
+                    col.str_val = val ? "true" : "false";
+                }
+                break;
+            }
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY: {
+                SQLLEN ind = 0;
+                uint8_t probe[1];
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_BINARY, probe, 0, &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    if (ind > 0) {
+                        col.blob_val.resize(static_cast<size_t>(ind));
+                        SQLGetData(hstmt_, i, SQL_C_BINARY, col.blob_val.data(), ind, &ind);
+                    }
+                }
+                break;
+            }
+            default: { // Strings, dates, timestamps, fallback
+                SQLLEN ind = 0;
+                char buf[4096];
+                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_CHAR, buf, sizeof(buf), &ind);
+                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                    col.is_null = false;
+                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buf))) {
+                        col.str_val.assign(buf, static_cast<size_t>(ind));
+                    } else if (ind >= static_cast<SQLLEN>(sizeof(buf))) {
+                        col.str_val.assign(buf, sizeof(buf) - 1);
+                        size_t needed = static_cast<size_t>(ind) + 1;
+                        std::vector<char> big_buf(needed);
+                        std::memcpy(big_buf.data(), buf, sizeof(buf) - 1);
+                        SQLLEN ind2 = 0;
+                        SQLGetData(hstmt_, i, SQL_C_CHAR, big_buf.data() + sizeof(buf) - 1, static_cast<SQLLEN>(needed - sizeof(buf) + 1), &ind2);
+                        col.str_val = big_buf.data();
+                    } else {
+                        col.str_val = buf;
+                    }
+                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
+                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
+                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "t" || col.str_val == "TRUE" || col.str_val == "T");
+                }
+                break;
+            }
+        }
     }
 }
 
 bool PgDataReader::next() {
-    if (!res_) return false;
-    current_row_++;
-    return current_row_ < total_rows_;
+    if (hstmt_ == SQL_NULL_HSTMT) return false;
+    SQLRETURN rc = SQLFetch(hstmt_);
+    if (rc == SQL_NO_DATA) return false;
+    if (!SQL_SUCCEEDED(rc)) {
+        check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLFetch");
+    }
+    fetch_row_cache();
+    return true;
 }
 
 int PgDataReader::column_count() const {
-    if (!res_) return 0;
-    return PQnfields(res_);
+    return col_count_;
 }
 
 bool PgDataReader::is_null(int col) const {
-    if (!res_ || current_row_ < 0 || current_row_ >= total_rows_) return true;
-    return PQgetisnull(res_, current_row_, col) != 0;
+    if (col < 0 || col >= static_cast<int>(row_cache_.size())) return true;
+    return row_cache_[col].is_null;
 }
 
 int64_t PgDataReader::get_int64(int col) const {
     if (is_null(col)) return 0;
-    const char* val = PQgetvalue(res_, current_row_, col);
-    if (!val) return 0;
-    return std::stoll(val);
+    return row_cache_[col].int_val;
 }
 
 double PgDataReader::get_double(int col) const {
     if (is_null(col)) return 0.0;
-    const char* val = PQgetvalue(res_, current_row_, col);
-    if (!val) return 0.0;
-    return std::stod(val);
+    return row_cache_[col].double_val;
 }
 
 std::string PgDataReader::get_string(int col) const {
     if (is_null(col)) return {};
-    const char* val = PQgetvalue(res_, current_row_, col);
-    if (!val) return {};
-    int len = PQgetlength(res_, current_row_, col);
-    return std::string(val, static_cast<size_t>(len));
+    return row_cache_[col].str_val;
 }
 
 bool PgDataReader::get_bool(int col) const {
     if (is_null(col)) return false;
-    const char* val = PQgetvalue(res_, current_row_, col);
-    if (!val || val[0] == '\0') return false;
-    return (val[0] == 't' || val[0] == 'T' || val[0] == '1' ||
-            std::string_view(val) == "true" || std::string_view(val) == "TRUE");
+    return row_cache_[col].bool_val;
 }
 
 std::vector<uint8_t> PgDataReader::get_blob(int col) const {
     if (is_null(col)) return {};
-    const unsigned char* val = reinterpret_cast<const unsigned char*>(PQgetvalue(res_, current_row_, col));
-    if (!val) return {};
-    size_t to_len = 0;
-    unsigned char* unescaped = PQunescapeBytea(val, &to_len);
-    if (!unescaped) return {};
-    std::vector<uint8_t> blob(unescaped, unescaped + to_len);
-    PQfreemem(unescaped);
-    return blob;
+    return row_cache_[col].blob_val;
 }
 
 // ----------------------------------------------------------------------------
 // PgPreparedStatement
 // ----------------------------------------------------------------------------
 
-static std::atomic<uint64_t> s_pg_stmt_counter{0};
-
-PgPreparedStatement::PgPreparedStatement(PGconn* conn, std::string_view sql)
-    : conn_(conn)
+PgPreparedStatement::PgPreparedStatement(SQLHDBC hdbc, std::string_view sql)
+    : hdbc_(hdbc)
     , sql_(sql)
-    , stmt_name_("cpplinq_stmt_" + std::to_string(++s_pg_stmt_counter))
-{}
+{
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_);
+    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLAllocHandle(SQL_HANDLE_STMT)");
+
+    rc = SQLPrepareA(
+        hstmt_,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql_.data())),
+        static_cast<SQLINTEGER>(sql_.size())
+    );
+    check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLPrepareA");
+}
+
+PgPreparedStatement::~PgPreparedStatement() {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt_);
+        hstmt_ = SQL_NULL_HSTMT;
+    }
+}
 
 void PgPreparedStatement::bind(int index, const BoundValue& value) {
     if (index < 0) {
@@ -105,170 +219,129 @@ void PgPreparedStatement::bind(int index, const BoundValue& value) {
     params_[index] = value;
 }
 
-void PgPreparedStatement::reset() {
-    params_.clear();
+void PgPreparedStatement::apply_bindings() {
+    storage_.resize(params_.size());
+
+    for (size_t i = 0; i < params_.size(); ++i) {
+        auto& p = params_[i];
+        auto& s = storage_[i];
+
+        std::visit([&](const auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                s.ind = SQL_NULL_DATA;
+                s.c_type = SQL_C_CHAR;
+                s.sql_type = SQL_VARCHAR;
+                s.col_size = 1;
+                s.dec_digits = 0;
+            } else if constexpr (std::is_same_v<T, int64_t>) {
+                s.buffer.resize(sizeof(int64_t));
+                std::memcpy(s.buffer.data(), &v, sizeof(int64_t));
+                s.ind = sizeof(int64_t);
+                s.c_type = SQL_C_SBIGINT;
+                s.sql_type = SQL_BIGINT;
+                s.col_size = 19;
+                s.dec_digits = 0;
+            } else if constexpr (std::is_same_v<T, double>) {
+                s.buffer.resize(sizeof(double));
+                std::memcpy(s.buffer.data(), &v, sizeof(double));
+                s.ind = sizeof(double);
+                s.c_type = SQL_C_DOUBLE;
+                s.sql_type = SQL_DOUBLE;
+                s.col_size = 53;
+                s.dec_digits = 0;
+            } else if constexpr (std::is_same_v<T, bool>) {
+                unsigned char b = v ? 1 : 0;
+                s.buffer.resize(1);
+                s.buffer[0] = b;
+                s.ind = 1;
+                s.c_type = SQL_C_BIT;
+                s.sql_type = SQL_BIT;
+                s.col_size = 1;
+                s.dec_digits = 0;
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                s.buffer.assign(v.begin(), v.end());
+                s.buffer.push_back('\0');
+                s.ind = static_cast<SQLLEN>(v.size());
+                s.c_type = SQL_C_CHAR;
+                s.sql_type = SQL_VARCHAR;
+                s.col_size = std::max<SQLULEN>(1, static_cast<SQLULEN>(v.size()));
+                s.dec_digits = 0;
+            } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+                s.buffer = v;
+                s.ind = static_cast<SQLLEN>(v.size());
+                s.c_type = SQL_C_BINARY;
+                s.sql_type = SQL_VARBINARY;
+                s.col_size = std::max<SQLULEN>(1, static_cast<SQLULEN>(v.size()));
+                s.dec_digits = 0;
+            }
+        }, p);
+
+        SQLRETURN rc = SQLBindParameter(
+            hstmt_,
+            static_cast<SQLUSMALLINT>(i + 1),
+            SQL_PARAM_INPUT,
+            s.c_type,
+            s.sql_type,
+            s.col_size,
+            s.dec_digits,
+            s.ind == SQL_NULL_DATA ? nullptr : s.buffer.data(),
+            static_cast<SQLLEN>(s.buffer.size()),
+            &s.ind
+        );
+        check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter");
+    }
 }
 
 std::unique_ptr<IDataReader> PgPreparedStatement::execute_query() {
-    if (!conn_) {
-        throw DbException("Invalid PostgreSQL connection");
+    apply_bindings();
+    SQLRETURN rc = SQLExecute(hstmt_);
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
+        check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLExecute(execute_query)");
     }
-
-    int nParams = static_cast<int>(params_.size());
-    std::vector<std::string> param_strings(nParams);
-    std::vector<const char*> param_values(nParams, nullptr);
-
-    for (int i = 0; i < nParams; ++i) {
-        const auto& p = params_[i];
-        std::visit([&](const auto& val) {
-            using T = std::decay_t<decltype(val)>;
-            if constexpr (std::is_same_v<T, std::monostate>) {
-                param_values[i] = nullptr;
-            } else if constexpr (std::is_same_v<T, int64_t>) {
-                param_strings[i] = std::to_string(val);
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, double>) {
-                param_strings[i] = std::to_string(val);
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, std::string>) {
-                param_strings[i] = val;
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, bool>) {
-                param_strings[i] = val ? "TRUE" : "FALSE";
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
-                static const char hex_digits[] = "0123456789abcdef";
-                std::string hex = "\\x";
-                hex.reserve(2 + val.size() * 2);
-                for (uint8_t byte : val) {
-                    hex.push_back(hex_digits[(byte >> 4) & 0x0F]);
-                    hex.push_back(hex_digits[byte & 0x0F]);
-                }
-                param_strings[i] = std::move(hex);
-                param_values[i] = param_strings[i].c_str();
-            }
-        }, p);
-    }
-
-    PGresult* res = PQexecParams(
-        conn_,
-        sql_.c_str(),
-        nParams,
-        nullptr,
-        nParams > 0 ? param_values.data() : nullptr,
-        nullptr,
-        nullptr,
-        0
-    );
-
-    if (!res) {
-        throw DbException("PostgreSQL query execution failed: " + std::string(PQerrorMessage(conn_)));
-    }
-
-    ExecStatusType status = PQresultStatus(res);
-    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
-        std::string err = PQerrorMessage(conn_);
-        PQclear(res);
-        throw DbException("PostgreSQL query execution failed: " + err);
-    }
-
-    return std::make_unique<PgDataReader>(res);
+    return std::make_unique<PgDataReader>(hstmt_, false);
 }
 
 size_t PgPreparedStatement::execute_non_query() {
-    if (!conn_) {
-        throw DbException("Invalid PostgreSQL connection");
+    apply_bindings();
+    SQLRETURN rc = SQLExecute(hstmt_);
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
+        check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLExecute(execute_non_query)");
     }
+    SQLLEN affected = 0;
+    SQLRowCount(hstmt_, &affected);
+    return affected > 0 ? static_cast<size_t>(affected) : 0;
+}
 
-    int nParams = static_cast<int>(params_.size());
-    std::vector<std::string> param_strings(nParams);
-    std::vector<const char*> param_values(nParams, nullptr);
-
-    for (int i = 0; i < nParams; ++i) {
-        const auto& p = params_[i];
-        std::visit([&](const auto& val) {
-            using T = std::decay_t<decltype(val)>;
-            if constexpr (std::is_same_v<T, std::monostate>) {
-                param_values[i] = nullptr;
-            } else if constexpr (std::is_same_v<T, int64_t>) {
-                param_strings[i] = std::to_string(val);
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, double>) {
-                param_strings[i] = std::to_string(val);
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, std::string>) {
-                param_strings[i] = val;
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, bool>) {
-                param_strings[i] = val ? "TRUE" : "FALSE";
-                param_values[i] = param_strings[i].c_str();
-            } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
-                static const char hex_digits[] = "0123456789abcdef";
-                std::string hex = "\\x";
-                hex.reserve(2 + val.size() * 2);
-                for (uint8_t byte : val) {
-                    hex.push_back(hex_digits[(byte >> 4) & 0x0F]);
-                    hex.push_back(hex_digits[byte & 0x0F]);
-                }
-                param_strings[i] = std::move(hex);
-                param_values[i] = param_strings[i].c_str();
-            }
-        }, p);
+void PgPreparedStatement::reset() {
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLFreeStmt(hstmt_, SQL_RESET_PARAMS);
+        SQLFreeStmt(hstmt_, SQL_UNBIND);
     }
-
-    PGresult* res = PQexecParams(
-        conn_,
-        sql_.c_str(),
-        nParams,
-        nullptr,
-        nParams > 0 ? param_values.data() : nullptr,
-        nullptr,
-        nullptr,
-        0
-    );
-
-    if (!res) {
-        throw DbException("PostgreSQL command execution failed: " + std::string(PQerrorMessage(conn_)));
-    }
-
-    ExecStatusType status = PQresultStatus(res);
-    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-        std::string err = PQerrorMessage(conn_);
-        PQclear(res);
-        throw DbException("PostgreSQL command execution failed: " + err);
-    }
-
-    const char* tuples = PQcmdTuples(res);
-    size_t affected = 0;
-    if (tuples && tuples[0] != '\0') {
-        affected = static_cast<size_t>(std::strtoull(tuples, nullptr, 10));
-    }
-    PQclear(res);
-    return affected;
+    params_.clear();
+    storage_.clear();
 }
 
 void PgPreparedStatement::cancel() {
-    if (conn_) {
-        PGcancel* cancel_obj = PQgetCancel(conn_);
-        if (cancel_obj) {
-            char errbuf[256];
-            PQcancel(cancel_obj, errbuf, sizeof(errbuf));
-            PQfreeCancel(cancel_obj);
-        }
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLCancel(hstmt_);
     }
 }
 
 void PgPreparedStatement::set_timeout(uint32_t seconds) {
-    if (conn_) {
-        std::string sql = "SET statement_timeout = " + std::to_string(seconds * 1000);
-        PGresult* res = PQexec(conn_, sql.c_str());
-        if (res) PQclear(res);
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLSetStmtAttr(
+            hstmt_,
+            SQL_ATTR_QUERY_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(seconds)),
+            SQL_IS_UINTEGER
+        );
     }
 }
 
 void PgPreparedStatement::set_stop_token(std::stop_token token) {
     stop_token_ = token;
-    if (token.stop_possible() && conn_) {
+    if (token.stop_possible()) {
         stop_cb_.emplace(token, [this]() {
             cancel();
         });
@@ -279,209 +352,145 @@ void PgPreparedStatement::set_stop_token(std::stop_token token) {
 // PgConnection
 // ----------------------------------------------------------------------------
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
-static std::string get_reg_string(HKEY hKey, const char* subkey, const char* value_name) {
-    HKEY hSubKey;
-    if (RegOpenKeyExA(hKey, subkey, 0, KEY_READ, &hSubKey) != ERROR_SUCCESS) {
-        return "";
-    }
-    char buf[1024] = {0};
-    DWORD bufSize = sizeof(buf);
-    DWORD type = 0;
-    LONG res = RegQueryValueExA(hSubKey, value_name, nullptr, &type, reinterpret_cast<LPBYTE>(buf), &bufSize);
-    RegCloseKey(hSubKey);
-    if (res == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ)) {
-        return std::string(buf);
-    }
-    return "";
-}
-
-static std::string resolve_odbc_dsn(const std::string& conn_str) {
-    std::string dsn_name;
-    if (conn_str.rfind("DSN=", 0) == 0 || conn_str.rfind("dsn=", 0) == 0) {
-        size_t semi = conn_str.find(';');
-        if (semi != std::string::npos) {
-            dsn_name = conn_str.substr(4, semi - 4);
-        } else {
-            dsn_name = conn_str.substr(4);
-        }
-    } else if (conn_str.find('=') == std::string::npos &&
-               conn_str.rfind("postgres://", 0) != 0 &&
-               conn_str.rfind("postgresql://", 0) != 0) {
-        dsn_name = conn_str;
-    }
-
-    if (dsn_name.empty()) {
-        return conn_str;
-    }
-
-    std::string subkey = "Software\\ODBC\\ODBC.INI\\" + dsn_name;
-    std::string server = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "Servername");
-    if (server.empty()) server = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "Servername");
-
-    std::string db = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "Database");
-    if (db.empty()) db = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "Database");
-
-    std::string user = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "Username");
-    if (user.empty()) user = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "UID");
-    if (user.empty()) user = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "Username");
-    if (user.empty()) user = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "UID");
-
-    std::string pwd = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "Password");
-    if (pwd.empty()) pwd = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "PWD");
-    if (pwd.empty()) pwd = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "Password");
-    if (pwd.empty()) pwd = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "PWD");
-
-    std::string port = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "Port");
-    if (port.empty()) port = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "Port");
-
-    std::string ssl = get_reg_string(HKEY_CURRENT_USER, subkey.c_str(), "SSLmode");
-    if (ssl.empty()) ssl = get_reg_string(HKEY_LOCAL_MACHINE, subkey.c_str(), "SSLmode");
-
-    if (server.empty() && db.empty() && user.empty()) {
-        return conn_str;
-    }
-
-    std::string result;
-    if (!server.empty()) result += "host=" + server + " ";
-    if (!port.empty()) result += "port=" + port + " ";
-    if (!db.empty()) result += "dbname=" + db + " ";
-    if (!user.empty()) result += "user=" + user + " ";
-    if (!pwd.empty()) result += "password=" + pwd + " ";
-    if (!ssl.empty()) result += "sslmode=" + ssl + " ";
-
-    return result;
-}
-#endif
-
-static std::string parse_odbc_conn_str(const std::string& conn_str) {
-    if (conn_str.find("Driver=") == std::string::npos &&
-        conn_str.find("driver=") == std::string::npos &&
-        conn_str.find("Server=") == std::string::npos &&
-        conn_str.find("server=") == std::string::npos) {
-        return "";
-    }
-
-    std::string host, port, dbname, user, pwd, sslmode;
-    size_t start = 0;
-    while (start < conn_str.size()) {
-        size_t end = conn_str.find(';', start);
-        if (end == std::string::npos) end = conn_str.size();
-        std::string token = conn_str.substr(start, end - start);
-        start = end + 1;
-
-        size_t eq = token.find('=');
-        if (eq == std::string::npos) continue;
-
-        std::string key = token.substr(0, eq);
-        std::string val = token.substr(eq + 1);
-
-        auto trim = [](std::string& s) {
-            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
-        };
-        trim(key);
-        trim(val);
-
-        std::string lower_key = key;
-        for (char& c : lower_key) c = static_cast<char>(::tolower(c));
-
-        if (lower_key == "server" || lower_key == "host") host = val;
-        else if (lower_key == "port") port = val;
-        else if (lower_key == "database" || lower_key == "dbname" || lower_key == "db") dbname = val;
-        else if (lower_key == "uid" || lower_key == "user" || lower_key == "username") user = val;
-        else if (lower_key == "pwd" || lower_key == "password") pwd = val;
-        else if (lower_key == "sslmode") sslmode = val;
-    }
-
-    if (host.empty() && dbname.empty() && user.empty()) return "";
-
-    std::string result;
-    if (!host.empty()) result += "host=" + host + " ";
-    if (!port.empty()) result += "port=" + port + " ";
-    if (!dbname.empty()) result += "dbname=" + dbname + " ";
-    if (!user.empty()) result += "user=" + user + " ";
-    if (!pwd.empty()) result += "password=" + pwd + " ";
-    if (!sslmode.empty()) result += "sslmode=" + sslmode + " ";
-
-    return result;
-}
-
 PgConnection::PgConnection(std::string connection_string)
     : connection_string_(std::move(connection_string))
-    , conn_(nullptr)
 {}
 
 PgConnection::~PgConnection() {
-    close();
+    try {
+        close();
+    } catch (...) {}
 }
 
 void PgConnection::open() {
-    if (is_open()) return;
-    std::string effective_conn_str = parse_odbc_conn_str(connection_string_);
-    if (effective_conn_str.empty()) {
-#ifdef _WIN32
-        effective_conn_str = resolve_odbc_dsn(connection_string_);
-#else
-        effective_conn_str = connection_string_;
-#endif
+    if (is_open_) return;
+
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv_);
+    check_rc(rc, SQL_HANDLE_ENV, henv_, "SQLAllocHandle(SQL_HANDLE_ENV)");
+
+    rc = SQLSetEnvAttr(henv_, SQL_ATTR_ODBC_VERSION, reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0);
+    check_rc(rc, SQL_HANDLE_ENV, henv_, "SQLSetEnvAttr(SQL_OV_ODBC3)");
+
+    rc = SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_);
+    check_rc(rc, SQL_HANDLE_ENV, henv_, "SQLAllocHandle(SQL_HANDLE_DBC)");
+
+    std::string trimmed = connection_string_;
+    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t')) trimmed.erase(trimmed.begin());
+    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
+
+    std::vector<std::string> candidates;
+    if (trimmed.find('=') == std::string::npos && trimmed.rfind("postgres://", 0) != 0 && trimmed.rfind("postgresql://", 0) != 0) {
+        // Plain DSN name
+        candidates.push_back("DSN=" + trimmed + ";");
+        candidates.push_back(trimmed);
+    } else if (trimmed.find("Driver=") != std::string::npos || trimmed.find("driver=") != std::string::npos ||
+               trimmed.find("DSN=") != std::string::npos || trimmed.find("dsn=") != std::string::npos) {
+        candidates.push_back(trimmed);
+    } else {
+        // Build driver candidate list
+        candidates.push_back("Driver={PostgreSQL Unicode};" + trimmed);
+        candidates.push_back("Driver={PostgreSQL ANSI};" + trimmed);
+        candidates.push_back("Driver={PostgreSQL Unicode(x64)};" + trimmed);
+        candidates.push_back("Driver={PostgreSQL ANSI(x64)};" + trimmed);
+        candidates.push_back("Driver={PostgreSQL};" + trimmed);
+        candidates.push_back(trimmed);
+        candidates.push_back("DSN=" + trimmed + ";");
     }
-    conn_ = PQconnectdb(effective_conn_str.c_str());
-    if (!conn_ || PQstatus(conn_) != CONNECTION_OK) {
-        std::string err = conn_ ? PQerrorMessage(conn_) : "Unable to allocate PGconn";
+
+    std::string last_err;
+    bool connected = false;
+
+    for (const auto& conn_in : candidates) {
+        SQLCHAR conn_out[1024];
+        SQLSMALLINT out_len = 0;
+        rc = SQLDriverConnectA(
+            hdbc_,
+            nullptr,
+            reinterpret_cast<SQLCHAR*>(const_cast<char*>(conn_in.data())),
+            static_cast<SQLSMALLINT>(conn_in.size()),
+            conn_out,
+            sizeof(conn_out),
+            &out_len,
+            SQL_DRIVER_NOPROMPT
+        );
+
+        if (SQL_SUCCEEDED(rc)) {
+            connected = true;
+            break;
+        } else {
+            last_err = get_odbc_error(SQL_HANDLE_DBC, hdbc_);
+        }
+    }
+
+    if (!connected) {
         close();
-        throw DbException("Failed to connect to PostgreSQL: " + err);
+        throw DbException("Failed to connect to PostgreSQL (" + connection_string_ + "): " + last_err);
     }
+
+    is_open_ = true;
 }
 
 void PgConnection::close() {
-    if (conn_) {
-        PQfinish(conn_);
-        conn_ = nullptr;
+    if (hdbc_ != SQL_NULL_HDBC) {
+        if (is_open_) {
+            SQLDisconnect(hdbc_);
+            is_open_ = false;
+        }
+        SQLFreeHandle(SQL_HANDLE_DBC, hdbc_);
+        hdbc_ = SQL_NULL_HDBC;
+    }
+    if (henv_ != SQL_NULL_HENV) {
+        SQLFreeHandle(SQL_HANDLE_ENV, henv_);
+        henv_ = SQL_NULL_HENV;
     }
 }
 
 bool PgConnection::is_open() const {
-    return conn_ != nullptr && PQstatus(conn_) == CONNECTION_OK;
+    return is_open_;
 }
 
 std::unique_ptr<IPreparedStatement> PgConnection::prepare(std::string_view sql) {
-    if (!is_open()) {
-        throw DbException("Cannot prepare statement: database connection is not open");
+    if (!is_open_) {
+        throw DbException("Cannot prepare statement: PostgreSQL connection is not open");
     }
-    return std::make_unique<PgPreparedStatement>(conn_, sql);
+    return std::make_unique<PgPreparedStatement>(hdbc_, sql);
 }
 
 void PgConnection::execute(std::string_view sql) {
-    if (!is_open()) {
-        throw DbException("Cannot execute statement: database connection is not open");
+    if (!is_open_) {
+        throw DbException("Cannot execute statement: PostgreSQL connection is not open");
     }
-    PGresult* res = PQexec(conn_, std::string(sql).c_str());
-    if (!res) {
-        throw DbException("PostgreSQL execute failed: " + std::string(PQerrorMessage(conn_)));
-    }
-    ExecStatusType status = PQresultStatus(res);
-    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-        std::string err = PQerrorMessage(conn_);
-        PQclear(res);
+    SQLHSTMT hstmt = SQL_NULL_HSTMT;
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
+    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLAllocHandle(SQL_HANDLE_STMT)");
+
+    rc = SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())), static_cast<SQLINTEGER>(sql.size()));
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
+        std::string err = get_odbc_error(SQL_HANDLE_STMT, hstmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
         throw DbException("PostgreSQL execute failed: " + err);
     }
-    PQclear(res);
+    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
 }
 
 void PgConnection::begin_transaction() {
-    execute("BEGIN");
+    if (!is_open_) throw DbException("PostgreSQL connection is not open");
+    SQLRETURN rc = SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), SQL_IS_UINTEGER);
+    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLSetConnectAttr(SQL_AUTOCOMMIT_OFF)");
 }
 
 void PgConnection::commit() {
-    execute("COMMIT");
+    if (!is_open_) throw DbException("PostgreSQL connection is not open");
+    SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_COMMIT);
+    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLEndTran(SQL_COMMIT)");
+    SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
 }
 
 void PgConnection::rollback() {
-    execute("ROLLBACK");
+    if (!is_open_) throw DbException("PostgreSQL connection is not open");
+    SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_ROLLBACK);
+    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLEndTran(SQL_ROLLBACK)");
+    SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
 }
 
 const ISqlDialect& PgConnection::dialect() const {
@@ -490,16 +499,27 @@ const ISqlDialect& PgConnection::dialect() const {
 
 DriverInfo PgConnection::info() const {
     DriverInfo i;
-    i.driver_name = "PostgreSQL (libpq)";
-    i.driver_version = "16";
+    i.driver_name = "PostgreSQL ODBC Driver";
     i.dbms_name = "PostgreSQL";
-    if (conn_) {
-        int ver = PQserverVersion(conn_);
-        i.dbms_version = std::to_string(ver / 10000) + "." + std::to_string((ver / 100) % 100);
-    } else {
-        i.dbms_version = "16.0";
+    if (hdbc_ != SQL_NULL_HDBC) {
+        char buf[256] = {0};
+        SQLSMALLINT len = 0;
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_NAME, buf, sizeof(buf), &len))) {
+            i.driver_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DRIVER_VER, buf, sizeof(buf), &len))) {
+            i.driver_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_NAME, buf, sizeof(buf), &len))) {
+            i.dbms_name = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_VER, buf, sizeof(buf), &len))) {
+            i.dbms_version = buf;
+        }
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_ODBC_VER, buf, sizeof(buf), &len))) {
+            i.odbc_version = buf;
+        }
     }
-    i.odbc_version = "N/A";
     return i;
 }
 
@@ -513,9 +533,22 @@ DriverCapabilities PgConnection::capabilities() const {
     caps.returning_clause = true;
     caps.output_clause = false;
     caps.upsert = true;
+    caps.array_batch_insert = true;
+    caps.default_batch_chunk_size = 1000;
     caps.window_functions = true;
     caps.ctes = true;
     return caps;
+}
+
+size_t PgConnection::insert_many_batch(
+    std::string_view sql,
+    const std::vector<BoundValue>& flat_params,
+    size_t col_count,
+    size_t row_count
+) {
+    return detail::odbc::execute_insert_many_batch(
+        hdbc_, sql, flat_params, col_count, row_count, "PgConnection"
+    );
 }
 
 // ----------------------------------------------------------------------------
@@ -524,8 +557,7 @@ DriverCapabilities PgConnection::capabilities() const {
 
 template <>
 std::unique_ptr<IConnection> make_connection<postgres>(const std::string& connection_string) {
-    auto conn = std::make_unique<PgConnection>(connection_string);
-    return conn;
+    return std::make_unique<PgConnection>(connection_string);
 }
 
 } // namespace cpplinq

@@ -42,7 +42,12 @@ if(CPPLINQ_ENABLE_SQLITE)
 endif()
 
 if(CPPLINQ_ENABLE_POSTGRES)
-    target_link_libraries(cpplinq PUBLIC PostgreSQL::PostgreSQL)
+    if(WIN32)
+        target_link_libraries(cpplinq PUBLIC odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
+    endif()
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_POSTGRES=1)
 endif()
 

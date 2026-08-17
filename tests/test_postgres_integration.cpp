@@ -674,3 +674,63 @@ TEST_F(PostgresIntegrationTest, CommonTableExpressions) {
     EXPECT_EQ(reader->get_string(1), "Charlie");
     EXPECT_FALSE(reader->next());
 }
+
+TEST_F(PostgresIntegrationTest, BulkOperationsAndChunking) {
+    if (!db) GTEST_SKIP() << "PostgreSQL test instance not available";
+
+    // 1. Batch insert with chunking
+    std::vector<Account> accounts;
+    for (int i = 0; i < 250; ++i) {
+        accounts.push_back(Account{
+            "user_" + std::to_string(i),
+            "user_" + std::to_string(i) + "@example.com",
+            i * 10
+        });
+    }
+    db->insert_many(accounts_table, accounts, 50);
+
+    auto count = db->from(accounts_table).count();
+    EXPECT_EQ(count, 250);
+
+    // 2. exists()
+    EXPECT_TRUE(db->from(accounts_table).where(accounts_table["points"] == 100).exists());
+    EXPECT_FALSE(db->from(accounts_table).where(accounts_table["points"] == 99999).exists());
+
+    // 3. update_many
+    for (auto& acc : accounts) {
+        acc.points += 5;
+    }
+    size_t updated = db->update_many(accounts_table, accounts, 50);
+    EXPECT_EQ(updated, 250);
+    auto acc0 = db->from(accounts_table).where(accounts_table["username"] == "user_0").first();
+    ASSERT_TRUE(acc0.has_value());
+    EXPECT_EQ(acc0->points, 5);
+
+    // 4. upsert_many
+    std::vector<Account> upsert_batch;
+    upsert_batch.push_back(Account{"user_0", "updated_user0@example.com", 999});
+    upsert_batch.push_back(Account{"user_new_1", "new1@example.com", 100});
+    db->upsert_many(accounts_table, upsert_batch);
+
+    auto acc0_up = db->from(accounts_table).where(accounts_table["username"] == "user_0").first();
+    ASSERT_TRUE(acc0_up.has_value());
+    EXPECT_EQ(acc0_up->points, 999);
+    EXPECT_EQ(acc0_up->email, "updated_user0@example.com");
+
+    auto new_acc = db->from(accounts_table).where(accounts_table["username"] == "user_new_1").first();
+    ASSERT_TRUE(new_acc.has_value());
+    EXPECT_EQ(new_acc->points, 100);
+
+    // 5. delete_many with chunking
+    std::vector<std::string> del_ids;
+    for (int i = 0; i < 100; ++i) {
+        del_ids.push_back("user_" + std::to_string(i));
+    }
+    size_t deleted = db->delete_many(accounts_table, del_ids, 30);
+    EXPECT_EQ(deleted, 100);
+    EXPECT_EQ(db->from(accounts_table).count(), 151);
+
+    // 6. truncate
+    db->truncate(accounts_table);
+    EXPECT_EQ(db->from(accounts_table).count(), 0);
+}
