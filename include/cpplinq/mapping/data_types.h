@@ -54,15 +54,21 @@ inline std::string wstring_to_utf8(std::wstring_view wstr) {
     std::string str;
     str.reserve(wstr.size() * 2);
     for (wchar_t wc : wstr) {
-        if (wc < 0x80) {
-            str.push_back(static_cast<char>(wc));
-        } else if (wc < 0x800) {
-            str.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
-            str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp < 0x80) {
+            str.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            str.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
+            str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            str.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
+            str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
         } else {
-            str.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
-            str.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
-            str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+            str.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
+            str.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
         }
     }
     return str;
@@ -93,6 +99,10 @@ inline std::wstring utf8_to_wstring(std::string_view str) {
             wchar_t wc = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(str[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(str[i + 2]) & 0x3F);
             wstr.push_back(wc);
             i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < str.size()) {
+            wchar_t wc = ((c & 0x07) << 18) | ((static_cast<unsigned char>(str[i + 1]) & 0x3F) << 12) | ((static_cast<unsigned char>(str[i + 2]) & 0x3F) << 6) | (static_cast<unsigned char>(str[i + 3]) & 0x3F);
+            wstr.push_back(wc);
+            i += 4;
         } else {
             wstr.push_back(static_cast<wchar_t>(c));
             i += 1;

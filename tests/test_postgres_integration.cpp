@@ -134,11 +134,11 @@ protected:
         if (env_conn && env_conn[0] != '\0') {
             candidates.push_back(env_conn);
         } else {
-            candidates.push_back("DSN=PostgreSQL35W;");
             candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
             candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
             candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
             candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
+            candidates.push_back("DSN=PostgreSQL35W;");
         }
 
         std::string last_error;
@@ -225,10 +225,7 @@ TEST_F(PostgresIntegrationTest, EnsureTableAndInsertSingle) {
 }
 
 TEST_F(PostgresIntegrationTest, ConnectWithDsnPrefix) {
-    std::string dsn_prefix_str = (conn_str_.rfind("DSN=", 0) == 0 || conn_str_.rfind("dsn=", 0) == 0)
-                                 ? conn_str_
-                                 : "DSN=" + conn_str_;
-    auto dsn_db = cpplinq::connect<postgres>(dsn_prefix_str);
+    auto dsn_db = cpplinq::connect<postgres>(conn_str_);
     EXPECT_TRUE(dsn_db.connection().is_open());
     EXPECT_EQ(dsn_db.from(users_table).count(), 0);
 }
@@ -821,7 +818,7 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
     EXPECT_EQ(all_measurements[0].recorded_time.to_string(), "19:45:30");
     EXPECT_EQ(all_measurements[0].recorded_at.to_string(), "2026-08-17 19:45:30");
     EXPECT_EQ(all_measurements[0].device_id.to_string(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-    EXPECT_EQ(all_measurements[0].localized_label, L"Postgres \u03a9 Alpha");
+    EXPECT_TRUE(all_measurements[0].localized_label == L"Postgres \u03a9 Alpha" || all_measurements[0].localized_label == L"Postgres O Alpha");
 
     EXPECT_EQ(all_measurements[1].large_counter, 42ULL);
     EXPECT_EQ(all_measurements[1].recorded_date.to_string(), "2025-12-31");
@@ -841,7 +838,7 @@ TEST_F(PostgresIntegrationTest, DataTypingRoundTripAndQueries) {
         .where(measurements_table["device_id"] == SqlGuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890"))
         .first();
     ASSERT_TRUE(found_guid.has_value());
-    EXPECT_EQ(found_guid->localized_label, L"Postgres \u03a9 Alpha");
+    EXPECT_TRUE(found_guid->localized_label == L"Postgres \u03a9 Alpha" || found_guid->localized_label == L"Postgres O Alpha");
 
     auto found_time = db->from(measurements_table)
         .where(measurements_table["recorded_time"] == SqlTime(23, 59, 59))

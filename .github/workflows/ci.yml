@@ -2,173 +2,215 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, develop ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  linux:
-    name: Linux (ODBC conformance)
+  linux-matrix:
+    name: Linux (${{ matrix.name }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Clang Release
+            build_dir: build-clang
+            build_type: Release
+            c_compiler: clang
+            cxx_compiler: clang++
+            cxx_flags: "-Wall -Wextra"
+            linker_flags: ""
+            asan_options: ""
+            ubsan_options: ""
+
+          - name: GCC (ASan + UBSan + LSan)
+            build_dir: build-asan
+            build_type: Debug
+            c_compiler: gcc
+            cxx_compiler: g++
+            cxx_flags: >-
+              -fsanitize=address,undefined
+              -fno-omit-frame-pointer
+            linker_flags: >-
+              -fsanitize=address,undefined
+            asan_options: >-
+              detect_leaks=1:halt_on_error=1
+            ubsan_options: >-
+              halt_on_error=1:print_stacktrace=1
+
     services:
       postgres:
         image: postgres:16
+        ports:
+          - 5432:5432
         env:
           POSTGRES_USER: cppdb
           POSTGRES_PASSWORD: cppdb_password
           POSTGRES_DB: cppdb
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U cppdb -d cppdb"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+
       mysql:
         image: mysql:8.0
+        ports:
+          - 3306:3306
         env:
           MYSQL_ROOT_PASSWORD: root_password
           MYSQL_DATABASE: cppdb
           MYSQL_USER: cppdb
           MYSQL_PASSWORD: cppdb_password
-        ports:
-          - 3306:3306
         options: >-
           --health-cmd "mysqladmin ping -h localhost -u root -proot_password"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+
       mssql:
         image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+          - 1433:1433
         env:
           ACCEPT_EULA: "Y"
           MSSQL_SA_PASSWORD: "Password123!"
           MSSQL_PID: "Developer"
-        ports:
-          - 1433:1433
         options: >-
           --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C -Q 'SELECT 1'"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
-      - name: Install ODBC drivers and test dependencies
+
+      - name: Install dependencies
         run: |
-          sudo curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o /etc/apt/trusted.gpg.d/microsoft.asc
-          curl -fsSL https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo curl -fsSL \
+            https://packages.microsoft.com/keys/microsoft.asc \
+            -o /etc/apt/trusted.gpg.d/microsoft.asc
+
+          curl -fsSL \
+            https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list
+
           sudo apt-get update
+
           sudo ACCEPT_EULA=Y apt-get install --no-install-recommends -y \
-            libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev \
+            clang \
+            ccache \
+            ninja-build \
+            libsqliteodbc \
+            odbc-postgresql \
+            odbc-mariadb \
+            default-mysql-client \
+            postgresql-client \
+            unixodbc-dev \
             msodbcsql18
-      - name: Configure integration connection strings
+
+      - name: Configure connection strings
         run: |
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPLINQ_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb.sqlite;" >> "$GITHUB_ENV"
           echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
-      - name: Build
-        run: cmake --build build --parallel
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+          echo 'CCACHE_DIR=/home/runner/.cache/ccache' >> "$GITHUB_ENV"
+          echo 'CCACHE_MAXSIZE=500M' >> "$GITHUB_ENV"
 
-  linux-sanitizers:
-    name: Linux (ASan/UBSan)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: cppdb
-          POSTGRES_PASSWORD: cppdb_password
-          POSTGRES_DB: cppdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cppdb -d cppdb"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root_password
-          MYSQL_DATABASE: cppdb
-          MYSQL_USER: cppdb
-          MYSQL_PASSWORD: cppdb_password
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h localhost -u root -proot_password"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-      mssql:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: "Password123!"
-          MSSQL_PID: "Developer"
-        ports:
-          - 1433:1433
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C -Q 'SELECT 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install ODBC drivers and test dependencies
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.build_dir }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.build_dir }}-
+
+      - name: Reset ccache stats
+        run: ccache -z
+
+      - name: Configure
         run: |
-          sudo curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o /etc/apt/trusted.gpg.d/microsoft.asc
-          curl -fsSL https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install --no-install-recommends -y \
-            libgtest-dev libsqliteodbc ninja-build odbc-postgresql \
-            odbc-mariadb default-mysql-client postgresql-client unixodbc-dev \
-            msodbcsql18
-      - name: Configure integration connection strings
-        run: |
-          echo 'CPPDB_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
-          echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
-          echo "CPPDB_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb-sanitized.sqlite;" >> "$GITHUB_ENV"
-          echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
-          echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
-      - name: Configure with sanitizers
-        run: >-
-          cmake -S . -B build-sanitized -G Ninja
-          -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-          -DCPPLINQ_ENABLE_SQLITE=ON
-          -DCPPLINQ_ENABLE_POSTGRES=ON
-          -DCPPLINQ_ENABLE_MSSQL=ON
-          -DCPPLINQ_ENABLE_MYSQL=ON
+          cmake \
+            -S . \
+            -B "${{ matrix.build_dir }}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
+            -DCMAKE_C_COMPILER="${{ matrix.c_compiler }}" \
+            -DCMAKE_CXX_COMPILER="${{ matrix.cxx_compiler }}" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}" \
+            -DCPPLINQ_ENABLE_SQLITE=ON \
+            -DCPPLINQ_ENABLE_POSTGRES=ON \
+            -DCPPLINQ_ENABLE_MSSQL=ON \
+            -DCPPLINQ_ENABLE_MYSQL=ON
+
       - name: Build
-        run: cmake --build build-sanitized --parallel
-      - name: Test under ASan and UBSan
+        run: cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Test
         env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-sanitized --output-on-failure
+          ASAN_OPTIONS: ${{ matrix.asan_options }}
+          UBSAN_OPTIONS: ${{ matrix.ubsan_options }}
+        run: |
+          ctest \
+            --test-dir "${{ matrix.build_dir }}" \
+            --output-on-failure
+
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
 
   windows:
-    name: Windows (unit and compile coverage)
+    name: Windows (MSVC Release)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/ccache
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: |
+            ccache-windows-
+
       - name: Start SQL Server LocalDB
+        shell: pwsh
         run: |
-          sqllocaldb create MSSQLLocalDB
-          sqllocaldb start MSSQLLocalDB
+          sqllocaldb create MSSQLLocalDB -s
           sqllocaldb info MSSQLLocalDB
-          echo "CPPLINQ_MSSQL_ODBC=MSSQLLocalDB" >> $env:GITHUB_ENV
+
       - name: Configure
-        run: cmake -S . -B build -A x64 -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCPPLINQ_ENABLE_SQLITE=ON
+          -DCPPLINQ_ENABLE_MSSQL=ON
+          -DCPPLINQ_ENABLE_MYSQL=ON
+
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --parallel
+
       - name: Test
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: ctest --test-dir build --output-on-failure
+
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
