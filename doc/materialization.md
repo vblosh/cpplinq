@@ -49,10 +49,32 @@ auto users = db.from(users_table)
 Standard `std::vector::push_back` causes $O(\log N)$ memory reallocations during cursor iteration, repeatedly moving and copying all previously fetched structs. `cpplinq` avoids this through a dual-path engine:
 
 1. **Known Limit Fast-Path**: If `.limit(N)` is defined on the query, `cpplinq` immediately calls `results.reserve(*limit_)`. The destination vector is allocated **exactly once** upfront.
-2. **Chunked Buffer Architecture (`ChunkedBuffer<Entity, 64>`)**: When row count is unknown upfront, `cpplinq` uses a block-allocated chunk buffer:
+2. **Chunked Buffer Architecture (`ChunkedBuffer<Entity, 64>` / `ChunkedList<Entity, 64>`)**: When row count is unknown upfront, `cpplinq` uses a block-allocated chunk buffer:
    - Rows are constructed in-place into fixed 64-element blocks.
    - When a block fills up, a new block is allocated; **existing elements are never moved or copied** while streaming from the database.
    - Once cursor iteration finishes and the exact count $N$ is known, `cpplinq` allocates the final `std::vector<Entity>` **exactly once** and moves elements sequentially in a single cache-friendly pass.
+
+```cpp
+// Direct usage of ChunkedBuffer / ChunkedList as a standalone container:
+cpplinq::ChunkedList<User, 64> buffer;
+buffer.emplace_back(1, "Alice", "alice@example.com", 30);
+buffer.emplace_back(2, "Bob", "bob@example.com", 25);
+
+// 1. Forward iteration:
+for (const auto& user : buffer) { /* ... */ }
+
+// 2. Reverse iteration:
+for (auto it = buffer.rbegin(); it != buffer.rend(); ++it) { /* ... */ }
+
+// 3. Random access iterators & standard algorithms:
+std::sort(buffer.begin(), buffer.end(), [](const auto& a, const auto& b) {
+    return a.age < b.age;
+});
+
+// 4. Element access:
+User& first_user = buffer[0];
+User& checked_user = buffer.at(1);
+```
 
 ---
 
