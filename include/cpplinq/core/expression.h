@@ -1,4 +1,5 @@
 #pragma once
+#include "cpplinq/mapping/data_types.h"
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,12 +10,28 @@
 #include <cstdint>
 #include <utility>
 #include <type_traits>
+#include <chrono>
 
 namespace cpplinq {
 namespace expr {
 
 // SQL value variant representing literal values or NULL (monostate)
-using SqlValue = std::variant<std::monostate, int64_t, double, std::string, bool>;
+using SqlValue = std::variant<
+    std::monostate,
+    int64_t,
+    uint64_t,
+    double,
+    std::string,
+    std::wstring,
+    bool,
+    std::vector<uint8_t>,
+    SqlNumeric,
+    SqlDate,
+    SqlTime,
+    SqlTimestamp,
+    SqlInterval,
+    SqlGuid
+>;
 
 // Comparison operators
 enum class CompareOp {
@@ -304,12 +321,25 @@ public:
     // Implicit constructors from standard C++ types
     Expr(int val) : node(Literal{SqlValue(static_cast<int64_t>(val))}) {}
     Expr(int64_t val) : node(Literal{SqlValue(val)}) {}
+    Expr(unsigned int val) : node(Literal{SqlValue(static_cast<uint64_t>(val))}) {}
+    Expr(uint64_t val) : node(Literal{SqlValue(val)}) {}
     Expr(double val) : node(Literal{SqlValue(val)}) {}
     Expr(float val) : node(Literal{SqlValue(static_cast<double>(val))}) {}
     Expr(const char* val) : node(Literal{SqlValue(std::string(val))}) {}
     Expr(std::string val) : node(Literal{SqlValue(std::move(val))}) {}
     Expr(std::string_view val) : node(Literal{SqlValue(std::string(val))}) {}
+    Expr(const wchar_t* val) : node(Literal{SqlValue(std::wstring(val ? val : L""))}) {}
+    Expr(std::wstring val) : node(Literal{SqlValue(std::move(val))}) {}
+    Expr(std::wstring_view val) : node(Literal{SqlValue(std::wstring(val))}) {}
     Expr(bool val) : node(Literal{SqlValue(val)}) {}
+    Expr(std::vector<uint8_t> val) : node(Literal{SqlValue(std::move(val))}) {}
+    Expr(SqlNumeric val) : node(Literal{SqlValue(std::move(val))}) {}
+    Expr(SqlDate val) : node(Literal{SqlValue(val)}) {}
+    Expr(SqlTime val) : node(Literal{SqlValue(val)}) {}
+    Expr(SqlTimestamp val) : node(Literal{SqlValue(val)}) {}
+    Expr(std::chrono::system_clock::time_point val) : node(Literal{SqlValue(SqlTimestamp(val))}) {}
+    Expr(SqlInterval val) : node(Literal{SqlValue(val)}) {}
+    Expr(SqlGuid val) : node(Literal{SqlValue(val)}) {}
     Expr(std::nullopt_t) : node(Literal{SqlValue(std::monostate{})}) {}
 
     template <typename T>

@@ -3,6 +3,12 @@ set(CPPLINQ_SOURCES
     driver/connection.cpp
 )
 
+if(CPPLINQ_ENABLE_POSTGRES OR CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL)
+    list(APPEND CPPLINQ_SOURCES
+        driver/odbc_connection.cpp
+    )
+endif()
+
 if(CPPLINQ_ENABLE_SQLITE)
     list(APPEND CPPLINQ_SOURCES
         dialect/sqlite_dialect.cpp
@@ -42,7 +48,12 @@ if(CPPLINQ_ENABLE_SQLITE)
 endif()
 
 if(CPPLINQ_ENABLE_POSTGRES)
-    target_link_libraries(cpplinq PUBLIC PostgreSQL::PostgreSQL)
+    if(WIN32)
+        target_link_libraries(cpplinq PUBLIC odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
+    endif()
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_POSTGRES=1)
 endif()
 

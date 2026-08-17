@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cpplinq/mapping/data_types.h"
 #include "cpplinq/mapping/type_traits.h"
 #include "cpplinq/core/column.h"
 #include "cpplinq/core/expression.h"

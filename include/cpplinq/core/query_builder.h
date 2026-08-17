@@ -903,6 +903,33 @@ public:
         return stmt->execute_non_query();
     }
 
+    // Terminal: EXISTS
+    bool exists() {
+        SqlGenerator gen(conn_.dialect());
+        auto col_names = get_column_names();
+        std::vector<std::string> select_cols;
+        if (!col_names.empty()) {
+            select_cols.push_back(col_names[0]);
+        } else {
+            select_cols.push_back("1");
+        }
+        auto result = gen.generate_select(
+            table_name_,
+            select_cols,
+            where_clause_,
+            order_clauses_,
+            std::optional<size_t>{1},
+            std::nullopt,
+            false,
+            group_by_clauses_,
+            having_clause_
+        );
+        auto stmt = conn_.prepare(result.sql);
+        bind_params(*stmt, result.params);
+        auto reader = stmt->execute_query();
+        return reader && reader->next();
+    }
+
 private:
     IConnection& conn_;
     std::string table_name_;

@@ -1,5 +1,6 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
+#include "cpplinq/mapping/data_types.h"
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,10 +18,18 @@ namespace cpplinq {
 using BoundValue = std::variant<
     std::monostate,           // NULL
     int64_t,
+    uint64_t,
     double,
     std::string,
+    std::wstring,
     bool,
-    std::vector<uint8_t>      // BLOB
+    std::vector<uint8_t>,     // BLOB
+    SqlNumeric,
+    SqlDate,
+    SqlTime,
+    SqlTimestamp,
+    SqlInterval,
+    SqlGuid
 >;
 
 // Database error
@@ -71,6 +80,8 @@ struct DriverCapabilities {
     bool returning_clause = false;
     bool output_clause = false;
     bool upsert = false;
+    bool array_batch_insert = false;
+    size_t default_batch_chunk_size = 1000;
     bool window_functions = true;
     bool ctes = true;
 };
@@ -86,12 +97,20 @@ public:
     virtual bool next() = 0;  // advance to next row, returns false when done
     virtual int  column_count() const = 0;
 
-    virtual bool        is_null(int col) const = 0;
-    virtual int64_t     get_int64(int col) const = 0;
-    virtual double      get_double(int col) const = 0;
-    virtual std::string get_string(int col) const = 0;
-    virtual bool        get_bool(int col) const = 0;
+    virtual bool         is_null(int col) const = 0;
+    virtual int64_t      get_int64(int col) const = 0;
+    virtual uint64_t     get_uint64(int col) const = 0;
+    virtual double       get_double(int col) const = 0;
+    virtual std::string  get_string(int col) const = 0;
+    virtual std::wstring get_wstring(int col) const = 0;
+    virtual bool         get_bool(int col) const = 0;
     virtual std::vector<uint8_t> get_blob(int col) const = 0;
+    virtual SqlNumeric   get_numeric(int col) const = 0;
+    virtual SqlDate      get_date(int col) const = 0;
+    virtual SqlTime      get_time(int col) const = 0;
+    virtual SqlTimestamp get_timestamp(int col) const = 0;
+    virtual SqlInterval  get_interval(int col) const = 0;
+    virtual SqlGuid      get_guid(int col) const = 0;
 };
 
 // Prepared statement
@@ -133,6 +152,14 @@ public:
     // Driver capabilities & information
     virtual DriverInfo info() const = 0;
     virtual DriverCapabilities capabilities() const = 0;
+
+    // Batch insert/update using array binding (or fallback loop)
+    virtual size_t insert_many_batch(
+        std::string_view sql,
+        const std::vector<BoundValue>& flat_params,
+        size_t col_count,
+        size_t row_count
+    );
 
     // Streaming range over raw query
     virtual RowStream stream(

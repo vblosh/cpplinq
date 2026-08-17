@@ -14,7 +14,7 @@ int64_t new_id = db.insert(users_table, User{0, "Alice", "alice@example.com", 30
 ```
 
 ### 1.2 Batch Insert (`insert_many`)
-Inserts a collection of entities inside a transaction automatically:
+Inserts a collection of entities inside an automatic transaction using driver-accelerated ODBC array bindings where supported:
 
 ```cpp
 std::vector<User> batch = {
@@ -23,17 +23,59 @@ std::vector<User> batch = {
     {0, "Dave",  "dave@example.com",  32}
 };
 
-db.insert_many(users_table, batch);
+// Insert in chunks of 50
+db.insert_many(users_table, batch, 50);
 ```
 
 ---
 
-## 2. Cross-Dialect UPSERT (`INSERT ON CONFLICT / MERGE`)
+## 2. Bulk & Batch Operations
+
+### 2.1 Batch Update by Primary Key (`update_many`)
+Updates an array of entities matching their primary keys with chunking:
+
+```cpp
+for (auto& u : batch) {
+    u.age += 1;
+}
+size_t updated_count = db.update_many(users_table, batch, 50);
+```
+
+### 2.2 Batch Delete by Primary Keys (`delete_many`)
+Deletes matching entities given a vector of primary keys in chunks:
+
+```cpp
+std::vector<int> user_ids = {1, 2, 3, 4, 5};
+size_t deleted_count = db.delete_many(users_table, user_ids, 50);
+```
+
+### 2.3 Batch Upsert (`upsert_many`)
+Atomically upserts a batch of entities in a transaction:
+
+```cpp
+std::vector<Account> upsert_batch = {
+    Account{"user_0", "user0_new@example.com", 150},
+    Account{"user_new", "new@example.com", 100}
+};
+db.upsert_many(accounts_table, upsert_batch);
+```
+
+### 2.4 Fast Table Truncate (`truncate`)
+Clears all table rows quickly using `TRUNCATE TABLE` (with transparent `DELETE FROM` fallback):
+
+```cpp
+db.truncate(users_table);
+```
+
+---
+
+## 3. Cross-Dialect UPSERT (`INSERT ON CONFLICT / MERGE`)
 
 Performs an atomic insert-or-update operation across databases:
 - **SQLite**: `INSERT INTO ... ON CONFLICT (cols) DO UPDATE SET ...`
 - **PostgreSQL**: `INSERT INTO ... ON CONFLICT (cols) DO UPDATE SET ...`
 - **Microsoft SQL Server**: `MERGE INTO ... USING (VALUES ...) ON ... WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...`
+- **MySQL / MariaDB**: `INSERT INTO ... VALUES (...) ON DUPLICATE KEY UPDATE ...`
 
 ```cpp
 User user{1, "Alice Updated", "alice.new@example.com", 31};
@@ -49,8 +91,9 @@ db.upsert(
 
 ---
 
-## 3. Updating Data
+## 4. Updating & Removing via Query
 
+### 4.1 Updating Data
 Execute parameterized `UPDATE` statements on matching rows:
 
 ```cpp
@@ -62,10 +105,7 @@ size_t updated = db.from(users_table)
                    });
 ```
 
----
-
-## 4. Deleting Data
-
+### 4.2 Deleting Data
 Execute parameterized `DELETE` statements on matching rows:
 
 ```cpp

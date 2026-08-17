@@ -88,6 +88,33 @@ inline const auto employees_table = table<Employee>(
     column("salary", &Employee::salary)
 );
 
+struct Measurement {
+    int id = 0;
+    uint64_t large_counter = 0;
+    SqlNumeric high_precision_val;
+    SqlDate recorded_date;
+    SqlTime recorded_time;
+    SqlTimestamp recorded_at;
+    SqlInterval duration;
+    SqlGuid device_id;
+    std::wstring localized_label;
+
+    bool operator==(const Measurement& other) const = default;
+};
+
+inline const auto measurements_table = table<Measurement>(
+    "measurements",
+    column("id", &Measurement::id, primary_key, auto_increment),
+    column("large_counter", &Measurement::large_counter),
+    column("high_precision_val", &Measurement::high_precision_val),
+    column("recorded_date", &Measurement::recorded_date),
+    column("recorded_time", &Measurement::recorded_time),
+    column("recorded_at", &Measurement::recorded_at),
+    column("duration", &Measurement::duration),
+    column("device_id", &Measurement::device_id),
+    column("localized_label", &Measurement::localized_label)
+);
+
 } // namespace
 
 // ============================================================================
@@ -610,4 +637,147 @@ TEST_F(SqliteIntegrationTest, CommonTableExpressions) {
     ASSERT_TRUE(reader->next());
     EXPECT_EQ(reader->get_string(1), "Charlie");
     EXPECT_FALSE(reader->next());
+}
+
+TEST_F(SqliteIntegrationTest, BulkOperationsAndChunking) {
+    std::vector<Account> accounts;
+    for (int i = 0; i < 250; ++i) {
+        accounts.push_back(Account{
+            "user_" + std::to_string(i),
+            "user_" + std::to_string(i) + "@example.com",
+            i * 10
+        });
+    }
+    db->insert_many(accounts_table, accounts, 50);
+
+    auto count = db->from(accounts_table).count();
+    EXPECT_EQ(count, 250);
+
+    // exists()
+    EXPECT_TRUE(db->from(accounts_table).where(accounts_table["points"] == 100).exists());
+    EXPECT_FALSE(db->from(accounts_table).where(accounts_table["points"] == 99999).exists());
+
+    // update_many
+    for (auto& acc : accounts) {
+        acc.points += 5;
+    }
+    size_t updated = db->update_many(accounts_table, accounts, 50);
+    EXPECT_EQ(updated, 250);
+    auto acc0 = db->from(accounts_table).where(accounts_table["username"] == "user_0").first();
+    ASSERT_TRUE(acc0.has_value());
+    EXPECT_EQ(acc0->points, 5);
+
+    // upsert_many
+    std::vector<Account> upsert_batch;
+    upsert_batch.push_back(Account{"user_0", "updated_user0@example.com", 999});
+    upsert_batch.push_back(Account{"user_new_1", "new1@example.com", 100});
+    db->upsert_many(accounts_table, upsert_batch);
+
+    auto acc0_up = db->from(accounts_table).where(accounts_table["username"] == "user_0").first();
+    ASSERT_TRUE(acc0_up.has_value());
+    EXPECT_EQ(acc0_up->points, 999);
+    EXPECT_EQ(acc0_up->email, "updated_user0@example.com");
+
+    auto new_acc = db->from(accounts_table).where(accounts_table["username"] == "user_new_1").first();
+    ASSERT_TRUE(new_acc.has_value());
+    EXPECT_EQ(new_acc->points, 100);
+
+    // delete_many with chunking
+    std::vector<std::string> del_ids;
+    for (int i = 0; i < 100; ++i) {
+        del_ids.push_back("user_" + std::to_string(i));
+    }
+    size_t deleted = db->delete_many(accounts_table, del_ids, 30);
+    EXPECT_EQ(deleted, 100);
+    EXPECT_EQ(db->from(accounts_table).count(), 151);
+
+    // truncate
+    db->truncate(accounts_table);
+    EXPECT_EQ(db->from(accounts_table).count(), 0);
+}
+
+TEST_F(SqliteIntegrationTest, DataTypingRoundTripAndQueries) {
+    db->ensure_table(measurements_table);
+
+    Measurement m1;
+    m1.large_counter = 18446744073709551600ULL;
+    m1.high_precision_val = SqlNumeric("123456789.987654321");
+    m1.recorded_date = SqlDate(2026, 8, 17);
+    m1.recorded_time = SqlTime(19, 45, 30);
+    m1.recorded_at = SqlTimestamp(2026, 8, 17, 19, 45, 30, 0);
+    m1.duration = SqlInterval::from_day_second(2, 5, 30, 0);
+    m1.device_id = SqlGuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    m1.localized_label = L"Sensor \u03a9 Alpha";
+
+    Measurement m2;
+    m2.large_counter = 42ULL;
+    m2.high_precision_val = SqlNumeric("-999.50");
+    m2.recorded_date = SqlDate(2025, 12, 31);
+    m2.recorded_time = SqlTime(23, 59, 59);
+    m2.recorded_at = SqlTimestamp(2025, 12, 31, 23, 59, 59, 0);
+    m2.duration = SqlInterval::from_day_second(0, 0, 0, 15);
+    m2.device_id = SqlGuid("00000000-0000-0000-0000-000000000042");
+    m2.localized_label = L"Beta Sensor";
+
+    db->insert(measurements_table, m1);
+    db->insert(measurements_table, m2);
+
+    auto all_measurements = db->from(measurements_table).to_list().to_vector();
+    ASSERT_EQ(all_measurements.size(), 2);
+
+    EXPECT_EQ(all_measurements[0].large_counter, 18446744073709551600ULL);
+    EXPECT_EQ(all_measurements[0].high_precision_val.to_string(), "123456789.987654321");
+    EXPECT_EQ(all_measurements[0].recorded_date.to_string(), "2026-08-17");
+    EXPECT_EQ(all_measurements[0].recorded_time.to_string(), "19:45:30");
+    EXPECT_EQ(all_measurements[0].recorded_at.to_string(), "2026-08-17 19:45:30");
+    EXPECT_EQ(all_measurements[0].duration.to_string(), "2 05:30:00");
+    EXPECT_EQ(all_measurements[0].device_id.to_string(), "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    EXPECT_EQ(all_measurements[0].localized_label, L"Sensor \u03a9 Alpha");
+
+    EXPECT_EQ(all_measurements[1].large_counter, 42ULL);
+    EXPECT_EQ(all_measurements[1].high_precision_val.to_string(), "-999.50");
+    EXPECT_EQ(all_measurements[1].recorded_date.to_string(), "2025-12-31");
+    EXPECT_EQ(all_measurements[1].recorded_time.to_string(), "23:59:59");
+    EXPECT_EQ(all_measurements[1].recorded_at.to_string(), "2025-12-31 23:59:59");
+    EXPECT_EQ(all_measurements[1].duration.to_string(), "0 00:00:15");
+    EXPECT_EQ(all_measurements[1].device_id.to_string(), "00000000-0000-0000-0000-000000000042");
+    EXPECT_EQ(all_measurements[1].localized_label, L"Beta Sensor");
+
+    // Filter queries with new types
+    auto found_date = db->from(measurements_table)
+        .where(measurements_table["recorded_date"] == SqlDate(2026, 8, 17))
+        .first();
+    ASSERT_TRUE(found_date.has_value());
+    EXPECT_EQ(found_date->large_counter, 18446744073709551600ULL);
+
+    auto found_guid = db->from(measurements_table)
+        .where(measurements_table["device_id"] == SqlGuid("a1b2c3d4-e5f6-7890-abcd-ef1234567890"))
+        .first();
+    ASSERT_TRUE(found_guid.has_value());
+    EXPECT_EQ(found_guid->localized_label, L"Sensor \u03a9 Alpha");
+
+    auto found_time = db->from(measurements_table)
+        .where(measurements_table["recorded_time"] == SqlTime(23, 59, 59))
+        .first();
+    ASSERT_TRUE(found_time.has_value());
+    EXPECT_EQ(found_time->recorded_date.to_string(), "2025-12-31");
+
+    auto found_ts = db->from(measurements_table)
+        .where(measurements_table["recorded_at"] == SqlTimestamp(2026, 8, 17, 19, 45, 30, 0))
+        .first();
+    ASSERT_TRUE(found_ts.has_value());
+    EXPECT_EQ(found_ts->large_counter, 18446744073709551600ULL);
+
+    // Update with new types
+    found_date->high_precision_val = SqlNumeric("555.777");
+    found_date->duration = SqlInterval::from_day_second(1, 0, 0, 0);
+    found_date->localized_label = L"Updated Label";
+    size_t updated = db->update_many(measurements_table, std::vector<Measurement>{*found_date});
+    EXPECT_EQ(updated, 1);
+
+    auto reloaded = db->from(measurements_table).where(measurements_table["id"] == found_date->id).first();
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->high_precision_val.to_string(), "555.777");
+    EXPECT_EQ(reloaded->duration.to_string(), "1 00:00:00");
+    EXPECT_EQ(reloaded->localized_label, L"Updated Label");
 }

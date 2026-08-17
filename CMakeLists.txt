@@ -16,7 +16,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(CPPLINQ_BUILD_TESTS    "Build unit tests"    ON)
 option(CPPLINQ_BUILD_EXAMPLES "Build examples"      ON)
 option(CPPLINQ_ENABLE_SQLITE  "Enable SQLite backend"     ON)
-option(CPPLINQ_ENABLE_POSTGRES "Enable PostgreSQL backend" OFF)
+option(CPPLINQ_ENABLE_POSTGRES "Enable PostgreSQL backend (ODBC)" ON)
 option(CPPLINQ_ENABLE_MSSQL    "Enable Microsoft SQL Server backend" ON)
 option(CPPLINQ_ENABLE_MYSQL    "Enable MySQL / MariaDB backend" ON)
 
@@ -38,10 +38,6 @@ if(CPPLINQ_ENABLE_SQLITE)
         )
         add_library(SQLite::SQLite3 ALIAS sqlite3_lib)
     endif()
-endif()
-
-if(CPPLINQ_ENABLE_POSTGRES)
-    find_package(PostgreSQL REQUIRED)
 endif()
 
 # Library

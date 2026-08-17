@@ -133,15 +133,260 @@ public:
         return 0;
     }
 
-    // Insert multiple entities in a transaction
+    // Insert multiple entities with batch chunking
     template <typename Entity, typename... Cols>
     void insert_many(const TableDef<Entity, Cols...>& table,
-                     const std::vector<Entity>& entities) {
+                     const std::vector<Entity>& entities,
+                     size_t chunk_size = 0) {
+        if (entities.empty()) return;
+        if (chunk_size == 0) {
+            chunk_size = conn_->capabilities().default_batch_chunk_size;
+            if (chunk_size == 0) chunk_size = 1000;
+        }
+
+        if (conn_->capabilities().array_batch_insert) {
+            SqlGenerator gen(conn_->dialect());
+            std::vector<std::string> col_names;
+            std::apply([&](const auto&... cols) {
+                auto add = [&](const auto& col) {
+                    if (!col.is_auto_increment) col_names.emplace_back(col.name);
+                };
+                (add(cols), ...);
+            }, table.columns);
+
+            std::vector<BoundValue> dummy(col_names.size(), BoundValue{int64_t{0}});
+            auto result = gen.generate_insert(std::string(table.name), col_names, dummy, std::nullopt);
+            const size_t ncols = col_names.size();
+
+            Transaction txn(*conn_);
+            for (size_t offset = 0; offset < entities.size(); offset += chunk_size) {
+                size_t count = std::min(chunk_size, entities.size() - offset);
+                std::vector<BoundValue> flat;
+                flat.reserve(count * ncols);
+
+                for (size_t r = 0; r < count; ++r) {
+                    const auto& e = entities[offset + r];
+                    std::apply([&](const auto&... cols) {
+                        auto push = [&](const auto& col) {
+                            if (!col.is_auto_increment) {
+                                flat.push_back(field_to_bound_value(e, col.member_ptr));
+                            }
+                        };
+                        (push(cols), ...);
+                    }, table.columns);
+                }
+                conn_->insert_many_batch(result.sql, flat, ncols, count);
+            }
+            txn.commit();
+            return;
+        }
+
+        // Fallback: row-by-row transaction loop
         Transaction txn(*conn_);
         for (const auto& entity : entities) {
             insert(table, entity);
         }
         txn.commit();
+    }
+
+    // Delete multiple entities by primary key with chunking and ODBC array binding fast path
+    template <typename Entity, typename PkType, typename... Cols>
+    size_t delete_many(const TableDef<Entity, Cols...>& table,
+                       const std::vector<PkType>& ids,
+                       size_t chunk_size = 0) {
+        if (ids.empty()) return 0;
+        if (chunk_size == 0) {
+            chunk_size = conn_->capabilities().default_batch_chunk_size;
+            if (chunk_size == 0) chunk_size = 1000;
+        }
+
+        std::string pk_col;
+        std::apply([&](const auto&... cols) {
+            auto find_pk = [&](const auto& col) {
+                if (col.is_primary_key && pk_col.empty()) pk_col = std::string(col.name);
+            };
+            (find_pk(cols), ...);
+        }, table.columns);
+
+        if (pk_col.empty()) {
+            throw DbException("delete_many requires a primary key column");
+        }
+
+        const ISqlDialect& d = conn_->dialect();
+
+        // ODBC Array Binding Fast Path: DELETE FROM table WHERE pk = ?
+        if (conn_->capabilities().array_batch_insert) {
+            std::string sql = "DELETE FROM " + d.quote_id(table.name) + " WHERE " + d.quote_id(pk_col) + " = " + d.placeholder(0);
+            size_t total_deleted = 0;
+
+            Transaction txn(*conn_);
+            for (size_t offset = 0; offset < ids.size(); offset += chunk_size) {
+                size_t count = std::min(chunk_size, ids.size() - offset);
+                std::vector<BoundValue> flat;
+                flat.reserve(count);
+
+                for (size_t i = 0; i < count; ++i) {
+                    const auto& val = ids[offset + i];
+                    if constexpr (std::is_integral_v<PkType>) {
+                        flat.emplace_back(static_cast<int64_t>(val));
+                    } else if constexpr (std::is_floating_point_v<PkType>) {
+                        flat.emplace_back(static_cast<double>(val));
+                    } else if constexpr (std::is_same_v<PkType, std::string> || std::is_same_v<PkType, std::string_view>) {
+                        flat.emplace_back(std::string(val));
+                    } else {
+                        flat.emplace_back(val);
+                    }
+                }
+                total_deleted += conn_->insert_many_batch(sql, flat, 1, count);
+            }
+            txn.commit();
+            return total_deleted;
+        }
+
+        // Fallback: chunked IN (?, ?, ...) statements
+        size_t total_deleted = 0;
+        Transaction txn(*conn_);
+        for (size_t offset = 0; offset < ids.size(); offset += chunk_size) {
+            size_t count = std::min(chunk_size, ids.size() - offset);
+            std::string sql = "DELETE FROM " + d.quote_id(table.name) + " WHERE " + d.quote_id(pk_col) + " IN (";
+            for (size_t i = 0; i < count; ++i) {
+                if (i > 0) sql += ", ";
+                sql += d.placeholder(i);
+            }
+            sql += ")";
+
+            auto stmt = conn_->prepare(sql);
+            for (size_t i = 0; i < count; ++i) {
+                const auto& val = ids[offset + i];
+                if constexpr (std::is_integral_v<PkType>) {
+                    stmt->bind(static_cast<int>(i), BoundValue{static_cast<int64_t>(val)});
+                } else if constexpr (std::is_floating_point_v<PkType>) {
+                    stmt->bind(static_cast<int>(i), BoundValue{static_cast<double>(val)});
+                } else if constexpr (std::is_same_v<PkType, std::string> || std::is_same_v<PkType, std::string_view>) {
+                    stmt->bind(static_cast<int>(i), BoundValue{std::string(val)});
+                } else {
+                    stmt->bind(static_cast<int>(i), BoundValue{val});
+                }
+            }
+            total_deleted += stmt->execute_non_query();
+        }
+        txn.commit();
+        return total_deleted;
+    }
+
+    // Update multiple entities by primary key with chunking and ODBC fast path
+    template <typename Entity, typename... Cols>
+    size_t update_many(const TableDef<Entity, Cols...>& table,
+                       const std::vector<Entity>& entities,
+                       size_t chunk_size = 0) {
+        if (entities.empty()) return 0;
+        if (chunk_size == 0) {
+            chunk_size = conn_->capabilities().default_batch_chunk_size;
+            if (chunk_size == 0) chunk_size = 1000;
+        }
+
+        std::string pk_col;
+        std::vector<std::string> update_cols;
+        std::apply([&](const auto&... cols) {
+            auto scan = [&](const auto& col) {
+                if (col.is_primary_key) pk_col = std::string(col.name);
+                else update_cols.emplace_back(col.name);
+            };
+            (scan(cols), ...);
+        }, table.columns);
+
+        if (pk_col.empty()) {
+            throw DbException("update_many requires a primary key column");
+        }
+
+        const ISqlDialect& d = conn_->dialect();
+        std::string sql = "UPDATE " + d.quote_id(table.name) + " SET ";
+        for (size_t i = 0; i < update_cols.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += d.quote_id(update_cols[i]) + " = " + d.placeholder(i);
+        }
+        sql += " WHERE " + d.quote_id(pk_col) + " = " + d.placeholder(update_cols.size());
+
+        if (conn_->capabilities().array_batch_insert) {
+            const size_t ncols = update_cols.size() + 1;
+            size_t total_affected = 0;
+
+            Transaction txn(*conn_);
+            for (size_t offset = 0; offset < entities.size(); offset += chunk_size) {
+                size_t count = std::min(chunk_size, entities.size() - offset);
+                std::vector<BoundValue> flat;
+                flat.reserve(count * ncols);
+
+                for (size_t r = 0; r < count; ++r) {
+                    const auto& e = entities[offset + r];
+                    BoundValue pk_val;
+                    std::apply([&](const auto&... cols) {
+                        auto push = [&](const auto& col) {
+                            if (!col.is_primary_key) {
+                                flat.push_back(field_to_bound_value(e, col.member_ptr));
+                            } else {
+                                pk_val = field_to_bound_value(e, col.member_ptr);
+                            }
+                        };
+                        (push(cols), ...);
+                    }, table.columns);
+                    flat.push_back(pk_val);
+                }
+                total_affected += conn_->insert_many_batch(sql, flat, ncols, count);
+            }
+            txn.commit();
+            return total_affected;
+        }
+
+        // Fallback: row-by-row transaction loop
+        size_t total = 0;
+        Transaction txn(*conn_);
+        for (const auto& e : entities) {
+            auto stmt = conn_->prepare(sql);
+            int idx = 0;
+            BoundValue pk_val;
+            std::apply([&](const auto&... cols) {
+                auto bind = [&](const auto& col) {
+                    if (!col.is_primary_key) {
+                        stmt->bind(idx++, field_to_bound_value(e, col.member_ptr));
+                    } else {
+                        pk_val = field_to_bound_value(e, col.member_ptr);
+                    }
+                };
+                (bind(cols), ...);
+            }, table.columns);
+            stmt->bind(idx, pk_val);
+            total += stmt->execute_non_query();
+        }
+        txn.commit();
+        return total;
+    }
+
+    // Upsert multiple entities in a transaction
+    template <typename Entity, typename... Cols>
+    size_t upsert_many(const TableDef<Entity, Cols...>& table,
+                       const std::vector<Entity>& entities,
+                       const std::vector<std::string>& conflict_columns = {},
+                       const std::vector<std::string>& update_columns = {}) {
+        if (entities.empty()) return 0;
+        size_t total = 0;
+        Transaction txn(*conn_);
+        for (const auto& e : entities) {
+            total += upsert(table, e, conflict_columns, update_columns);
+        }
+        txn.commit();
+        return total;
+    }
+
+    // Truncate table (TRUNCATE TABLE with DELETE FROM fallback)
+    template <typename Entity, typename... Cols>
+    void truncate(const TableDef<Entity, Cols...>& table) {
+        const ISqlDialect& d = conn_->dialect();
+        try {
+            conn_->execute("TRUNCATE TABLE " + d.quote_id(table.name));
+        } catch (...) {
+            conn_->execute("DELETE FROM " + d.quote_id(table.name));
+        }
     }
 
     // Upsert (insert or update on conflict)

@@ -22,4 +22,22 @@ RowStream IConnection::stream(
     return RowStream(std::move(stmt), std::move(reader), std::move(options));
 }
 
+size_t IConnection::insert_many_batch(
+    std::string_view sql,
+    const std::vector<BoundValue>& flat_params,
+    size_t col_count,
+    size_t row_count
+) {
+    if (row_count == 0 || col_count == 0) return 0;
+    size_t total = 0;
+    for (size_t r = 0; r < row_count; ++r) {
+        auto stmt = prepare(sql);
+        for (size_t c = 0; c < col_count; ++c) {
+            stmt->bind(static_cast<int>(c), flat_params[r * col_count + c]);
+        }
+        total += stmt->execute_non_query();
+    }
+    return total;
+}
+
 } // namespace cpplinq

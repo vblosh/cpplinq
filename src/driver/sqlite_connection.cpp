@@ -46,6 +46,11 @@ int64_t SqliteDataReader::get_int64(int col) const {
     return sqlite3_column_int64(stmt_.get(), col);
 }
 
+uint64_t SqliteDataReader::get_uint64(int col) const {
+    if (!stmt_) return 0;
+    return static_cast<uint64_t>(sqlite3_column_int64(stmt_.get(), col));
+}
+
 double SqliteDataReader::get_double(int col) const {
     if (!stmt_) return 0.0;
     return sqlite3_column_double(stmt_.get(), col);
@@ -56,6 +61,11 @@ std::string SqliteDataReader::get_string(int col) const {
     const unsigned char* txt = sqlite3_column_text(stmt_.get(), col);
     int bytes = sqlite3_column_bytes(stmt_.get(), col);
     return txt ? std::string(reinterpret_cast<const char*>(txt), static_cast<size_t>(bytes)) : std::string();
+}
+
+std::wstring SqliteDataReader::get_wstring(int col) const {
+    if (!stmt_) return {};
+    return utf8_to_wstring(get_string(col));
 }
 
 bool SqliteDataReader::get_bool(int col) const {
@@ -70,6 +80,30 @@ std::vector<uint8_t> SqliteDataReader::get_blob(int col) const {
     if (!blob || bytes <= 0) return {};
     const auto* ptr = static_cast<const uint8_t*>(blob);
     return std::vector<uint8_t>(ptr, ptr + bytes);
+}
+
+SqlNumeric SqliteDataReader::get_numeric(int col) const {
+    return SqlNumeric(get_string(col));
+}
+
+SqlDate SqliteDataReader::get_date(int col) const {
+    return SqlDate::from_string(get_string(col));
+}
+
+SqlTime SqliteDataReader::get_time(int col) const {
+    return SqlTime::from_string(get_string(col));
+}
+
+SqlTimestamp SqliteDataReader::get_timestamp(int col) const {
+    return SqlTimestamp::from_string(get_string(col));
+}
+
+SqlInterval SqliteDataReader::get_interval(int col) const {
+    return SqlInterval::from_string(get_string(col));
+}
+
+SqlGuid SqliteDataReader::get_guid(int col) const {
+    return SqlGuid::from_string(get_string(col));
 }
 
 // ----------------------------------------------------------------------------
@@ -94,14 +128,37 @@ void SqlitePreparedStatement::bind(int index, const BoundValue& value) {
             rc = sqlite3_bind_null(stmt_.get(), sql_index);
         } else if constexpr (std::is_same_v<T, int64_t>) {
             rc = sqlite3_bind_int64(stmt_.get(), sql_index, val);
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+            rc = sqlite3_bind_int64(stmt_.get(), sql_index, static_cast<sqlite3_int64>(val));
         } else if constexpr (std::is_same_v<T, double>) {
             rc = sqlite3_bind_double(stmt_.get(), sql_index, val);
         } else if constexpr (std::is_same_v<T, std::string>) {
             rc = sqlite3_bind_text(stmt_.get(), sql_index, val.data(), static_cast<int>(val.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, std::wstring>) {
+            std::string s = wstring_to_utf8(val);
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
         } else if constexpr (std::is_same_v<T, bool>) {
             rc = sqlite3_bind_int(stmt_.get(), sql_index, val ? 1 : 0);
         } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
             rc = sqlite3_bind_blob(stmt_.get(), sql_index, val.data(), static_cast<int>(val.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlNumeric>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlDate>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlTime>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlTimestamp>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlInterval>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+        } else if constexpr (std::is_same_v<T, SqlGuid>) {
+            std::string s = val.to_string();
+            rc = sqlite3_bind_text(stmt_.get(), sql_index, s.data(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
         }
     }, value);
 
