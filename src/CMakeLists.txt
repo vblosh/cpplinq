@@ -3,6 +3,12 @@ set(CPPLINQ_SOURCES
     driver/connection.cpp
 )
 
+if(CPPLINQ_ENABLE_POSTGRES OR CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL)
+    list(APPEND CPPLINQ_SOURCES
+        driver/odbc_connection.cpp
+    )
+endif()
+
 if(CPPLINQ_ENABLE_SQLITE)
     list(APPEND CPPLINQ_SOURCES
         dialect/sqlite_dialect.cpp
