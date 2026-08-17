@@ -40,21 +40,6 @@ DriverInfo MysqlConnection::get_default_driver_info() const {
     return i;
 }
 
-std::vector<std::string> MysqlConnection::get_connection_candidates(const std::string& conn_str) const {
-    std::string trimmed = conn_str;
-    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t')) trimmed.erase(trimmed.begin());
-    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
-
-    std::vector<std::string> candidates;
-    if (trimmed.find('=') == std::string::npos) {
-        // Plain DSN name
-        candidates.push_back("DSN=" + trimmed + ";");
-        candidates.push_back(trimmed);
-    } else {
-        candidates.push_back(trimmed);
-    }
-    return candidates;
-}
 
 // ----------------------------------------------------------------------------
 // make_connection<mysql> Specialization

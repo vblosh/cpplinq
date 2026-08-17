@@ -40,34 +40,6 @@ DriverInfo MssqlConnection::get_default_driver_info() const {
     return i;
 }
 
-std::vector<std::string> MssqlConnection::get_connection_candidates(const std::string& conn_str) const {
-    std::vector<std::string> candidates;
-    std::string trimmed = conn_str;
-    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t')) trimmed.erase(trimmed.begin());
-    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
-
-    if (trimmed == "MSSQLLocalDB" || trimmed == "(localdb)\\MSSQLLocalDB" || trimmed == "localdb") {
-        candidates.push_back("Driver={ODBC Driver 18 for SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;TrustServerCertificate=yes;");
-        candidates.push_back("Driver={ODBC Driver 17 for SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;");
-        candidates.push_back("Driver={SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;");
-        candidates.push_back("DSN=MSSQLLocalDB;");
-    } else if (trimmed.find("Driver=") == std::string::npos && trimmed.find("DRIVER=") == std::string::npos &&
-               trimmed.rfind("DSN=", 0) != 0 && trimmed.rfind("dsn=", 0) != 0) {
-        if (trimmed.find('=') == std::string::npos) {
-            candidates.push_back("DSN=" + trimmed);
-            candidates.push_back("Driver={ODBC Driver 18 for SQL Server};Server=" + trimmed + ";Database=tempdb;Trusted_Connection=yes;TrustServerCertificate=yes;");
-            candidates.push_back("Driver={SQL Server};Server=" + trimmed + ";Database=tempdb;Trusted_Connection=yes;");
-        } else {
-            candidates.push_back("Driver={ODBC Driver 18 for SQL Server};TrustServerCertificate=yes;" + trimmed);
-            candidates.push_back("Driver={ODBC Driver 17 for SQL Server};" + trimmed);
-            candidates.push_back("Driver={SQL Server};" + trimmed);
-            candidates.push_back(trimmed);
-        }
-    } else {
-        candidates.push_back(trimmed);
-    }
-    return candidates;
-}
 
 // ----------------------------------------------------------------------------
 // make_connection<mssql> Specialization

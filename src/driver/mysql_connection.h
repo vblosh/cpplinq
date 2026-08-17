@@ -17,7 +17,6 @@ public:
     DriverCapabilities capabilities() const override;
 
 protected:
-    std::vector<std::string> get_connection_candidates(const std::string& conn_str) const override;
     DriverInfo get_default_driver_info() const override;
     std::string get_driver_display_name() const override;
 

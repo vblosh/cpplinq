@@ -601,33 +601,21 @@ void OdbcConnection::open() {
     rc = SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_);
     check_rc(rc, SQL_HANDLE_ENV, henv_, "SQLAllocHandle(SQL_HANDLE_DBC)");
 
-    std::vector<std::string> candidates = get_connection_candidates(connection_string_);
-    std::string last_err;
-    bool connected = false;
+    SQLCHAR conn_out[1024];
+    SQLSMALLINT out_len = 0;
+    rc = SQLDriverConnectA(
+        hdbc_,
+        nullptr,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string_.data())),
+        static_cast<SQLSMALLINT>(connection_string_.size()),
+        conn_out,
+        sizeof(conn_out),
+        &out_len,
+        SQL_DRIVER_NOPROMPT
+    );
 
-    for (const auto& conn_in : candidates) {
-        SQLCHAR conn_out[1024];
-        SQLSMALLINT out_len = 0;
-        rc = SQLDriverConnectA(
-            hdbc_,
-            nullptr,
-            reinterpret_cast<SQLCHAR*>(const_cast<char*>(conn_in.data())),
-            static_cast<SQLSMALLINT>(conn_in.size()),
-            conn_out,
-            sizeof(conn_out),
-            &out_len,
-            SQL_DRIVER_NOPROMPT
-        );
-
-        if (SQL_SUCCEEDED(rc)) {
-            connected = true;
-            break;
-        } else {
-            last_err = get_odbc_error(SQL_HANDLE_DBC, hdbc_);
-        }
-    }
-
-    if (!connected) {
+    if (!SQL_SUCCEEDED(rc)) {
+        std::string last_err = get_odbc_error(SQL_HANDLE_DBC, hdbc_);
         close();
         throw DbException("Failed to connect to " + get_driver_display_name() + " (" + connection_string_ + "): " + last_err);
     }

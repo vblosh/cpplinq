@@ -129,7 +129,6 @@ public:
     ) override;
 
 protected:
-    virtual std::vector<std::string> get_connection_candidates(const std::string& conn_str) const = 0;
     virtual DriverInfo get_default_driver_info() const = 0;
     virtual std::string get_driver_display_name() const = 0;
 

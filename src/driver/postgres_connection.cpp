@@ -40,31 +40,6 @@ DriverInfo PgConnection::get_default_driver_info() const {
     return i;
 }
 
-std::vector<std::string> PgConnection::get_connection_candidates(const std::string& conn_str) const {
-    std::string trimmed = conn_str;
-    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t')) trimmed.erase(trimmed.begin());
-    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
-
-    std::vector<std::string> candidates;
-    if (trimmed.find('=') == std::string::npos && trimmed.rfind("postgres://", 0) != 0 && trimmed.rfind("postgresql://", 0) != 0) {
-        // Plain DSN name
-        candidates.push_back("DSN=" + trimmed + ";");
-        candidates.push_back(trimmed);
-    } else if (trimmed.find("Driver=") != std::string::npos || trimmed.find("driver=") != std::string::npos ||
-               trimmed.find("DSN=") != std::string::npos || trimmed.find("dsn=") != std::string::npos) {
-        candidates.push_back(trimmed);
-    } else {
-        // Build driver candidate list
-        candidates.push_back("Driver={PostgreSQL Unicode};" + trimmed);
-        candidates.push_back("Driver={PostgreSQL ANSI};" + trimmed);
-        candidates.push_back("Driver={PostgreSQL Unicode(x64)};" + trimmed);
-        candidates.push_back("Driver={PostgreSQL ANSI(x64)};" + trimmed);
-        candidates.push_back("Driver={PostgreSQL};" + trimmed);
-        candidates.push_back(trimmed);
-        candidates.push_back("DSN=" + trimmed + ";");
-    }
-    return candidates;
-}
 
 // ----------------------------------------------------------------------------
 // make_connection<postgres> Specialization
