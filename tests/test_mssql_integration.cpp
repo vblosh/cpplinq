@@ -127,34 +127,17 @@ protected:
     void SetUp() override {
         const char* env_conn = std::getenv("CPPLINQ_MSSQL_ODBC");
         if (!env_conn || env_conn[0] == '\0') {
-            env_conn = std::getenv("CPPDB_MSSQL_ODBC");
+            std::cout << "[SKIPPED] MSSQL Server integration tests skipped: CPPLINQ_MSSQL_ODBC environment variable is not set." << std::endl;
+            GTEST_SKIP() << "MSSQL Server integration tests skipped: CPPLINQ_MSSQL_ODBC environment variable is not set.";
+            return;
         }
 
-        std::vector<std::string> candidates;
-        if (env_conn && env_conn[0] != '\0') {
-            candidates.push_back(env_conn);
-        } else {
-            candidates.push_back("Driver={ODBC Driver 18 for SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;TrustServerCertificate=yes;");
-            candidates.push_back("Driver={ODBC Driver 17 for SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;");
-            candidates.push_back("Driver={SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=tempdb;Trusted_Connection=yes;");
-            candidates.push_back("DSN=MSQLLocalDB;");
-        }
-
-        std::string last_error;
-        for (const auto& conn_str : candidates) {
-            try {
-                conn_str_ = conn_str;
-                db = std::make_unique<DbContext<mssql>>(conn_str_);
-                break;
-            } catch (const std::exception& e) {
-                last_error = e.what();
-                db.reset();
-            }
-        }
-
-        if (!db) {
-            std::cout << "[SKIPPED] MSSQL Server integration tests skipped: Could not connect to MSSQL Server (" << last_error << ")" << std::endl;
-            GTEST_SKIP() << "MSSQL Server integration tests skipped: Could not connect to MSSQL Server (" << last_error << ")";
+        try {
+            conn_str_ = env_conn;
+            db = std::make_unique<DbContext<mssql>>(conn_str_);
+        } catch (const std::exception& e) {
+            std::cout << "[SKIPPED] MSSQL Server integration tests skipped: Could not connect to MSSQL Server (" << e.what() << ")" << std::endl;
+            GTEST_SKIP() << "MSSQL Server integration tests skipped: Could not connect to MSSQL Server (" << e.what() << ")";
             return;
         }
 

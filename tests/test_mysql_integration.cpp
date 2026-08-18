@@ -126,34 +126,17 @@ protected:
     void SetUp() override {
         const char* env_conn = std::getenv("CPPLINQ_MYSQL_ODBC");
         if (!env_conn || env_conn[0] == '\0') {
-            env_conn = std::getenv("CPPDB_MYSQL_ODBC");
+            std::cout << "[SKIPPED] MySQL integration tests skipped: CPPLINQ_MYSQL_ODBC environment variable is not set." << std::endl;
+            GTEST_SKIP() << "MySQL integration tests skipped: CPPLINQ_MYSQL_ODBC environment variable is not set.";
+            return;
         }
 
-        std::vector<std::string> candidates;
-        if (env_conn && env_conn[0] != '\0') {
-            candidates.push_back(env_conn);
-        } else {
-            candidates.push_back("DSN=MySQLtestdb;");
-            candidates.push_back("Driver={MySQL ODBC 26.7 Unicode Driver};Server=localhost;Port=3306;Database=testdb;Uid=root;Pwd=;");
-            candidates.push_back("Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Port=3306;Database=testdb;Uid=root;Pwd=;");
-            candidates.push_back("Driver={MySQL ODBC 26.7 ANSI Driver};Server=localhost;Port=3306;Database=testdb;Uid=root;Pwd=;");
-        }
-
-        std::string last_error;
-        for (const auto& conn_str : candidates) {
-            try {
-                conn_str_ = conn_str;
-                db = std::make_unique<DbContext<mysql>>(conn_str_);
-                break;
-            } catch (const std::exception& e) {
-                last_error = e.what();
-                db.reset();
-            }
-        }
-
-        if (!db) {
-            std::cout << "[SKIPPED] MySQL integration tests skipped: Could not connect to MySQL (" << last_error << ")" << std::endl;
-            GTEST_SKIP() << "MySQL integration tests skipped: Could not connect to MySQL (" << last_error << ")";
+        try {
+            conn_str_ = env_conn;
+            db = std::make_unique<DbContext<mysql>>(conn_str_);
+        } catch (const std::exception& e) {
+            std::cout << "[SKIPPED] MySQL integration tests skipped: Could not connect to MySQL (" << e.what() << ")" << std::endl;
+            GTEST_SKIP() << "MySQL integration tests skipped: Could not connect to MySQL (" << e.what() << ")";
             return;
         }
 

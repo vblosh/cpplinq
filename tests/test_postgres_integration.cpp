@@ -127,35 +127,17 @@ protected:
     void SetUp() override {
         const char* env_conn = std::getenv("CPPLINQ_POSTGRES_ODBC");
         if (!env_conn || env_conn[0] == '\0') {
-            env_conn = std::getenv("CPPDB_POSTGRES_ODBC");
+            std::cout << "[SKIPPED] PostgreSQL integration tests skipped: CPPLINQ_POSTGRES_ODBC environment variable is not set." << std::endl;
+            GTEST_SKIP() << "PostgreSQL integration tests skipped: CPPLINQ_POSTGRES_ODBC environment variable is not set.";
+            return;
         }
 
-        std::vector<std::string> candidates;
-        if (env_conn && env_conn[0] != '\0') {
-            candidates.push_back(env_conn);
-        } else {
-            candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
-            candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=postgres;Uid=postgres;Pwd=postgres;");
-            candidates.push_back("Driver={PostgreSQL Unicode(x64)};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
-            candidates.push_back("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;");
-            candidates.push_back("DSN=PostgreSQL35W;");
-        }
-
-        std::string last_error;
-        for (const auto& conn_str : candidates) {
-            try {
-                conn_str_ = conn_str;
-                db = std::make_unique<DbContext<postgres>>(conn_str_);
-                break;
-            } catch (const std::exception& e) {
-                last_error = e.what();
-                db.reset();
-            }
-        }
-
-        if (!db) {
-            std::cout << "[SKIPPED] PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << last_error << ")" << std::endl;
-            GTEST_SKIP() << "PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << last_error << ")";
+        try {
+            conn_str_ = env_conn;
+            db = std::make_unique<DbContext<postgres>>(conn_str_);
+        } catch (const std::exception& e) {
+            std::cout << "[SKIPPED] PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << e.what() << ")" << std::endl;
+            GTEST_SKIP() << "PostgreSQL integration tests skipped: Could not connect to PostgreSQL (" << e.what() << ")";
             return;
         }
 
