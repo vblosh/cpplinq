@@ -56,16 +56,20 @@ double SqliteDataReader::get_double(int col) const {
     return sqlite3_column_double(stmt_.get(), col);
 }
 
-std::string SqliteDataReader::get_string(int col) const {
+std::string_view SqliteDataReader::get_string_view(int col) const {
     if (!stmt_) return {};
     const unsigned char* txt = sqlite3_column_text(stmt_.get(), col);
     int bytes = sqlite3_column_bytes(stmt_.get(), col);
-    return txt ? std::string(reinterpret_cast<const char*>(txt), static_cast<size_t>(bytes)) : std::string();
+    return (txt && bytes > 0) ? std::string_view(reinterpret_cast<const char*>(txt), static_cast<size_t>(bytes)) : std::string_view();
+}
+
+std::string SqliteDataReader::get_string(int col) const {
+    return std::string(get_string_view(col));
 }
 
 std::wstring SqliteDataReader::get_wstring(int col) const {
     if (!stmt_) return {};
-    return utf8_to_wstring(get_string(col));
+    return utf8_to_wstring(std::string(get_string_view(col)));
 }
 
 bool SqliteDataReader::get_bool(int col) const {
@@ -104,6 +108,23 @@ SqlInterval SqliteDataReader::get_interval(int col) const {
 
 SqlGuid SqliteDataReader::get_guid(int col) const {
     return SqlGuid::from_string(get_string(col));
+}
+
+BoundValue SqliteDataReader::get_value(int col) const {
+    if (!stmt_ || is_null(col)) return std::monostate{};
+    int type = sqlite3_column_type(stmt_.get(), col);
+    switch (type) {
+        case SQLITE_INTEGER:
+            return sqlite3_column_int64(stmt_.get(), col);
+        case SQLITE_FLOAT:
+            return sqlite3_column_double(stmt_.get(), col);
+        case SQLITE_BLOB:
+            return get_blob(col);
+        case SQLITE_TEXT:
+            return get_string(col);
+        default:
+            return std::monostate{};
+    }
 }
 
 // ----------------------------------------------------------------------------

@@ -277,3 +277,35 @@ TEST(ChunkedBufferTest, ZeroMoveConstructionAndValueReturn) {
         EXPECT_EQ(list[i].value, i);
     }
 }
+
+TEST(ChunkedBufferTest, ForEachChunkIteration) {
+    ChunkedBuffer<int, 4> buffer;
+    for (int i = 0; i < 10; ++i) {
+        buffer.push_back(i + 1);
+    }
+
+    std::vector<int> collected;
+    buffer.for_each_chunk([&](const int* chunk_data, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            collected.push_back(chunk_data[i]);
+        }
+    });
+
+    ASSERT_EQ(collected.size(), 10u);
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_EQ(collected[i], i + 1);
+    }
+}
+
+TEST(ChunkedBufferTest, RvalueToVectorClearsBuffer) {
+    ChunkedBuffer<std::string, 4> buffer;
+    buffer.emplace_back("hello");
+    buffer.emplace_back("world");
+
+    auto vec = std::move(buffer).to_vector();
+    ASSERT_EQ(vec.size(), 2u);
+    EXPECT_EQ(vec[0], "hello");
+    EXPECT_EQ(vec[1], "world");
+    EXPECT_EQ(buffer.size(), 0u);
+    EXPECT_TRUE(buffer.empty());
+}

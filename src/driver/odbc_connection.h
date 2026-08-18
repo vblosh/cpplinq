@@ -36,6 +36,7 @@ public:
     uint64_t get_uint64(int col) const override;
     double get_double(int col) const override;
     std::string get_string(int col) const override;
+    std::string_view get_string_view(int col) const override;
     std::wstring get_wstring(int col) const override;
     bool get_bool(int col) const override;
     std::vector<uint8_t> get_blob(int col) const override;
@@ -45,30 +46,71 @@ public:
     SqlTimestamp get_timestamp(int col) const override;
     SqlInterval get_interval(int col) const override;
     SqlGuid get_guid(int col) const override;
+    BoundValue get_value(int col) const override;
 
 private:
-    struct CachedCol {
-        bool is_null = true;
-        int64_t int_val = 0;
-        uint64_t uint_val = 0;
-        double double_val = 0.0;
-        std::string str_val;
-        std::wstring wstr_val;
-        bool bool_val = false;
-        std::vector<uint8_t> blob_val;
-        SqlNumeric numeric_val;
-        SqlDate date_val;
-        SqlTime time_val;
-        SqlTimestamp timestamp_val;
-        SqlInterval interval_val;
-        SqlGuid guid_val;
+    enum class NativeType {
+        Null,
+        Int64,
+        Double,
+        Bool,
+        String,
+        WString,
+        Blob,
+        Numeric,
+        Date,
+        Time,
+        Timestamp,
+        Interval,
+        Guid
     };
 
+    struct ColumnMeta {
+        SQLSMALLINT data_type = 0;
+        SQLULEN col_size = 0;
+        SQLSMALLINT dec_digits = 0;
+        SQLSMALLINT nullable = 0;
+    };
+
+    struct CachedCol {
+        bool is_null = true;
+        NativeType native_type = NativeType::Null;
+
+        union {
+            int64_t int_val = 0;
+            double double_val;
+            bool bool_val;
+            SqlDate date_val;
+            SqlTime time_val;
+            SqlTimestamp timestamp_val;
+            SqlInterval interval_val;
+            SqlGuid guid_val;
+        };
+
+        std::string str_val;
+        std::wstring wstr_val;
+        std::vector<uint8_t> blob_val;
+
+        CachedCol() : int_val(0) {}
+
+        void reset() noexcept {
+            is_null = true;
+            native_type = NativeType::Null;
+            int_val = 0;
+            str_val.clear();
+            wstr_val.clear();
+            blob_val.clear();
+        }
+    };
+
+    void init_column_metadata();
     void fetch_row_cache();
+    void ensure_str(CachedCol& c) const;
 
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     bool owns_stmt_ = false;
     SQLSMALLINT col_count_ = 0;
+    std::vector<ColumnMeta> col_meta_;
     std::vector<CachedCol> row_cache_;
 };
 

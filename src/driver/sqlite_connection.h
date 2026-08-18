@@ -24,6 +24,7 @@ public:
     uint64_t get_uint64(int col) const override;
     double get_double(int col) const override;
     std::string get_string(int col) const override;
+    std::string_view get_string_view(int col) const override;
     std::wstring get_wstring(int col) const override;
     bool get_bool(int col) const override;
     std::vector<uint8_t> get_blob(int col) const override;
@@ -33,6 +34,7 @@ public:
     SqlTimestamp get_timestamp(int col) const override;
     SqlInterval get_interval(int col) const override;
     SqlGuid get_guid(int col) const override;
+    BoundValue get_value(int col) const override;
 
 private:
     std::shared_ptr<sqlite3_stmt> stmt_;

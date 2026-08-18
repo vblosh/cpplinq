@@ -295,8 +295,37 @@ public:
         return const_reverse_iterator(cbegin());
     }
 
-    // Conversion to contiguous std::vector
-    std::vector<T> to_vector() {
+    // Conversion to contiguous std::vector (const lvalue)
+    std::vector<T> to_vector() const& {
+        std::vector<T> result;
+        result.reserve(total_size_);
+        for (size_t c = 0; c < chunks_.size(); ++c) {
+            size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
+            auto* chunk_data = reinterpret_cast<const T*>(&chunks_[c]->storage[0]);
+            for (size_t i = 0; i < count_in_chunk; ++i) {
+                result.push_back(chunk_data[i]);
+            }
+        }
+        return result;
+    }
+
+    // Conversion to contiguous std::vector (rvalue)
+    std::vector<T> to_vector() && {
+        std::vector<T> result;
+        result.reserve(total_size_);
+        for (size_t c = 0; c < chunks_.size(); ++c) {
+            size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
+            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
+            for (size_t i = 0; i < count_in_chunk; ++i) {
+                result.emplace_back(std::move(chunk_data[i]));
+            }
+        }
+        clear();
+        return result;
+    }
+
+    // Conversion to contiguous std::vector (non-const lvalue)
+    std::vector<T> to_vector() & {
         std::vector<T> result;
         result.reserve(total_size_);
         for (size_t c = 0; c < chunks_.size(); ++c) {
@@ -307,6 +336,25 @@ public:
             }
         }
         return result;
+    }
+
+    // Direct chunk iteration (zero copy, cache-friendly)
+    template <typename Func>
+    void for_each_chunk(Func&& f) {
+        for (size_t c = 0; c < chunks_.size(); ++c) {
+            size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
+            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
+            f(chunk_data, count_in_chunk);
+        }
+    }
+
+    template <typename Func>
+    void for_each_chunk(Func&& f) const {
+        for (size_t c = 0; c < chunks_.size(); ++c) {
+            size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
+            auto* chunk_data = reinterpret_cast<const T*>(&chunks_[c]->storage[0]);
+            f(chunk_data, count_in_chunk);
+        }
     }
 
     void clear() noexcept {
