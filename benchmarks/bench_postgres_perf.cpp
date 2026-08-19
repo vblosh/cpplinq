@@ -237,7 +237,6 @@ BENCHMARK_DEFINE_F(CpplinqFixture, SelectFiltered)(benchmark::State& state) {
         auto results = db->from(bench_users)
             .where(bench_users["age"] > 30 && bench_users["email"].is_not_null())
             .order_by(bench_users["age"])
-            .limit(100)
             .to_list();
         benchmark::DoNotOptimize(results.size());
     }
@@ -254,7 +253,6 @@ BENCHMARK_DEFINE_F(CpplinqFixture, JoinQuery)(benchmark::State& state) {
         auto results = db->from(bench_users)
             .join(bench_orders).on(bench_users["id"] == bench_orders["user_id"])
             .where(bench_orders["amount"] > 100.0)
-            .limit(200)
             .to_list();
         benchmark::DoNotOptimize(results.size());
     }
@@ -515,7 +513,7 @@ public:
         insert_orders_bulk(orders);
     }
 
-    size_t select_all_raw() {
+    std::vector<BenchUser> select_all_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
@@ -531,24 +529,30 @@ public:
         SQLBindCol(hstmt, 3, SQL_C_CHAR, email_buf, sizeof(email_buf), &ind_email);
         SQLBindCol(hstmt, 4, SQL_C_SLONG, &age_val, 0, &ind_age);
 
-        size_t count = 0;
+        std::vector<BenchUser> results;
         while (SQLFetch(hstmt) == SQL_SUCCESS) {
-            benchmark::DoNotOptimize(id_val);
-            benchmark::DoNotOptimize(name_buf[0]);
-            benchmark::DoNotOptimize(age_val);
-            ++count;
+            BenchUser u;
+            u.id = static_cast<int>(id_val);
+            u.name = std::string(name_buf, ind_name > 0 ? static_cast<size_t>(ind_name) : 0);
+            if (ind_email == SQL_NULL_DATA) {
+                u.email = std::nullopt;
+            } else {
+                u.email = std::string(email_buf, ind_email > 0 ? static_cast<size_t>(ind_email) : 0);
+            }
+            u.age = static_cast<int>(age_val);
+            results.push_back(std::move(u));
         }
         SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        return count;
+        return results;
     }
 
-    size_t select_filtered_raw() {
+    std::vector<BenchUser> select_filtered_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
             "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
             "WHERE \"age\" > 30 AND \"email\" IS NOT NULL "
-            "ORDER BY \"age\" LIMIT 100"
+            "ORDER BY \"age\""
         )), SQL_NTS);
 
         SQLINTEGER id_val = 0, age_val = 0;
@@ -560,18 +564,24 @@ public:
         SQLBindCol(hstmt, 3, SQL_C_CHAR, email_buf, sizeof(email_buf), &ind_email);
         SQLBindCol(hstmt, 4, SQL_C_SLONG, &age_val, 0, &ind_age);
 
-        size_t count = 0;
+        std::vector<BenchUser> results;
         while (SQLFetch(hstmt) == SQL_SUCCESS) {
-            benchmark::DoNotOptimize(id_val);
-            benchmark::DoNotOptimize(name_buf[0]);
-            benchmark::DoNotOptimize(age_val);
-            ++count;
+            BenchUser u;
+            u.id = static_cast<int>(id_val);
+            u.name = std::string(name_buf, ind_name > 0 ? static_cast<size_t>(ind_name) : 0);
+            if (ind_email == SQL_NULL_DATA) {
+                u.email = std::nullopt;
+            } else {
+                u.email = std::string(email_buf, ind_email > 0 ? static_cast<size_t>(ind_email) : 0);
+            }
+            u.age = static_cast<int>(age_val);
+            results.push_back(std::move(u));
         }
         SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        return count;
+        return results;
     }
 
-    size_t join_query_raw() {
+    std::vector<std::pair<BenchUser, BenchOrder>> join_query_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
@@ -579,8 +589,7 @@ public:
             "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
             "FROM \"bench_users\" u "
             "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > 100.0 "
-            "LIMIT 200"
+            "WHERE o.\"amount\" > 100.0"
         )), SQL_NTS);
 
         SQLINTEGER u_id = 0, u_age = 0, o_id = 0, o_uid = 0;
@@ -597,14 +606,28 @@ public:
         SQLBindCol(hstmt, 7, SQL_C_DOUBLE, &o_amount, 0, &inds[6]);
         SQLBindCol(hstmt, 8, SQL_C_CHAR, o_status, sizeof(o_status), &inds[7]);
 
-        size_t count = 0;
+        std::vector<std::pair<BenchUser, BenchOrder>> results;
         while (SQLFetch(hstmt) == SQL_SUCCESS) {
-            benchmark::DoNotOptimize(u_id);
-            benchmark::DoNotOptimize(o_amount);
-            ++count;
+            BenchUser u;
+            u.id = static_cast<int>(u_id);
+            u.name = std::string(u_name, inds[1] > 0 ? static_cast<size_t>(inds[1]) : 0);
+            if (inds[2] == SQL_NULL_DATA) {
+                u.email = std::nullopt;
+            } else {
+                u.email = std::string(u_email, inds[2] > 0 ? static_cast<size_t>(inds[2]) : 0);
+            }
+            u.age = static_cast<int>(u_age);
+
+            BenchOrder o;
+            o.id = static_cast<int>(o_id);
+            o.user_id = static_cast<int>(o_uid);
+            o.amount = o_amount;
+            o.status = std::string(o_status, inds[7] > 0 ? static_cast<size_t>(inds[7]) : 0);
+
+            results.emplace_back(std::move(u), std::move(o));
         }
         SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        return count;
+        return results;
     }
 
     size_t update_bulk_raw() {
@@ -662,8 +685,8 @@ BENCHMARK_DEFINE_F(OdbcFixture, SelectAll)(benchmark::State& state) {
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto n = select_all_raw();
-        benchmark::DoNotOptimize(n);
+        auto results = select_all_raw();
+        benchmark::DoNotOptimize(results.size());
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
@@ -676,8 +699,8 @@ BENCHMARK_DEFINE_F(OdbcFixture, SelectFiltered)(benchmark::State& state) {
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto n = select_filtered_raw();
-        benchmark::DoNotOptimize(n);
+        auto results = select_filtered_raw();
+        benchmark::DoNotOptimize(results.size());
     }
 }
 BENCHMARK_REGISTER_F(OdbcFixture, SelectFiltered) BENCH_ARGS;
@@ -689,8 +712,8 @@ BENCHMARK_DEFINE_F(OdbcFixture, JoinQuery)(benchmark::State& state) {
     clear_tables();
     seed_all(state.range(0));
     for (auto _ : state) {
-        auto n = join_query_raw();
-        benchmark::DoNotOptimize(n);
+        auto results = join_query_raw();
+        benchmark::DoNotOptimize(results.size());
     }
 }
 BENCHMARK_REGISTER_F(OdbcFixture, JoinQuery) BENCH_ARGS;
@@ -871,51 +894,83 @@ public:
         insert_orders_copy(orders);
     }
 
-    size_t select_all_libpq() {
+    std::vector<BenchUser> select_all_libpq() {
         PGresult* res = PQexec(conn_,
             "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\"");
         int nrows = PQntuples(res);
+        std::vector<BenchUser> results;
+        results.reserve(static_cast<size_t>(nrows));
         for (int r = 0; r < nrows; ++r) {
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 0));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 1));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 2));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 3));
+            BenchUser u;
+            u.id = std::atoi(PQgetvalue(res, r, 0));
+            u.name = PQgetvalue(res, r, 1);
+            if (PQgetisnull(res, r, 2)) {
+                u.email = std::nullopt;
+            } else {
+                u.email = PQgetvalue(res, r, 2);
+            }
+            u.age = std::atoi(PQgetvalue(res, r, 3));
+            results.push_back(std::move(u));
         }
         PQclear(res);
-        return static_cast<size_t>(nrows);
+        return results;
     }
 
-    size_t select_filtered_libpq() {
+    std::vector<BenchUser> select_filtered_libpq() {
         PGresult* res = PQexec(conn_,
             "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
             "WHERE \"age\" > 30 AND \"email\" IS NOT NULL "
-            "ORDER BY \"age\" LIMIT 100");
+            "ORDER BY \"age\"");
         int nrows = PQntuples(res);
+        std::vector<BenchUser> results;
+        results.reserve(static_cast<size_t>(nrows));
         for (int r = 0; r < nrows; ++r) {
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 0));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 1));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 2));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 3));
+            BenchUser u;
+            u.id = std::atoi(PQgetvalue(res, r, 0));
+            u.name = PQgetvalue(res, r, 1);
+            if (PQgetisnull(res, r, 2)) {
+                u.email = std::nullopt;
+            } else {
+                u.email = PQgetvalue(res, r, 2);
+            }
+            u.age = std::atoi(PQgetvalue(res, r, 3));
+            results.push_back(std::move(u));
         }
         PQclear(res);
-        return static_cast<size_t>(nrows);
+        return results;
     }
 
-    size_t join_query_libpq() {
+    std::vector<std::pair<BenchUser, BenchOrder>> join_query_libpq() {
         PGresult* res = PQexec(conn_,
             "SELECT u.\"id\", u.\"name\", u.\"email\", u.\"age\", "
             "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
             "FROM \"bench_users\" u "
             "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > 100.0 "
-            "LIMIT 200");
+            "WHERE o.\"amount\" > 100.0");
         int nrows = PQntuples(res);
+        std::vector<std::pair<BenchUser, BenchOrder>> results;
+        results.reserve(static_cast<size_t>(nrows));
         for (int r = 0; r < nrows; ++r) {
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 0));
-            benchmark::DoNotOptimize(PQgetvalue(res, r, 6));
+            BenchUser u;
+            u.id = std::atoi(PQgetvalue(res, r, 0));
+            u.name = PQgetvalue(res, r, 1);
+            if (PQgetisnull(res, r, 2)) {
+                u.email = std::nullopt;
+            } else {
+                u.email = PQgetvalue(res, r, 2);
+            }
+            u.age = std::atoi(PQgetvalue(res, r, 3));
+
+            BenchOrder o;
+            o.id = std::atoi(PQgetvalue(res, r, 4));
+            o.user_id = std::atoi(PQgetvalue(res, r, 5));
+            o.amount = std::atof(PQgetvalue(res, r, 6));
+            o.status = PQgetvalue(res, r, 7);
+
+            results.emplace_back(std::move(u), std::move(o));
         }
         PQclear(res);
-        return static_cast<size_t>(nrows);
+        return results;
     }
 
     size_t update_bulk_libpq() {
@@ -963,8 +1018,8 @@ BENCHMARK_DEFINE_F(LibpqFixture, SelectAll)(benchmark::State& state) {
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto n = select_all_libpq();
-        benchmark::DoNotOptimize(n);
+        auto results = select_all_libpq();
+        benchmark::DoNotOptimize(results.size());
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
@@ -977,8 +1032,8 @@ BENCHMARK_DEFINE_F(LibpqFixture, SelectFiltered)(benchmark::State& state) {
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto n = select_filtered_libpq();
-        benchmark::DoNotOptimize(n);
+        auto results = select_filtered_libpq();
+        benchmark::DoNotOptimize(results.size());
     }
 }
 BENCHMARK_REGISTER_F(LibpqFixture, SelectFiltered) BENCH_ARGS;
@@ -990,8 +1045,8 @@ BENCHMARK_DEFINE_F(LibpqFixture, JoinQuery)(benchmark::State& state) {
     clear_tables();
     seed_all(state.range(0));
     for (auto _ : state) {
-        auto n = join_query_libpq();
-        benchmark::DoNotOptimize(n);
+        auto results = join_query_libpq();
+        benchmark::DoNotOptimize(results.size());
     }
 }
 BENCHMARK_REGISTER_F(LibpqFixture, JoinQuery) BENCH_ARGS;

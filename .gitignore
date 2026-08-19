@@ -52,5 +52,3 @@ benchmark_results*.json
 *.swp
 *~
 .DS_Store
-# Scripts
-scripts/
