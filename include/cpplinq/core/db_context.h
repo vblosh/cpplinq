@@ -121,7 +121,7 @@ public:
             // Dialects without RETURNING/OUTPUT (e.g. MySQL)
             stmt->execute_non_query();
             try {
-                auto last_id_stmt = conn_->prepare("SELECT LAST_INSERT_ID()");
+                auto last_id_stmt = conn_->prepare(conn_->dialect().last_insert_id_query());
                 auto r = last_id_stmt->execute_query();
                 if (r && r->next()) {
                     return r->get_int64(0);
@@ -424,7 +424,16 @@ public:
             }
         }
 
-        std::vector<BoundValue> dummy_values(insert_cols.size(), BoundValue{int64_t{0}});
+        std::vector<BoundValue> dummy_values;
+        dummy_values.reserve(sizeof...(Cols));
+        if (!entities.empty()) {
+            std::apply([&](const auto&... cols) {
+                auto get_val = [&](const auto& col) {
+                    dummy_values.push_back(field_to_bound_value(entities.front(), col.member_ptr));
+                };
+                (get_val(cols), ...);
+            }, table.columns);
+        }
         auto result = gen.generate_upsert(
             std::string(table.name),
             insert_cols,

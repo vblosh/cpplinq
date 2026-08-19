@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <vector>
 #include <array>
+#include <variant>
 #include <random>
 #include <cctype>
 #include <cmath>
@@ -718,5 +719,25 @@ struct SqlInterval {
 
     bool operator==(const SqlInterval& other) const = default;
 };
+
+// ----------------------------------------------------------------------------
+// BoundValue: Type-erased bound parameter
+// ----------------------------------------------------------------------------
+using BoundValue = std::variant<
+    std::monostate,           // NULL
+    int64_t,
+    uint64_t,
+    double,
+    std::string,
+    std::wstring,
+    bool,
+    std::vector<uint8_t>,     // BLOB
+    SqlNumeric,
+    SqlDate,
+    SqlTime,
+    SqlTimestamp,
+    SqlInterval,
+    SqlGuid
+>;
 
 } // namespace cpplinq

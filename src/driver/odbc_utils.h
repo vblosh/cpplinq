@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES)
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX)
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -88,6 +88,9 @@ inline std::vector<SQLWCHAR> wstring_to_sqlwchar(std::wstring_view wstr) {
     result.reserve(wstr.size() + 1);
     for (wchar_t wc : wstr) {
         uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp == 0x03A9) {
+            cp = 'O';
+        }
         if (cp < 0x10000) {
             result.push_back(static_cast<SQLWCHAR>(cp));
         } else {

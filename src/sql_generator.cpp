@@ -257,7 +257,14 @@ GeneratedSql SqlGenerator::generate_cte_select(
         sql += " ";
     }
 
-    sql += is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    sql += "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     if (columns.empty()) {
         sql += "*";
     } else {
@@ -312,7 +319,14 @@ GeneratedSql SqlGenerator::generate_select(
     param_counter_ = 0;
     slots_.clear();
 
-    std::string sql = is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     if (columns.empty()) {
         sql += "*";
     } else {
@@ -399,7 +413,14 @@ GeneratedSql SqlGenerator::generate_joined_select(
     param_counter_ = 0;
     slots_.clear();
 
-    std::string sql = is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     bool first_col = true;
     for (const auto& col : primary_columns) {
         if (!first_col) sql += ", ";
@@ -463,7 +484,14 @@ GeneratedSql SqlGenerator::generate_set_operation(
     param_counter_ = 0;
     slots_.clear();
 
-    std::string sql = base_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (base_distinct) {
+        sql += "DISTINCT ";
+    }
     for (size_t i = 0; i < base_columns.size(); ++i) {
         if (i > 0) sql += ", ";
         sql += dialect_.quote_id(base_columns[i]);
@@ -587,7 +615,7 @@ GeneratedSql SqlGenerator::generate_upsert(
     param_counter_ = 0;
     slots_.clear();
 
-    result.sql = dialect_.generate_upsert(table_name, insert_columns, conflict_columns, update_columns);
+    result.sql = dialect_.generate_upsert(table_name, insert_columns, values, conflict_columns, update_columns);
     result.params = values;
     for (const auto& v : values) {
         slots_.emplace_back(v);

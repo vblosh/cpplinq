@@ -14,24 +14,6 @@
 
 namespace cpplinq {
 
-// Type-erased bound parameter
-using BoundValue = std::variant<
-    std::monostate,           // NULL
-    int64_t,
-    uint64_t,
-    double,
-    std::string,
-    std::wstring,
-    bool,
-    std::vector<uint8_t>,     // BLOB
-    SqlNumeric,
-    SqlDate,
-    SqlTime,
-    SqlTimestamp,
-    SqlInterval,
-    SqlGuid
->;
-
 // Database error
 class DbException : public std::runtime_error {
 public:
@@ -203,6 +185,7 @@ struct mssql {};
 using sqlserver = mssql;
 struct mysql {};
 using mariadb = mysql;
+struct informix {};
 
 // Connection factory (specializations in driver .cpp files)
 template <typename Backend>
