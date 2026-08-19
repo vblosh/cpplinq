@@ -13,6 +13,165 @@ namespace cpplinq {
 using detail::odbc::get_odbc_error;
 using detail::odbc::check_rc;
 
+namespace {
+
+constexpr size_t odbc_read_chunk_size = 4096;
+
+template <typename Value>
+void prepare_odbc_storage(Value& value, size_t required_size) {
+    if (required_size > value.max_size()) {
+        throw std::length_error("ODBC value is too large");
+    }
+    if (value.capacity() < required_size) {
+        value.reserve(required_size);
+    }
+    value.resize(value.capacity());
+}
+
+template <typename Value>
+void grow_odbc_storage(Value& value, size_t required_size) {
+    if (required_size > value.max_size()) {
+        throw std::length_error("ODBC value is too large");
+    }
+    if (value.capacity() < required_size) {
+        size_t next_capacity = value.capacity();
+        if (next_capacity < odbc_read_chunk_size) {
+            next_capacity = odbc_read_chunk_size;
+        }
+        if (next_capacity <= value.max_size() / 2) {
+            next_capacity *= 2;
+        } else {
+            next_capacity = required_size;
+        }
+        value.reserve(std::max(next_capacity, required_size));
+    }
+    value.resize(value.capacity());
+}
+
+bool read_odbc_string(SQLHSTMT hstmt, SQLUSMALLINT column, std::string& value) {
+    value.clear();
+    prepare_odbc_storage(value, odbc_read_chunk_size);
+    size_t offset = 0;
+
+    while (true) {
+        size_t available = value.size() - offset;
+        if (available < 2) {
+            grow_odbc_storage(value, offset + 2);
+            available = value.size() - offset;
+        }
+
+        SQLLEN ind = 0;
+        SQLRETURN rc = SQLGetData(
+            hstmt,
+            column,
+            SQL_C_CHAR,
+            value.data() + offset,
+            static_cast<SQLLEN>(available),
+            &ind
+        );
+
+        if (rc == SQL_NO_DATA) {
+            value.resize(offset);
+            return true;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            check_rc(rc, SQL_HANDLE_STMT, hstmt, "SQLGetData(string)");
+            return false;
+        }
+        if (ind == SQL_NULL_DATA) {
+            value.clear();
+            return false;
+        }
+
+        size_t chunk_size = 0;
+        if (ind == SQL_NO_TOTAL) {
+            chunk_size = std::strlen(value.data() + offset);
+        } else if (ind >= 0) {
+            chunk_size = std::min(static_cast<size_t>(ind), available - 1);
+        }
+        offset += chunk_size;
+
+        bool more_data = rc == SQL_SUCCESS_WITH_INFO &&
+            (ind == SQL_NO_TOTAL || (ind >= 0 && static_cast<size_t>(ind) > chunk_size));
+        if (!more_data) {
+            value.resize(offset);
+            return true;
+        }
+
+        size_t required_size = offset + 2;
+        if (ind >= 0 && static_cast<size_t>(ind) > chunk_size) {
+            required_size = std::max(
+                required_size,
+                offset + (static_cast<size_t>(ind) - chunk_size) + 1
+            );
+        }
+        grow_odbc_storage(value, required_size);
+    }
+}
+
+bool read_odbc_blob(SQLHSTMT hstmt, SQLUSMALLINT column, std::vector<uint8_t>& value) {
+    value.clear();
+    prepare_odbc_storage(value, odbc_read_chunk_size);
+    size_t offset = 0;
+
+    while (true) {
+        size_t available = value.size() - offset;
+        if (available == 0) {
+            grow_odbc_storage(value, offset + 1);
+            available = value.size() - offset;
+        }
+
+        SQLLEN ind = 0;
+        SQLRETURN rc = SQLGetData(
+            hstmt,
+            column,
+            SQL_C_BINARY,
+            value.data() + offset,
+            static_cast<SQLLEN>(available),
+            &ind
+        );
+
+        if (rc == SQL_NO_DATA) {
+            value.resize(offset);
+            return true;
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            check_rc(rc, SQL_HANDLE_STMT, hstmt, "SQLGetData(blob)");
+            return false;
+        }
+        if (ind == SQL_NULL_DATA) {
+            value.clear();
+            return false;
+        }
+
+        size_t chunk_size = available;
+        if (ind == SQL_NO_TOTAL) {
+            chunk_size = available;
+        } else if (ind >= 0) {
+            chunk_size = std::min(static_cast<size_t>(ind), available);
+        }
+        offset += chunk_size;
+
+        bool more_data = rc == SQL_SUCCESS_WITH_INFO &&
+            (ind == SQL_NO_TOTAL || (ind >= 0 && static_cast<size_t>(ind) > chunk_size));
+        if (!more_data) {
+            value.resize(offset);
+            return true;
+        }
+
+        size_t required_size = offset + 1;
+        if (ind >= 0 && static_cast<size_t>(ind) > chunk_size) {
+            required_size = std::max(
+                required_size,
+                offset + (static_cast<size_t>(ind) - chunk_size)
+            );
+        }
+        grow_odbc_storage(value, required_size);
+    }
+}
+
+} // namespace
+
 // ============================================================================
 // OdbcDataReader
 // ============================================================================
@@ -23,6 +182,8 @@ OdbcDataReader::OdbcDataReader(SQLHSTMT hstmt, bool owns_stmt)
 {
     if (hstmt_ != SQL_NULL_HSTMT) {
         SQLNumResultCols(hstmt_, &col_count_);
+        init_column_metadata();
+        row_cache_.resize(col_count_);
     }
 }
 
@@ -33,19 +194,25 @@ OdbcDataReader::~OdbcDataReader() {
     }
 }
 
-void OdbcDataReader::fetch_row_cache() {
-    row_cache_.assign(col_count_, CachedCol{});
+void OdbcDataReader::init_column_metadata() {
+    col_meta_.resize(col_count_);
     for (SQLSMALLINT i = 1; i <= col_count_; ++i) {
-        auto& col = row_cache_[i - 1];
-
         SQLCHAR col_name[256];
         SQLSMALLINT name_len = 0;
-        SQLSMALLINT data_type = 0;
-        SQLULEN col_size = 0;
-        SQLSMALLINT dec_digits = 0;
-        SQLSMALLINT nullable = 0;
+        SQLDescribeColA(hstmt_, i, col_name, sizeof(col_name), &name_len,
+                        &col_meta_[i - 1].data_type,
+                        &col_meta_[i - 1].col_size,
+                        &col_meta_[i - 1].dec_digits,
+                        &col_meta_[i - 1].nullable);
+    }
+}
 
-        SQLDescribeColA(hstmt_, i, col_name, sizeof(col_name), &name_len, &data_type, &col_size, &dec_digits, &nullable);
+void OdbcDataReader::fetch_row_cache() {
+    for (SQLSMALLINT i = 1; i <= col_count_; ++i) {
+        auto& col = row_cache_[i - 1];
+        col.reset();
+
+        SQLSMALLINT data_type = col_meta_[i - 1].data_type;
 
         switch (data_type) {
             case SQL_BIGINT:
@@ -57,12 +224,8 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_SBIGINT, &val, sizeof(val), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Int64;
                     col.int_val = val;
-                    col.uint_val = static_cast<uint64_t>(val);
-                    col.double_val = static_cast<double>(val);
-                    col.str_val = std::to_string(val);
-                    col.bool_val = (val != 0);
-                    col.numeric_val = SqlNumeric(val);
                 }
                 break;
             }
@@ -74,12 +237,8 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_DOUBLE, &val, sizeof(val), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Double;
                     col.double_val = val;
-                    col.int_val = static_cast<int64_t>(val);
-                    col.uint_val = static_cast<uint64_t>(val > 0 ? val : 0);
-                    col.str_val = std::to_string(val);
-                    col.bool_val = (val != 0.0);
-                    col.numeric_val = SqlNumeric(val);
                 }
                 break;
             }
@@ -90,14 +249,12 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_CHAR, buffer, sizeof(buffer), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
-                    col.str_val = (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer)))
-                                      ? std::string(buffer, static_cast<size_t>(ind))
-                                      : std::string(buffer);
-                    col.numeric_val = SqlNumeric(col.str_val);
-                    col.double_val = col.numeric_val.to_double();
-                    col.int_val = col.numeric_val.to_int64();
-                    col.uint_val = col.numeric_val.to_uint64();
-                    col.bool_val = (col.int_val != 0);
+                    col.native_type = NativeType::Numeric;
+                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
+                        col.str_val.assign(buffer, static_cast<size_t>(ind));
+                    } else {
+                        col.str_val.assign(buffer);
+                    }
                 }
                 break;
             }
@@ -107,12 +264,9 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_BIT, &val, sizeof(val), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Bool;
                     col.bool_val = (val != 0);
                     col.int_val = val ? 1 : 0;
-                    col.uint_val = val ? 1 : 0;
-                    col.double_val = val ? 1.0 : 0.0;
-                    col.str_val = val ? "1" : "0";
-                    col.numeric_val = SqlNumeric(val ? 1 : 0);
                 }
                 break;
             }
@@ -126,9 +280,8 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_TYPE_DATE, &ds, sizeof(ds), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Date;
                     col.date_val = SqlDate(ds.year, static_cast<uint8_t>(ds.month), static_cast<uint8_t>(ds.day));
-                    col.str_val = col.date_val.to_string();
-                    col.timestamp_val = SqlTimestamp(ds.year, static_cast<uint8_t>(ds.month), static_cast<uint8_t>(ds.day));
                 }
                 break;
             }
@@ -145,8 +298,8 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_TYPE_TIME, &ts, sizeof(ts), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Time;
                     col.time_val = SqlTime(static_cast<uint8_t>(ts.hour), static_cast<uint8_t>(ts.minute), static_cast<uint8_t>(ts.second));
-                    col.str_val = col.time_val.to_string();
                 }
                 break;
             }
@@ -163,6 +316,7 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_TYPE_TIMESTAMP, &ts, sizeof(ts), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Timestamp;
                     col.timestamp_val = SqlTimestamp(
                         ts.year,
                         static_cast<uint8_t>(ts.month),
@@ -172,9 +326,6 @@ void OdbcDataReader::fetch_row_cache() {
                         static_cast<uint8_t>(ts.second),
                         ts.fraction
                     );
-                    col.date_val = SqlDate(ts.year, static_cast<uint8_t>(ts.month), static_cast<uint8_t>(ts.day));
-                    col.time_val = SqlTime(static_cast<uint8_t>(ts.hour), static_cast<uint8_t>(ts.minute), static_cast<uint8_t>(ts.second), ts.fraction);
-                    col.str_val = col.timestamp_val.to_string(ts.fraction > 0);
                 }
                 break;
             }
@@ -196,35 +347,17 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_INTERVAL_DAY_TO_SECOND, &ivs, sizeof(ivs), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Interval;
                     col.interval_val = detail::odbc::odbc_struct_to_interval(ivs);
-                    col.str_val = col.interval_val.to_string();
                 }
                 break;
             }
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY: {
-                std::vector<uint8_t> buffer(4096);
-                SQLLEN ind = 0;
-                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_BINARY, buffer.data(), buffer.size(), &ind);
-                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                if (read_odbc_blob(hstmt_, i, col.blob_val)) {
                     col.is_null = false;
-                    if (ind >= 0 && ind <= static_cast<SQLLEN>(buffer.size())) {
-                        buffer.resize(static_cast<size_t>(ind));
-                        col.blob_val = std::move(buffer);
-                    } else if (ind > static_cast<SQLLEN>(buffer.size())) {
-                        size_t total_size = static_cast<size_t>(ind);
-                        col.blob_val = std::move(buffer);
-                        size_t offset = col.blob_val.size();
-                        col.blob_val.resize(total_size);
-                        SQLLEN ind2 = 0;
-                        rc = SQLGetData(hstmt_, i, SQL_C_BINARY, col.blob_val.data() + offset, total_size - offset, &ind2);
-                        if (!SQL_SUCCEEDED(rc)) {
-                            col.blob_val.resize(offset);
-                        }
-                    } else {
-                        col.blob_val = std::move(buffer);
-                    }
+                    col.native_type = NativeType::Blob;
                 }
                 break;
             }
@@ -234,45 +367,8 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_GUID, &g, sizeof(g), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::Guid;
                     col.guid_val = detail::odbc::odbc_struct_to_guid(g);
-                    col.str_val = col.guid_val.to_string();
-                    col.wstr_val = utf8_to_wstring(col.str_val);
-                }
-                break;
-            }
-            case SQL_CHAR:
-            case SQL_VARCHAR:
-            case SQL_LONGVARCHAR: {
-                char buffer[4096] = {0};
-                SQLLEN ind = 0;
-                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_CHAR, buffer, sizeof(buffer), &ind);
-                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
-                    col.is_null = false;
-                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
-                        col.str_val = std::string(buffer, static_cast<size_t>(ind));
-                    } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
-                        col.str_val = std::string(buffer, sizeof(buffer) - 1);
-                        SQLLEN remaining = ind - (sizeof(buffer) - 1);
-                        std::vector<char> large_buf(static_cast<size_t>(remaining) + 1);
-                        SQLLEN ind2 = 0;
-                        rc = SQLGetData(hstmt_, i, SQL_C_CHAR, large_buf.data(), large_buf.size(), &ind2);
-                        if (SQL_SUCCEEDED(rc)) {
-                            col.str_val.append(large_buf.data());
-                        }
-                    } else {
-                        col.str_val = std::string(buffer);
-                    }
-                    col.wstr_val = utf8_to_wstring(col.str_val);
-                    col.guid_val = SqlGuid::from_string(col.str_val);
-                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
-                    try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
-                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
-                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "TRUE" || col.str_val == "t" || col.str_val == "T");
-                    col.numeric_val = SqlNumeric(col.str_val);
-                    col.date_val = SqlDate::from_string(col.str_val);
-                    col.time_val = SqlTime::from_string(col.str_val);
-                    col.timestamp_val = SqlTimestamp::from_string(col.str_val);
-                    col.interval_val = SqlInterval::from_string(col.str_val);
                 }
                 break;
             }
@@ -284,6 +380,7 @@ void OdbcDataReader::fetch_row_cache() {
                 SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_WCHAR, buffer, sizeof(buffer), &ind);
                 if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
                     col.is_null = false;
+                    col.native_type = NativeType::WString;
                     if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
                         col.wstr_val = detail::odbc::sqlwchar_to_wstring(buffer, static_cast<size_t>(ind / sizeof(SQLWCHAR)));
                     } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
@@ -302,55 +399,57 @@ void OdbcDataReader::fetch_row_cache() {
                         while (buffer[len] != 0) ++len;
                         col.wstr_val = detail::odbc::sqlwchar_to_wstring(buffer, len);
                     }
-                    col.str_val = wstring_to_utf8(col.wstr_val);
-                    col.guid_val = SqlGuid::from_string(col.str_val);
-                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
-                    try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
-                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
-                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "TRUE" || col.str_val == "t" || col.str_val == "T");
-                    col.numeric_val = SqlNumeric(col.str_val);
-                    col.date_val = SqlDate::from_string(col.str_val);
-                    col.time_val = SqlTime::from_string(col.str_val);
-                    col.timestamp_val = SqlTimestamp::from_string(col.str_val);
-                    col.interval_val = SqlInterval::from_string(col.str_val);
                 }
                 break;
             }
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
             default: {
-                char buffer[4096];
-                SQLLEN ind = 0;
-                SQLRETURN rc = SQLGetData(hstmt_, i, SQL_C_CHAR, buffer, sizeof(buffer), &ind);
-                if (SQL_SUCCEEDED(rc) && ind != SQL_NULL_DATA) {
+                if (read_odbc_string(hstmt_, i, col.str_val)) {
                     col.is_null = false;
-                    if (ind >= 0 && ind < static_cast<SQLLEN>(sizeof(buffer))) {
-                        col.str_val = std::string(buffer, static_cast<size_t>(ind));
-                    } else if (ind >= static_cast<SQLLEN>(sizeof(buffer))) {
-                        col.str_val = std::string(buffer, sizeof(buffer) - 1);
-                        SQLLEN remaining = ind - (sizeof(buffer) - 1);
-                        std::vector<char> large_buf(static_cast<size_t>(remaining) + 1);
-                        SQLLEN ind2 = 0;
-                        rc = SQLGetData(hstmt_, i, SQL_C_CHAR, large_buf.data(), large_buf.size(), &ind2);
-                        if (SQL_SUCCEEDED(rc)) {
-                            col.str_val.append(large_buf.data());
-                        }
-                    } else {
-                        col.str_val = std::string(buffer);
-                    }
-                    col.wstr_val = utf8_to_wstring(col.str_val);
-                    col.guid_val = SqlGuid::from_string(col.str_val);
-                    try { col.int_val = std::stoll(col.str_val); } catch (...) {}
-                    try { col.uint_val = std::stoull(col.str_val); } catch (...) {}
-                    try { col.double_val = std::stod(col.str_val); } catch (...) {}
-                    col.bool_val = (col.str_val == "1" || col.str_val == "true" || col.str_val == "TRUE" || col.str_val == "t" || col.str_val == "T");
-                    col.numeric_val = SqlNumeric(col.str_val);
-                    col.date_val = SqlDate::from_string(col.str_val);
-                    col.time_val = SqlTime::from_string(col.str_val);
-                    col.timestamp_val = SqlTimestamp::from_string(col.str_val);
-                    col.interval_val = SqlInterval::from_string(col.str_val);
+                    col.native_type = NativeType::String;
                 }
                 break;
             }
         }
+    }
+}
+
+void OdbcDataReader::ensure_str(CachedCol& c) const {
+    if (!c.str_val.empty() || c.is_null) return;
+    switch (c.native_type) {
+        case NativeType::Int64:
+            c.str_val = std::to_string(c.int_val);
+            break;
+        case NativeType::Double:
+            c.str_val = std::to_string(c.double_val);
+            break;
+        case NativeType::Bool:
+            c.str_val = c.bool_val ? "1" : "0";
+            break;
+        case NativeType::Numeric:
+            break;
+        case NativeType::Date:
+            c.str_val = c.date_val.to_string();
+            break;
+        case NativeType::Time:
+            c.str_val = c.time_val.to_string();
+            break;
+        case NativeType::Timestamp:
+            c.str_val = c.timestamp_val.to_string(c.timestamp_val.fraction > 0);
+            break;
+        case NativeType::Interval:
+            c.str_val = c.interval_val.to_string();
+            break;
+        case NativeType::Guid:
+            c.str_val = c.guid_val.to_string();
+            break;
+        case NativeType::WString:
+            c.str_val = wstring_to_utf8(c.wstr_val);
+            break;
+        default:
+            break;
     }
 }
 
@@ -379,69 +478,189 @@ bool OdbcDataReader::is_null(int col) const {
 
 int64_t OdbcDataReader::get_int64(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return 0;
-    return row_cache_[col].int_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Int64: return c.int_val;
+        case NativeType::Double: return static_cast<int64_t>(c.double_val);
+        case NativeType::Bool: return c.bool_val ? 1 : 0;
+        case NativeType::Numeric: return SqlNumeric(c.str_val).to_int64();
+        case NativeType::String: {
+            try { return std::stoll(c.str_val); } catch (...) { return 0; }
+        }
+        case NativeType::WString: {
+            try { return std::stoll(wstring_to_utf8(c.wstr_val)); } catch (...) { return 0; }
+        }
+        default: return 0;
+    }
 }
 
 uint64_t OdbcDataReader::get_uint64(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return 0;
-    return row_cache_[col].uint_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Int64: return static_cast<uint64_t>(c.int_val);
+        case NativeType::Double: return static_cast<uint64_t>(c.double_val > 0 ? c.double_val : 0);
+        case NativeType::Bool: return c.bool_val ? 1 : 0;
+        case NativeType::Numeric: return SqlNumeric(c.str_val).to_uint64();
+        case NativeType::String: {
+            try { return std::stoull(c.str_val); } catch (...) { return 0; }
+        }
+        case NativeType::WString: {
+            try { return std::stoull(wstring_to_utf8(c.wstr_val)); } catch (...) { return 0; }
+        }
+        default: return 0;
+    }
 }
 
 double OdbcDataReader::get_double(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return 0.0;
-    return row_cache_[col].double_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Double: return c.double_val;
+        case NativeType::Int64: return static_cast<double>(c.int_val);
+        case NativeType::Bool: return c.bool_val ? 1.0 : 0.0;
+        case NativeType::Numeric: return SqlNumeric(c.str_val).to_double();
+        case NativeType::String: {
+            try { return std::stod(c.str_val); } catch (...) { return 0.0; }
+        }
+        case NativeType::WString: {
+            try { return std::stod(wstring_to_utf8(c.wstr_val)); } catch (...) { return 0.0; }
+        }
+        default: return 0.0;
+    }
+}
+
+std::string_view OdbcDataReader::get_string_view(int col) const {
+    if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return {};
+    auto& c = const_cast<CachedCol&>(row_cache_[col]);
+    if (c.str_val.empty() && !c.is_null) {
+        ensure_str(c);
+    }
+    return c.str_val;
 }
 
 std::string OdbcDataReader::get_string(int col) const {
-    if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return {};
-    return row_cache_[col].str_val;
+    return std::string(get_string_view(col));
 }
 
 std::wstring OdbcDataReader::get_wstring(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return {};
-    if (!row_cache_[col].wstr_val.empty()) return row_cache_[col].wstr_val;
-    return utf8_to_wstring(row_cache_[col].str_val);
+    const auto& c = row_cache_[col];
+    if (c.native_type == NativeType::WString) return c.wstr_val;
+    return utf8_to_wstring(std::string(get_string_view(col)));
 }
 
 bool OdbcDataReader::get_bool(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return false;
-    return row_cache_[col].bool_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Bool: return c.bool_val;
+        case NativeType::Int64: return c.int_val != 0;
+        case NativeType::Double: return c.double_val != 0.0;
+        case NativeType::Numeric: return SqlNumeric(c.str_val).to_int64() != 0;
+        case NativeType::String: return (c.str_val == "1" || c.str_val == "true" || c.str_val == "TRUE" || c.str_val == "t" || c.str_val == "T");
+        case NativeType::WString: return (c.wstr_val == L"1" || c.wstr_val == L"true" || c.wstr_val == L"TRUE" || c.wstr_val == L"t" || c.wstr_val == L"T");
+        default: return false;
+    }
 }
 
 std::vector<uint8_t> OdbcDataReader::get_blob(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return {};
-    return row_cache_[col].blob_val;
+    const auto& c = row_cache_[col];
+    if (c.native_type == NativeType::Blob) return c.blob_val;
+    return {};
 }
 
 SqlNumeric OdbcDataReader::get_numeric(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlNumeric("0");
-    return row_cache_[col].numeric_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Numeric: return SqlNumeric(c.str_val);
+        case NativeType::Int64: return SqlNumeric(c.int_val);
+        case NativeType::Double: return SqlNumeric(c.double_val);
+        case NativeType::Bool: return SqlNumeric(c.bool_val ? 1 : 0);
+        case NativeType::String: return SqlNumeric(c.str_val);
+        case NativeType::WString: return SqlNumeric(wstring_to_utf8(c.wstr_val));
+        default: return SqlNumeric("0");
+    }
 }
 
 SqlDate OdbcDataReader::get_date(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlDate();
-    return row_cache_[col].date_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Date: return c.date_val;
+        case NativeType::Timestamp: return SqlDate(c.timestamp_val.year, c.timestamp_val.month, c.timestamp_val.day);
+        case NativeType::String: return SqlDate::from_string(c.str_val);
+        case NativeType::WString: return SqlDate::from_string(wstring_to_utf8(c.wstr_val));
+        default: return SqlDate();
+    }
 }
 
 SqlTime OdbcDataReader::get_time(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlTime();
-    return row_cache_[col].time_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Time: return c.time_val;
+        case NativeType::Timestamp: return SqlTime(c.timestamp_val.hour, c.timestamp_val.minute, c.timestamp_val.second, c.timestamp_val.fraction);
+        case NativeType::String: return SqlTime::from_string(c.str_val);
+        case NativeType::WString: return SqlTime::from_string(wstring_to_utf8(c.wstr_val));
+        default: return SqlTime();
+    }
 }
 
 SqlTimestamp OdbcDataReader::get_timestamp(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlTimestamp();
-    return row_cache_[col].timestamp_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Timestamp: return c.timestamp_val;
+        case NativeType::Date: return SqlTimestamp(c.date_val.year, c.date_val.month, c.date_val.day);
+        case NativeType::String: return SqlTimestamp::from_string(c.str_val);
+        case NativeType::WString: return SqlTimestamp::from_string(wstring_to_utf8(c.wstr_val));
+        default: return SqlTimestamp();
+    }
 }
 
 SqlInterval OdbcDataReader::get_interval(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlInterval();
-    return row_cache_[col].interval_val;
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Interval: return c.interval_val;
+        case NativeType::String: return SqlInterval::from_string(c.str_val);
+        case NativeType::WString: return SqlInterval::from_string(wstring_to_utf8(c.wstr_val));
+        default: return SqlInterval();
+    }
 }
 
 SqlGuid OdbcDataReader::get_guid(int col) const {
     if (col < 0 || col >= static_cast<int>(row_cache_.size()) || row_cache_[col].is_null) return SqlGuid();
-    if (!row_cache_[col].guid_val.is_nil()) return row_cache_[col].guid_val;
-    return SqlGuid::from_string(row_cache_[col].str_val);
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Guid: return c.guid_val;
+        case NativeType::String: return SqlGuid::from_string(c.str_val);
+        case NativeType::WString: return SqlGuid::from_string(wstring_to_utf8(c.wstr_val));
+        default: return SqlGuid();
+    }
+}
+
+BoundValue OdbcDataReader::get_value(int col) const {
+    if (is_null(col)) return std::monostate{};
+    const auto& c = row_cache_[col];
+    switch (c.native_type) {
+        case NativeType::Int64: return c.int_val;
+        case NativeType::Double: return c.double_val;
+        case NativeType::Bool: return c.bool_val;
+        case NativeType::Numeric: return SqlNumeric(c.str_val);
+        case NativeType::Date: return c.date_val;
+        case NativeType::Time: return c.time_val;
+        case NativeType::Timestamp: return c.timestamp_val;
+        case NativeType::Interval: return c.interval_val;
+        case NativeType::Guid: return c.guid_val;
+        case NativeType::Blob: return c.blob_val;
+        case NativeType::WString: return c.wstr_val;
+        case NativeType::String: return c.str_val;
+        default: return std::string(get_string_view(col));
+    }
 }
 
 // ============================================================================
@@ -751,13 +970,18 @@ void OdbcConnection::open() {
     rc = SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_);
     check_rc(rc, SQL_HANDLE_ENV, henv_, "SQLAllocHandle(SQL_HANDLE_DBC)");
 
+    std::string effective_conn_str = connection_string_;
+    if (effective_conn_str.find('=') == std::string::npos && !effective_conn_str.empty()) {
+        effective_conn_str = "DSN=" + effective_conn_str + ";";
+    }
+
     SQLCHAR conn_out[1024];
     SQLSMALLINT out_len = 0;
     rc = SQLDriverConnectA(
         hdbc_,
         nullptr,
-        reinterpret_cast<SQLCHAR*>(const_cast<char*>(connection_string_.data())),
-        static_cast<SQLSMALLINT>(connection_string_.size()),
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(effective_conn_str.data())),
+        static_cast<SQLSMALLINT>(effective_conn_str.size()),
         conn_out,
         sizeof(conn_out),
         &out_len,

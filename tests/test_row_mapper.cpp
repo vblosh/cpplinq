@@ -81,6 +81,12 @@ public:
         return {};
     }
 
+    std::string_view get_string_view(int col) const override {
+        const auto& cell = rows_[current_row_][col];
+        if (std::holds_alternative<std::string>(cell)) return std::get<std::string>(cell);
+        return {};
+    }
+
     std::wstring get_wstring(int col) const override {
         const auto& cell = rows_[current_row_][col];
         if (std::holds_alternative<std::wstring>(cell)) return std::get<std::wstring>(cell);

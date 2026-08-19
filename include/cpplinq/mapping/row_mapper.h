@@ -27,7 +27,10 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
     } else if constexpr (std::is_floating_point_v<U>) {
         return static_cast<U>(reader.get_double(col_idx));
     } else if constexpr (std::is_same_v<U, std::string>) {
-        return reader.get_string(col_idx);
+        std::string_view sv = reader.get_string_view(col_idx);
+        return std::string(sv);
+    } else if constexpr (std::is_same_v<U, std::string_view>) {
+        return reader.get_string_view(col_idx);
     } else if constexpr (std::is_same_v<U, std::wstring>) {
         return reader.get_wstring(col_idx);
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
@@ -50,6 +53,19 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
         return reader.get_interval(col_idx).template to_duration<U>();
     } else {
         return U{};
+    }
+}
+
+template <typename TargetType>
+void assign_column_value(TargetType& target, IDataReader& reader, int col_idx) {
+    using U = std::remove_cvref_t<TargetType>;
+    if constexpr (std::is_same_v<U, std::string>) {
+        std::string_view sv = reader.get_string_view(col_idx);
+        target.assign(sv.data(), sv.size());
+    } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
+        target = reader.get_blob(col_idx);
+    } else {
+        target = read_column_value<U>(reader, col_idx);
     }
 }
 
@@ -154,7 +170,7 @@ private:
             entity.*(col.member_ptr) = read_column_value<InnerType>(reader, col_idx);
         } else {
             // Handle non-optional types
-            entity.*(col.member_ptr) = read_column_value<FieldType>(reader, col_idx);
+            assign_column_value(entity.*(col.member_ptr), reader, col_idx);
         }
     }
 };
