@@ -108,7 +108,7 @@ public:
     RowStream& operator=(const RowStream&) = delete;
 
     RowStream(RowStream&& other) noexcept = default;
-    RowStream& operator=(RowStream&& other) noexcept = default;
+    RowStream& operator=(RowStream&& other) noexcept = delete;
 
     ~RowStream() = default;
 

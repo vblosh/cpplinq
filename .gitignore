@@ -3,6 +3,9 @@ build/
 build*/
 out/
 bin/
+**/bin/
+obj/
+**/obj/
 lib/
 _deps/
 
@@ -49,6 +52,7 @@ benchmark_results*.json
 # IDE & Editor caches
 .idea/
 .vscode/
+.agents/
 *.swp
 *~
 .DS_Store

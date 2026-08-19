@@ -84,7 +84,7 @@ public:
     virtual uint64_t     get_uint64(int col) const = 0;
     virtual double       get_double(int col) const = 0;
     virtual std::string  get_string(int col) const = 0;
-    virtual std::string_view get_string_view(int col) const {
+    virtual std::string_view get_string_view(int /*col*/) const {
         return {};
     }
     virtual std::wstring get_wstring(int col) const = 0;

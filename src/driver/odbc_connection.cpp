@@ -13,164 +13,7 @@ namespace cpplinq {
 using detail::odbc::get_odbc_error;
 using detail::odbc::check_rc;
 
-namespace {
 
-constexpr size_t odbc_read_chunk_size = 4096;
-
-template <typename Value>
-void prepare_odbc_storage(Value& value, size_t required_size) {
-    if (required_size > value.max_size()) {
-        throw std::length_error("ODBC value is too large");
-    }
-    if (value.capacity() < required_size) {
-        value.reserve(required_size);
-    }
-    value.resize(value.capacity());
-}
-
-template <typename Value>
-void grow_odbc_storage(Value& value, size_t required_size) {
-    if (required_size > value.max_size()) {
-        throw std::length_error("ODBC value is too large");
-    }
-    if (value.capacity() < required_size) {
-        size_t next_capacity = value.capacity();
-        if (next_capacity < odbc_read_chunk_size) {
-            next_capacity = odbc_read_chunk_size;
-        }
-        if (next_capacity <= value.max_size() / 2) {
-            next_capacity *= 2;
-        } else {
-            next_capacity = required_size;
-        }
-        value.reserve(std::max(next_capacity, required_size));
-    }
-    value.resize(value.capacity());
-}
-
-bool read_odbc_string(SQLHSTMT hstmt, SQLUSMALLINT column, std::string& value) {
-    value.clear();
-    prepare_odbc_storage(value, odbc_read_chunk_size);
-    size_t offset = 0;
-
-    while (true) {
-        size_t available = value.size() - offset;
-        if (available < 2) {
-            grow_odbc_storage(value, offset + 2);
-            available = value.size() - offset;
-        }
-
-        SQLLEN ind = 0;
-        SQLRETURN rc = SQLGetData(
-            hstmt,
-            column,
-            SQL_C_CHAR,
-            value.data() + offset,
-            static_cast<SQLLEN>(available),
-            &ind
-        );
-
-        if (rc == SQL_NO_DATA) {
-            value.resize(offset);
-            return true;
-        }
-        if (!SQL_SUCCEEDED(rc)) {
-            check_rc(rc, SQL_HANDLE_STMT, hstmt, "SQLGetData(string)");
-            return false;
-        }
-        if (ind == SQL_NULL_DATA) {
-            value.clear();
-            return false;
-        }
-
-        size_t chunk_size = 0;
-        if (ind == SQL_NO_TOTAL) {
-            chunk_size = std::strlen(value.data() + offset);
-        } else if (ind >= 0) {
-            chunk_size = std::min(static_cast<size_t>(ind), available - 1);
-        }
-        offset += chunk_size;
-
-        bool more_data = rc == SQL_SUCCESS_WITH_INFO &&
-            (ind == SQL_NO_TOTAL || (ind >= 0 && static_cast<size_t>(ind) > chunk_size));
-        if (!more_data) {
-            value.resize(offset);
-            return true;
-        }
-
-        size_t required_size = offset + 2;
-        if (ind >= 0 && static_cast<size_t>(ind) > chunk_size) {
-            required_size = std::max(
-                required_size,
-                offset + (static_cast<size_t>(ind) - chunk_size) + 1
-            );
-        }
-        grow_odbc_storage(value, required_size);
-    }
-}
-
-bool read_odbc_blob(SQLHSTMT hstmt, SQLUSMALLINT column, std::vector<uint8_t>& value) {
-    value.clear();
-    prepare_odbc_storage(value, odbc_read_chunk_size);
-    size_t offset = 0;
-
-    while (true) {
-        size_t available = value.size() - offset;
-        if (available == 0) {
-            grow_odbc_storage(value, offset + 1);
-            available = value.size() - offset;
-        }
-
-        SQLLEN ind = 0;
-        SQLRETURN rc = SQLGetData(
-            hstmt,
-            column,
-            SQL_C_BINARY,
-            value.data() + offset,
-            static_cast<SQLLEN>(available),
-            &ind
-        );
-
-        if (rc == SQL_NO_DATA) {
-            value.resize(offset);
-            return true;
-        }
-        if (!SQL_SUCCEEDED(rc)) {
-            check_rc(rc, SQL_HANDLE_STMT, hstmt, "SQLGetData(blob)");
-            return false;
-        }
-        if (ind == SQL_NULL_DATA) {
-            value.clear();
-            return false;
-        }
-
-        size_t chunk_size = available;
-        if (ind == SQL_NO_TOTAL) {
-            chunk_size = available;
-        } else if (ind >= 0) {
-            chunk_size = std::min(static_cast<size_t>(ind), available);
-        }
-        offset += chunk_size;
-
-        bool more_data = rc == SQL_SUCCESS_WITH_INFO &&
-            (ind == SQL_NO_TOTAL || (ind >= 0 && static_cast<size_t>(ind) > chunk_size));
-        if (!more_data) {
-            value.resize(offset);
-            return true;
-        }
-
-        size_t required_size = offset + 1;
-        if (ind >= 0 && static_cast<size_t>(ind) > chunk_size) {
-            required_size = std::max(
-                required_size,
-                offset + (static_cast<size_t>(ind) - chunk_size)
-            );
-        }
-        grow_odbc_storage(value, required_size);
-    }
-}
-
-} // namespace
 
 // ============================================================================
 // OdbcDataReader
@@ -209,7 +52,11 @@ void OdbcDataReader::init_bound_columns() {
                         &col.nullable);
 
         switch (col.data_type) {
-            case SQL_BIGINT:
+            case SQL_BIGINT: {
+                col.c_type = SQL_C_UBIGINT;
+                SQLBindCol(hstmt_, i, col.c_type, &col.uint_val, sizeof(col.uint_val), &col.ind);
+                break;
+            }
             case SQL_INTEGER:
             case SQL_SMALLINT:
             case SQL_TINYINT: {
@@ -354,6 +201,7 @@ int64_t OdbcDataReader::get_int64(int col) const {
     const auto& c = bound_cols_[col];
     switch (c.c_type) {
         case SQL_C_SBIGINT: return c.int_val;
+        case SQL_C_UBIGINT: return static_cast<int64_t>(c.uint_val);
         case SQL_C_DOUBLE: return static_cast<int64_t>(c.double_val);
         case SQL_C_BIT: return c.bool_val ? 1 : 0;
         case SQL_C_CHAR: {
@@ -372,6 +220,7 @@ uint64_t OdbcDataReader::get_uint64(int col) const {
     if (is_null(col)) return 0;
     const auto& c = bound_cols_[col];
     switch (c.c_type) {
+        case SQL_C_UBIGINT: return c.uint_val;
         case SQL_C_SBIGINT: return static_cast<uint64_t>(c.int_val);
         case SQL_C_DOUBLE: return static_cast<uint64_t>(c.double_val > 0 ? c.double_val : 0);
         case SQL_C_BIT: return c.bool_val ? 1 : 0;
@@ -393,6 +242,7 @@ double OdbcDataReader::get_double(int col) const {
     switch (c.c_type) {
         case SQL_C_DOUBLE: return c.double_val;
         case SQL_C_SBIGINT: return static_cast<double>(c.int_val);
+        case SQL_C_UBIGINT: return static_cast<double>(c.uint_val);
         case SQL_C_BIT: return c.bool_val ? 1.0 : 0.0;
         case SQL_C_CHAR: {
             std::string_view sv = get_string_view(col);
@@ -410,17 +260,21 @@ void OdbcDataReader::ensure_str(const BoundCol& c) const {
     if (!c.str_cache.empty() || c.ind == SQL_NULL_DATA) return;
     switch (c.c_type) {
         case SQL_C_CHAR: {
+            if (c.buffer.empty()) return;
             size_t len = 0;
             if (c.ind >= 0) {
                 len = std::min(static_cast<size_t>(c.ind), c.buffer.size() > 0 ? c.buffer.size() - 1 : 0);
             } else {
-                len = std::strlen(reinterpret_cast<const char*>(c.buffer.data()));
+                len = ::strnlen(reinterpret_cast<const char*>(c.buffer.data()), c.buffer.size());
             }
             c.str_cache.assign(reinterpret_cast<const char*>(c.buffer.data()), len);
             break;
         }
         case SQL_C_SBIGINT:
             c.str_cache = std::to_string(c.int_val);
+            break;
+        case SQL_C_UBIGINT:
+            c.str_cache = std::to_string(c.uint_val);
             break;
         case SQL_C_DOUBLE:
             c.str_cache = std::to_string(c.double_val);
@@ -463,11 +317,12 @@ std::string_view OdbcDataReader::get_string_view(int col) const {
     const auto& c = bound_cols_[col];
     if (c.c_type == SQL_C_CHAR) {
         if (!c.str_cache.empty()) return c.str_cache;
+        if (c.buffer.empty()) return {};
         size_t len = 0;
         if (c.ind >= 0) {
             len = std::min(static_cast<size_t>(c.ind), c.buffer.size() > 0 ? c.buffer.size() - 1 : 0);
         } else {
-            len = std::strlen(reinterpret_cast<const char*>(c.buffer.data()));
+            len = ::strnlen(reinterpret_cast<const char*>(c.buffer.data()), c.buffer.size());
         }
         return std::string_view(reinterpret_cast<const char*>(c.buffer.data()), len);
     }
@@ -487,7 +342,8 @@ std::wstring OdbcDataReader::get_wstring(int col) const {
         size_t len_bytes = (c.ind >= 0) ? std::min(static_cast<size_t>(c.ind), c.buffer.size()) : c.buffer.size();
         size_t len_wchars = len_bytes / sizeof(SQLWCHAR);
         const auto* wptr = reinterpret_cast<const SQLWCHAR*>(c.buffer.data());
-        return detail::odbc::sqlwchar_to_wstring(wptr, len_wchars);
+        c.wstr_cache = detail::odbc::sqlwchar_to_wstring(wptr, len_wchars);
+        return c.wstr_cache;
     }
     return utf8_to_wstring(get_string(col));
 }
@@ -593,6 +449,7 @@ BoundValue OdbcDataReader::get_value(int col) const {
     const auto& c = bound_cols_[col];
     switch (c.c_type) {
         case SQL_C_SBIGINT: return c.int_val;
+        case SQL_C_UBIGINT: return c.uint_val;
         case SQL_C_DOUBLE: return c.double_val;
         case SQL_C_BIT: return c.bool_val != 0;
         case SQL_C_TYPE_DATE: return get_date(col);
@@ -853,7 +710,7 @@ void OdbcPreparedStatement::apply_bindings() {
             } else if constexpr (std::is_same_v<T, SqlGuid>) {
                 std::string s = val.to_string();
                 store.c_type = SQL_C_CHAR;
-                store.sql_type = SQL_GUID;
+                store.sql_type = SQL_VARCHAR;
                 store.col_size = 36;
                 store.dec_digits = 0;
                 store.ind = static_cast<SQLLEN>(s.size());
@@ -861,11 +718,6 @@ void OdbcPreparedStatement::apply_bindings() {
                 std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
-                if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
-                    store.sql_type = SQL_VARCHAR;
-                    rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                          store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
-                }
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(guid)");
             }
         }, p);

@@ -59,6 +59,7 @@ private:
 
         union {
             int64_t int_val = 0;
+            uint64_t uint_val;
             double double_val;
             unsigned char bool_val;
             DATE_STRUCT date_val;

@@ -99,8 +99,8 @@ public:
             case SqlType::Text:    return "TEXT";
             case SqlType::Blob:    return "BYTEA";
             case SqlType::Boolean: return "BOOLEAN";
+            default:               return "TEXT";
         }
-        return "TEXT";
     }
 
     std::string auto_increment_type() const override {
@@ -143,8 +143,8 @@ public:
             case SqlType::Text:    return "NVARCHAR(MAX)";
             case SqlType::Blob:    return "VARBINARY(MAX)";
             case SqlType::Boolean: return "BIT";
+            default:               return "NVARCHAR(MAX)";
         }
-        return "NVARCHAR(MAX)";
     }
 
     std::string auto_increment_type() const override {
@@ -262,8 +262,8 @@ public:
             case SqlType::Text:    return "VARCHAR(255)";
             case SqlType::Blob:    return "LONGBLOB";
             case SqlType::Boolean: return "TINYINT(1)";
+            default:               return "VARCHAR(255)";
         }
-        return "VARCHAR(255)";
     }
 
     std::string auto_increment_type() const override {

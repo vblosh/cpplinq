@@ -61,7 +61,7 @@ void assign_column_value(TargetType& target, IDataReader& reader, int col_idx) {
     using U = std::remove_cvref_t<TargetType>;
     if constexpr (std::is_same_v<U, std::string>) {
         std::string_view sv = reader.get_string_view(col_idx);
-        target.assign(sv.data(), sv.size());
+        target = sv;
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         target = reader.get_blob(col_idx);
     } else {
