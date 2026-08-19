@@ -142,3 +142,68 @@ auto distinct_users = db.from(users_table)
 | `.max_val(col)` | `std::optional<double>` | Executes `SELECT MAX(col)` |
 | `.update({...})` | `size_t` | Executes parameterized `UPDATE` and returns affected row count |
 | `.remove()` | `size_t` | Executes parameterized `DELETE` and returns affected row count |
+| `.prepare<Params...>()` | `PreparedQuery<Entity, ...>` | Compiles query once to a reusable prepared statement |
+| `.prepare_update({...})` | `PreparedCommand<Params...>` | Compiles UPDATE statement once for reuse with parameters |
+| `.prepare_remove()` | `PreparedCommand<Params...>` | Compiles DELETE statement once for reuse with parameters |
+
+---
+
+## 7. Prepared Statements & Parameter Reuse
+
+For high-throughput applications, you can prepare a query template once and reuse it across multiple executions with different parameter values:
+
+### 7.1 Type-Safe `PreparedQuery`
+Use `cpplinq::param<T>(index)` to declare dynamic parameter placeholders:
+
+```cpp
+// 1. Prepare query once
+auto find_users = db.from(users_table)
+                    .where(users_table["age"] >= cpplinq::param<int>(0) &&
+                           users_table["department"] == cpplinq::param<std::string>(1))
+                    .order_by(users_table["age"].asc())
+                    .prepare<int, std::string>();
+
+// 2. Reuse repeatedly with zero query re-parsing overhead:
+auto seniors = find_users.execute(30, "Engineering");
+auto juniors = find_users.execute(21, "Sales");
+
+// 3. First result and streaming:
+auto first_lead = find_users.first(40, "Management");
+
+for (const auto& user : find_users.stream(25, "Design")) {
+    std::cout << user.name << "\n";
+}
+```
+
+### 7.2 Reusable `UPDATE` and `DELETE` Commands
+```cpp
+// Reusable UPDATE
+auto update_age = db.from(users_table)
+                    .where(users_table["name"] == cpplinq::param<std::string>(0))
+                    .prepare_update({ users_table["age"] = cpplinq::param<int>(1) });
+
+update_age.execute("Alice", 31);
+update_age.execute("Bob", 26);
+
+// Reusable DELETE
+auto delete_user = db.from(users_table)
+                     .where(users_table["name"] == cpplinq::param<std::string>(0))
+                     .prepare_remove();
+
+delete_user.execute("Alice");
+```
+
+### 7.3 Raw Statement Reuse (`IPreparedStatement`)
+When working directly with driver connections:
+
+```cpp
+auto stmt = conn.prepare("SELECT \"name\", \"age\" FROM \"users\" WHERE \"age\" >= ?");
+
+stmt->bind(0, int64_t(20));
+auto reader1 = stmt->execute_query();
+
+// Reset and re-bind for next query:
+stmt->reset();
+stmt->bind(0, int64_t(30));
+auto reader2 = stmt->execute_query();
+```

@@ -181,10 +181,33 @@ public:
             return;
         }
 
-        // Fallback: row-by-row transaction loop
+        // Fallback: row-by-row prepared statement reuse loop
+        SqlGenerator gen(conn_->dialect());
+        std::vector<std::string> col_names;
+        std::apply([&](const auto&... cols) {
+            auto add = [&](const auto& col) {
+                if (!col.is_auto_increment) col_names.emplace_back(col.name);
+            };
+            (add(cols), ...);
+        }, table.columns);
+
+        std::vector<BoundValue> dummy(col_names.size(), BoundValue{int64_t{0}});
+        auto result = gen.generate_insert(std::string(table.name), col_names, dummy, std::nullopt);
+        auto stmt = conn_->prepare(result.sql);
+
         Transaction txn(*conn_);
         for (const auto& entity : entities) {
-            insert(table, entity);
+            stmt->reset();
+            int idx = 0;
+            std::apply([&](const auto&... cols) {
+                auto bind = [&](const auto& col) {
+                    if (!col.is_auto_increment) {
+                        stmt->bind(idx++, field_to_bound_value(entity, col.member_ptr));
+                    }
+                };
+                (bind(cols), ...);
+            }, table.columns);
+            stmt->execute_non_query();
         }
         txn.commit();
     }
@@ -338,11 +361,12 @@ public:
             return total_affected;
         }
 
-        // Fallback: row-by-row transaction loop
+        // Fallback: row-by-row transaction loop with prepared statement reuse
         size_t total = 0;
+        auto stmt = conn_->prepare(sql);
         Transaction txn(*conn_);
         for (const auto& e : entities) {
-            auto stmt = conn_->prepare(sql);
+            stmt->reset();
             int idx = 0;
             BoundValue pk_val;
             std::apply([&](const auto&... cols) {
@@ -362,17 +386,66 @@ public:
         return total;
     }
 
-    // Upsert multiple entities in a transaction
+    // Upsert multiple entities in a transaction with prepared statement reuse
     template <typename Entity, typename... Cols>
     size_t upsert_many(const TableDef<Entity, Cols...>& table,
                        const std::vector<Entity>& entities,
                        const std::vector<std::string>& conflict_columns = {},
                        const std::vector<std::string>& update_columns = {}) {
         if (entities.empty()) return 0;
+
+        SqlGenerator gen(conn_->dialect());
+        std::vector<std::string> insert_cols;
+        std::vector<std::string> auto_conflict_cols = conflict_columns;
+
+        std::apply([&](const auto&... cols) {
+            auto process = [&](const auto& col) {
+                insert_cols.emplace_back(col.name);
+                if (col.is_primary_key && auto_conflict_cols.empty()) {
+                    auto_conflict_cols.emplace_back(col.name);
+                }
+            };
+            (process(cols), ...);
+        }, table.columns);
+
+        std::vector<std::string> actual_update_cols = update_columns;
+        if (actual_update_cols.empty()) {
+            for (const auto& col_name : insert_cols) {
+                bool is_conflict = false;
+                for (const auto& c : auto_conflict_cols) {
+                    if (c == col_name) {
+                        is_conflict = true;
+                        break;
+                    }
+                }
+                if (!is_conflict) {
+                    actual_update_cols.push_back(col_name);
+                }
+            }
+        }
+
+        std::vector<BoundValue> dummy_values(insert_cols.size(), BoundValue{int64_t{0}});
+        auto result = gen.generate_upsert(
+            std::string(table.name),
+            insert_cols,
+            dummy_values,
+            auto_conflict_cols,
+            actual_update_cols
+        );
+
+        auto stmt = conn_->prepare(result.sql);
         size_t total = 0;
         Transaction txn(*conn_);
         for (const auto& e : entities) {
-            total += upsert(table, e, conflict_columns, update_columns);
+            stmt->reset();
+            int idx = 0;
+            std::apply([&](const auto&... cols) {
+                auto bind = [&](const auto& col) {
+                    stmt->bind(idx++, field_to_bound_value(e, col.member_ptr));
+                };
+                (bind(cols), ...);
+            }, table.columns);
+            total += stmt->execute_non_query();
         }
         txn.commit();
         return total;

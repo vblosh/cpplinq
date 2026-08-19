@@ -71,7 +71,7 @@ void assign_column_value(TargetType& target, IDataReader& reader, int col_idx) {
 
 template <typename T>
 BoundValue convert_to_bound_value(const T& val) {
-    using U = std::remove_cvref_t<T>;
+    using U = std::decay_t<T>;
     if constexpr (std::is_same_v<U, bool>) {
         return BoundValue{val};
     } else if constexpr (std::is_integral_v<U>) {
@@ -86,13 +86,13 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, std::string_view>) {
         return BoundValue{std::string(val)};
-    } else if constexpr (std::is_same_v<U, const char*>) {
+    } else if constexpr (std::is_same_v<U, const char*> || std::is_same_v<U, char*>) {
         return BoundValue{std::string(val ? val : "")};
     } else if constexpr (std::is_same_v<U, std::wstring>) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, std::wstring_view>) {
         return BoundValue{std::wstring(val)};
-    } else if constexpr (std::is_same_v<U, const wchar_t*>) {
+    } else if constexpr (std::is_same_v<U, const wchar_t*> || std::is_same_v<U, wchar_t*>) {
         return BoundValue{std::wstring(val ? val : L"")};
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         return BoundValue{val};

@@ -1045,5 +1045,38 @@ TEST(SqlGeneratorTest, MysqlWindowFunctions) {
     EXPECT_EQ(rn_res.sql, "ROW_NUMBER() OVER (PARTITION BY `employees`.`department` ORDER BY `employees`.`salary` DESC)");
 }
 
+TEST(SqlGeneratorTest, ParamPlaceholderGeneration) {
+    MockSqliteDialect sqlite_dialect;
+    SqlGenerator sqlite_gen(sqlite_dialect);
+
+    ColumnHandle age("users", "age");
+    ColumnHandle name("users", "name");
+
+    auto condition = (age >= param<int>(0)) && (name == param<std::string>(1));
+    auto select_res = sqlite_gen.generate_select("users", {"id", "name", "age"}, condition.node);
+
+    EXPECT_EQ(select_res.sql, "SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE ((\"users\".\"age\" >= ?) AND (\"users\".\"name\" = ?))");
+    EXPECT_EQ(select_res.params.size(), 0);
+    ASSERT_EQ(select_res.slots.size(), 2);
+    EXPECT_TRUE(select_res.slots[0].is_dynamic);
+    EXPECT_EQ(select_res.slots[0].dynamic_index, 0);
+    EXPECT_TRUE(select_res.slots[1].is_dynamic);
+    EXPECT_EQ(select_res.slots[1].dynamic_index, 1);
+
+    // Mixed static and dynamic placeholders with Postgres ($1, $2, ...)
+    MockPostgresDialect pg_dialect;
+    SqlGenerator pg_gen(pg_dialect);
+
+    auto mixed_condition = (age >= param<int>(0)) && (name == "Admin");
+    auto mixed_res = pg_gen.generate_select("users", {"id"}, mixed_condition.node);
+
+    EXPECT_EQ(mixed_res.sql, "SELECT \"id\" FROM \"users\" WHERE ((\"users\".\"age\" >= $1) AND (\"users\".\"name\" = $2))");
+    ASSERT_EQ(mixed_res.slots.size(), 2);
+    EXPECT_TRUE(mixed_res.slots[0].is_dynamic);
+    EXPECT_EQ(mixed_res.slots[0].dynamic_index, 0);
+    EXPECT_FALSE(mixed_res.slots[1].is_dynamic);
+    EXPECT_EQ(std::get<std::string>(mixed_res.slots[1].static_value), "Admin");
+}
+
 
 

@@ -781,3 +781,203 @@ TEST_F(SqliteIntegrationTest, DataTypingRoundTripAndQueries) {
     EXPECT_EQ(reloaded->duration.to_string(), "1 00:00:00");
     EXPECT_EQ(reloaded->localized_label, L"Updated Label");
 }
+
+TEST_F(SqliteIntegrationTest, PreparedStatementReuseRaw) {
+    db->insert(users_table, User{0, "Alice", "alice@example.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+    db->insert(users_table, User{0, "Charlie", "charlie@example.com", 35});
+
+    auto stmt = db->connection().prepare("SELECT \"name\", \"age\" FROM \"users\" WHERE \"age\" >= ? ORDER BY \"age\" ASC");
+    
+    // First run with age >= 25
+    stmt->bind(0, int64_t(25));
+    auto reader1 = stmt->execute_query();
+    std::vector<std::pair<std::string, int>> results1;
+    while (reader1 && reader1->next()) {
+        results1.emplace_back(reader1->get_string(0), static_cast<int>(reader1->get_int64(1)));
+    }
+    ASSERT_EQ(results1.size(), 3); // Alice(30), Bob(25), Charlie(35)
+    EXPECT_EQ(results1[0].first, "Bob");
+
+    // Second run with age >= 32 after reset()
+    stmt->reset();
+    stmt->bind(0, int64_t(32));
+    auto reader2 = stmt->execute_query();
+    std::vector<std::pair<std::string, int>> results2;
+    while (reader2 && reader2->next()) {
+        results2.emplace_back(reader2->get_string(0), static_cast<int>(reader2->get_int64(1)));
+    }
+    ASSERT_EQ(results2.size(), 1); // Charlie(35)
+    EXPECT_EQ(results2[0].first, "Charlie");
+
+    // Third run with age >= 100
+    stmt->reset();
+    stmt->bind(0, int64_t(100));
+    auto reader3 = stmt->execute_query();
+    EXPECT_FALSE(reader3->next());
+}
+
+TEST_F(SqliteIntegrationTest, PreparedQueryExecutionAndReuse) {
+    db->insert(users_table, User{0, "Alice", "alice@example.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+    db->insert(users_table, User{0, "Charlie", "charlie@example.com", 35});
+    db->insert(users_table, User{0, "Diana", "diana@example.com", 20});
+
+    auto pq = db->from(users_table)
+                 .where(users_table["age"] >= param<int>(0))
+                 .order_by(users_table["age"].asc())
+                 .prepare<int>();
+
+    // Execute with age >= 20 -> should return Alice(30), Bob(25), Charlie(35), Diana(20)
+    auto users_20 = pq.execute(20);
+    ASSERT_EQ(users_20.size(), 4);
+    EXPECT_EQ(users_20[0].name, "Diana");
+    EXPECT_EQ(users_20[1].name, "Bob");
+
+    // Re-execute with age >= 30 -> should return Alice(30), Charlie(35)
+    auto users_30 = pq.execute(30);
+    ASSERT_EQ(users_30.size(), 2);
+    EXPECT_EQ(users_30[0].name, "Alice");
+    EXPECT_EQ(users_30[1].name, "Charlie");
+
+    // Call first() with age >= 25 -> should return Bob(25)
+    auto first_25 = pq.first(25);
+    ASSERT_TRUE(first_25.has_value());
+    EXPECT_EQ(first_25->name, "Bob");
+    EXPECT_EQ(first_25->age, 25);
+
+    // Call to_list() with age >= 100 -> empty
+    auto users_none = pq.to_list(100);
+    EXPECT_TRUE(users_none.empty());
+}
+
+TEST_F(SqliteIntegrationTest, PreparedQueryMultipleAndMixedParams) {
+    db->insert(employees_table, Employee{0, "Alice", "Engineering", 95000});
+    db->insert(employees_table, Employee{0, "Bob", "Engineering", 90000});
+    db->insert(employees_table, Employee{0, "Charlie", "Marketing", 75000});
+    db->insert(employees_table, Employee{0, "David", "Marketing", 70000});
+
+    auto pq = db->from(employees_table)
+                 .where(employees_table["department"] == param<std::string>(0) &&
+                        employees_table["salary"] >= param<int>(1))
+                 .order_by(employees_table["salary"].desc())
+                 .prepare<std::string, int>();
+
+    // Find in Engineering with salary >= 90000
+    auto eng_high = pq.execute("Engineering", 90000);
+    ASSERT_EQ(eng_high.size(), 2); // Alice(95000), Bob(90000)
+    EXPECT_EQ(eng_high[0].name, "Alice");
+    EXPECT_EQ(eng_high[1].name, "Bob");
+
+    // Re-execute with Engineering salary >= 100000
+    auto eng_super = pq.execute("Engineering", 100000);
+    EXPECT_EQ(eng_super.size(), 0);
+
+    // Re-execute with Marketing salary >= 70000
+    auto mkt = pq.execute("Marketing", 70000);
+    ASSERT_EQ(mkt.size(), 2); // Charlie(75000), David(70000)
+    EXPECT_EQ(mkt[0].name, "Charlie");
+}
+
+TEST_F(SqliteIntegrationTest, PreparedQueryStreaming) {
+    db->insert(users_table, User{0, "Alice", "alice@example.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+    db->insert(users_table, User{0, "Charlie", "charlie@example.com", 35});
+    db->insert(users_table, User{0, "Diana", "diana@example.com", 20});
+
+    auto pq = db->from(users_table)
+                 .where(users_table["age"] >= param<int>(0))
+                 .prepare<int>();
+
+    // Stream 1 (age >= 25 -> Alice 30, Bob 25, Charlie 35)
+    size_t count1 = 0;
+    for (const auto& user : pq.stream(25)) {
+        (void)user;
+        ++count1;
+    }
+    EXPECT_EQ(count1, 3);
+
+    // Stream 2 (age >= 35 -> Charlie 35)
+    size_t count2 = 0;
+    for (const auto& user : pq.stream(35)) {
+        (void)user;
+        ++count2;
+    }
+    EXPECT_EQ(count2, 1);
+}
+
+TEST_F(SqliteIntegrationTest, PreparedCommandUpdateAndRemove) {
+    db->insert(users_table, User{0, "Alice", "alice@example.com", 30});
+    db->insert(users_table, User{0, "Bob", "bob@example.com", 25});
+
+    // Prepare update command
+    auto update_cmd = db->from(users_table)
+                         .where(users_table["name"] == param<std::string>(0))
+                         .prepare_update(std::vector<AssignExpr>{
+                             users_table["age"] = param<int>(1)
+                         });
+
+    size_t rows = update_cmd.execute("Alice", 99);
+    EXPECT_EQ(rows, 1);
+
+    auto alice = db->from(users_table).where(users_table["name"] == "Alice").first();
+    ASSERT_TRUE(alice.has_value());
+    EXPECT_EQ(alice->age, 99);
+
+    // Re-execute update for Bob
+    rows = update_cmd.execute("Bob", 88);
+    EXPECT_EQ(rows, 1);
+
+    auto bob = db->from(users_table).where(users_table["name"] == "Bob").first();
+    ASSERT_TRUE(bob.has_value());
+    EXPECT_EQ(bob->age, 88);
+
+    // Prepare remove command
+    auto remove_cmd = db->from(users_table)
+                         .where(users_table["name"] == param<std::string>(0))
+                         .prepare_remove();
+
+    size_t deleted = remove_cmd.execute("Alice");
+    EXPECT_EQ(deleted, 1);
+
+    auto alice_deleted = db->from(users_table).where(users_table["name"] == "Alice").first();
+    EXPECT_FALSE(alice_deleted.has_value());
+
+    deleted = remove_cmd.execute("Bob");
+    EXPECT_EQ(deleted, 1);
+}
+
+TEST_F(SqliteIntegrationTest, DbContextBatchPreparedReuse) {
+    std::vector<User> batch = {
+        User{0, "BatchUser1", "b1@test.com", 20},
+        User{0, "BatchUser2", "b2@test.com", 22},
+        User{0, "BatchUser3", "b3@test.com", 24}
+    };
+
+    db->insert_many(users_table, batch);
+
+    auto found = db->from(users_table)
+                   .where(users_table["name"].like("BatchUser%"))
+                   .order_by(users_table["name"].asc())
+                   .to_list();
+    ASSERT_EQ(found.size(), 3);
+    EXPECT_EQ(found[0].name, "BatchUser1");
+    EXPECT_EQ(found[1].name, "BatchUser2");
+    EXPECT_EQ(found[2].name, "BatchUser3");
+
+    // Test update_many
+    for (auto& u : found) {
+        u.age += 10;
+    }
+    size_t updated = db->update_many(users_table, std::vector<User>(found.begin(), found.end()));
+    EXPECT_EQ(updated, 3);
+
+    auto reloaded = db->from(users_table)
+                      .where(users_table["name"].like("BatchUser%"))
+                      .order_by(users_table["name"].asc())
+                      .to_list();
+    ASSERT_EQ(reloaded.size(), 3);
+    EXPECT_EQ(reloaded[0].age, 30);
+    EXPECT_EQ(reloaded[1].age, 32);
+    EXPECT_EQ(reloaded[2].age, 34);
+}

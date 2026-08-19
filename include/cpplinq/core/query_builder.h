@@ -5,6 +5,7 @@
 #include "cpplinq/mapping/row_mapper.h"
 #include "cpplinq/core/streaming.h"
 #include "cpplinq/core/chunked_buffer.h"
+#include "cpplinq/core/prepared_query.h"
 #if __has_include("cpplinq/core/sql_generator.h")
 #include "cpplinq/core/sql_generator.h"
 #endif
@@ -940,6 +941,15 @@ public:
         }
     }
 
+    // Prepare reusable UPDATE command
+    template <typename... ParamTypes>
+    PreparedCommand<ParamTypes...> prepare_update(std::vector<expr::AssignExpr> assignments) {
+        SqlGenerator gen(conn_.dialect());
+        auto result = gen.generate_update(table_name_, assignments, where_clause_);
+        auto stmt = conn_.prepare(result.sql);
+        return PreparedCommand<ParamTypes...>(std::move(stmt), std::move(result.slots));
+    }
+
     // Terminal: DELETE
     size_t remove() {
         SqlGenerator gen(conn_.dialect());
@@ -951,6 +961,35 @@ public:
             bind_params(*stmt, result.params);
             return stmt->execute_non_query();
         }
+    }
+
+    // Prepare reusable DELETE command
+    template <typename... ParamTypes>
+    PreparedCommand<ParamTypes...> prepare_remove() {
+        SqlGenerator gen(conn_.dialect());
+        auto result = gen.generate_delete(table_name_, where_clause_);
+        auto stmt = conn_.prepare(result.sql);
+        return PreparedCommand<ParamTypes...>(std::move(stmt), std::move(result.slots));
+    }
+
+    // Compile query to a reusable PreparedQuery
+    template <typename... ParamTypes>
+    PreparedQuery<Entity, std::tuple<ColumnDefs...>, ParamTypes...> prepare() {
+        SqlGenerator gen(conn_.dialect());
+        auto col_names = get_column_names();
+        GeneratedSql result;
+        if (!ctes_.empty()) {
+            result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
+                                             order_clauses_, limit_, offset_, is_distinct_);
+        } else {
+            result = gen.generate_select(table_name_, col_names, where_clause_,
+                                         order_clauses_, limit_, offset_, is_distinct_,
+                                         group_by_clauses_, having_clause_);
+        }
+        auto stmt = conn_.prepare(result.sql);
+        return PreparedQuery<Entity, std::tuple<ColumnDefs...>, ParamTypes...>(
+            std::move(stmt), columns_, std::move(result.slots)
+        );
     }
 
     // Terminal: EXISTS

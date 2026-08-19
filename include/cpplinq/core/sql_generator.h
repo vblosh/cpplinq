@@ -14,10 +14,24 @@
 
 namespace cpplinq {
 
+// Slot description for prepared query parameter binding
+struct ParameterSlot {
+    bool is_dynamic = false;
+    size_t dynamic_index = 0;
+    BoundValue static_value = std::monostate{};
+
+    ParameterSlot() = default;
+    ParameterSlot(size_t dyn_idx) : is_dynamic(true), dynamic_index(dyn_idx) {}
+    ParameterSlot(BoundValue val) : is_dynamic(false), static_value(std::move(val)) {}
+
+    bool operator==(const ParameterSlot& other) const = default;
+};
+
 // Generated SQL query along with bound parameters
 struct GeneratedSql {
     std::string sql;
     std::vector<BoundValue> params;
+    std::vector<ParameterSlot> slots;
 
     bool operator==(const GeneratedSql& other) const = default;
 };
@@ -194,6 +208,7 @@ private:
 
     const ISqlDialect& dialect_;
     mutable size_t param_counter_ = 0;
+    mutable std::vector<ParameterSlot> slots_;
 };
 
 } // namespace cpplinq
