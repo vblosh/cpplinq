@@ -49,69 +49,39 @@ public:
     BoundValue get_value(int col) const override;
 
 private:
-    enum class NativeType {
-        Null,
-        Int64,
-        Double,
-        Bool,
-        String,
-        WString,
-        Blob,
-        Numeric,
-        Date,
-        Time,
-        Timestamp,
-        Interval,
-        Guid
-    };
-
-    struct ColumnMeta {
+    struct BoundCol {
         SQLSMALLINT data_type = 0;
+        SQLSMALLINT c_type = 0;
         SQLULEN col_size = 0;
         SQLSMALLINT dec_digits = 0;
         SQLSMALLINT nullable = 0;
-    };
-
-    struct CachedCol {
-        bool is_null = true;
-        NativeType native_type = NativeType::Null;
+        SQLLEN ind = SQL_NULL_DATA;
 
         union {
             int64_t int_val = 0;
             double double_val;
-            bool bool_val;
-            SqlDate date_val;
-            SqlTime time_val;
-            SqlTimestamp timestamp_val;
-            SqlInterval interval_val;
-            SqlGuid guid_val;
+            unsigned char bool_val;
+            DATE_STRUCT date_val;
+            TIME_STRUCT time_val;
+            TIMESTAMP_STRUCT timestamp_val;
+            SQL_INTERVAL_STRUCT interval_val;
+            SQLGUID guid_val;
         };
 
-        std::string str_val;
-        std::wstring wstr_val;
-        std::vector<uint8_t> blob_val;
+        std::vector<uint8_t> buffer;
+        mutable std::string str_cache;
+        mutable std::wstring wstr_cache;
 
-        CachedCol() : int_val(0) {}
-
-        void reset() noexcept {
-            is_null = true;
-            native_type = NativeType::Null;
-            int_val = 0;
-            str_val.clear();
-            wstr_val.clear();
-            blob_val.clear();
-        }
+        BoundCol() : int_val(0) {}
     };
 
-    void init_column_metadata();
-    void fetch_row_cache();
-    void ensure_str(CachedCol& c) const;
+    void init_bound_columns();
+    void ensure_str(const BoundCol& c) const;
 
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     bool owns_stmt_ = false;
     SQLSMALLINT col_count_ = 0;
-    std::vector<ColumnMeta> col_meta_;
-    std::vector<CachedCol> row_cache_;
+    std::vector<BoundCol> bound_cols_;
 };
 
 class OdbcPreparedStatement : public IPreparedStatement {
@@ -160,6 +130,8 @@ public:
 
     std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override;
     void execute(std::string_view sql) override;
+    std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql) override;
+    size_t execute_non_query_direct(std::string_view sql) override;
 
     void begin_transaction() override;
     void commit() override;

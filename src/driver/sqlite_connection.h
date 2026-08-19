@@ -73,6 +73,8 @@ public:
 
     std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override;
     void execute(std::string_view sql) override;
+    std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql) override;
+    size_t execute_non_query_direct(std::string_view sql) override;
 
     void begin_transaction() override;
     void commit() override;

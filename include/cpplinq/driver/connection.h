@@ -150,6 +150,10 @@ public:
     virtual std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) = 0;
     virtual void execute(std::string_view sql) = 0;  // direct exec, no results
 
+    // Direct execution fast path for parameterless queries
+    virtual std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql);
+    virtual size_t execute_non_query_direct(std::string_view sql);
+
     virtual void begin_transaction() = 0;
     virtual void commit() = 0;
     virtual void rollback() = 0;

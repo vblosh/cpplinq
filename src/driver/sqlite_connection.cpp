@@ -302,6 +302,25 @@ void SqliteConnection::execute(std::string_view sql) {
     }
 }
 
+std::unique_ptr<IDataReader> SqliteConnection::execute_query_direct(std::string_view sql) {
+    if (!is_open()) {
+        throw DbException("Cannot execute query: database connection is not open");
+    }
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.data(), static_cast<int>(sql.size()), &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        throw DbException(std::string("Failed to execute query: ") + sqlite3_errmsg(db_));
+    }
+    auto stmt_ptr = std::shared_ptr<sqlite3_stmt>(stmt, [](sqlite3_stmt* s) { if (s) sqlite3_finalize(s); });
+    return std::make_unique<SqliteDataReader>(stmt_ptr, db_);
+}
+
+size_t SqliteConnection::execute_non_query_direct(std::string_view sql) {
+    execute(sql);
+    int changes = db_ ? sqlite3_changes(db_) : 0;
+    return static_cast<size_t>(changes);
+}
+
 void SqliteConnection::begin_transaction() {
     execute("BEGIN");
 }
