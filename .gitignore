@@ -51,4 +51,5 @@ Testing/
 *.swp
 *~
 .DS_Store
-scripts/set_odbc_env.ps1
+# Scripts
+scripts/
