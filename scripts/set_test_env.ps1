@@ -13,7 +13,7 @@
     PostgreSQL ODBC DSN or connection string. Default: "PostgreSQL35W"
 
 .PARAMETER PostgresLibpq
-    Native PostgreSQL libpq connection string. Default: "host=localhost port=5432 dbname=testdb user=testuser password=testpass"
+    Native PostgreSQL libpq connection string. Default: "host=localhost port=5432 dbname=cppdb user=cppdb password=cppdb_password"
 
 .PARAMETER MssqlOdbc
     Microsoft SQL Server ODBC DSN or connection string. Default: "MSSQLLocalDB"
@@ -63,9 +63,10 @@
 [CmdletBinding()]
 param(
     [string]$PostgresOdbc = "PostgreSQL35W",
-    [string]$PostgresLibpq = "host=localhost port=5432 dbname=testdb user=testuser password=testpass",
+    [string]$PostgresLibpq = "host=localhost port=5432 dbname=cppdb user=cppdb password=cppdb_password",
     [string]$MssqlOdbc = "MSSQLLocalDB",
     [string]$MysqlOdbc = "MySQLDSN",
+    [string]$InformixOdbc = "InformixDSN",
     [string]$SqliteOdbc = "",
     [string]$PostgresBinPath = "C:\Program Files\PostgreSQL\18\",
     [ValidateSet("Process", "User", "Machine")]
@@ -103,6 +104,7 @@ $varNames = @(
     "CPPLINQ_POSTGRES_LIBPQ",
     "CPPLINQ_MSSQL_ODBC",
     "CPPLINQ_MYSQL_ODBC",
+    "CPPLINQ_INFORMIX_ODBC",
     "CPPLINQ_SQLITE_ODBC"
 )
 
@@ -179,7 +181,8 @@ if ([string]::IsNullOrWhiteSpace($PostgresBinPath)) {
 $envMap = [ordered]@{
     "CPPLINQ_POSTGRES_LIBPQ" = $PostgresLibpq
     "CPPLINQ_MSSQL_ODBC"     = $MssqlOdbc
-    #"CPPLINQ_MYSQL_ODBC"     = $MysqlOdbc
+    "CPPLINQ_MYSQL_ODBC"     = $MysqlOdbc
+    "CPPLINQ_INFORMIX_ODBC"  = $InformixOdbc
 
     #perfomance tests require PostgreSQL, so we only set this if it's not empty
     "CPPLINQ_POSTGRES_ODBC"  = $PostgresOdbc

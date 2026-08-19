@@ -9,6 +9,8 @@ services:
       POSTGRES_USER: cppdb
       POSTGRES_PASSWORD: cppdb_password
       POSTGRES_DB: cppdb
+    volumes:
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cppdb -d cppdb"]
       interval: 5s
@@ -30,3 +32,38 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  mysql:
+    image: mysql:8.0
+    container_name: cpplinq-mysql-test
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: cppdb
+      MYSQL_USER: cppdb
+      MYSQL_PASSWORD: cppdb_password
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  informix:
+    image: icr.io/informix/informix-developer-database:latest
+    container_name: cpplinq-informix-test
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "9088:9088"
+    environment:
+      LICENSE: accept
+      DBSERVERNAME: informix
+      INFORMIX_PASSWORD: in4mix
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /home/informix/.bashrc 2>/dev/null || true; onstat - | grep -q On-Line'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+

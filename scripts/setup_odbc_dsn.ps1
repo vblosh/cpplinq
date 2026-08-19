@@ -155,9 +155,9 @@ if ($pgDriver) {
             -SetPropertyValue @(
                 "Server=localhost",
                 "Port=5432",
-                "Database=postgres",
-                "Username=postgres",
-                "Password=postgres"
+                "Database=cppdb",
+                "Username=cppdb",
+                "Password=cppdb_password"
             )
         Write-Success "Configured User DSN 'PostgreSQL35W' -> $pgDriver"
     }
