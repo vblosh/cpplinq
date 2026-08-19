@@ -19,6 +19,7 @@ option(CPPLINQ_ENABLE_SQLITE  "Enable SQLite backend"     ON)
 option(CPPLINQ_ENABLE_POSTGRES "Enable PostgreSQL backend (ODBC)" ON)
 option(CPPLINQ_ENABLE_MSSQL    "Enable Microsoft SQL Server backend" ON)
 option(CPPLINQ_ENABLE_MYSQL    "Enable MySQL / MariaDB backend" ON)
+option(CPPLINQ_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 
 # SQLite3: download amalgamation and build from source
 if(CPPLINQ_ENABLE_SQLITE)
@@ -52,4 +53,9 @@ endif()
 # Examples
 if(CPPLINQ_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# Benchmarks
+if(CPPLINQ_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()

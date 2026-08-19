@@ -44,6 +44,7 @@ Makefile
 Testing/
 *.log
 *.tlog
+benchmark_results*.json
 
 # IDE & Editor caches
 .idea/
