@@ -50,6 +50,22 @@ services:
       timeout: 5s
       retries: 10
 
+  oracle:
+    image: gvenzl/oracle-free:latest
+    container_name: cpplinq-oracle-test
+    restart: unless-stopped
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: cppdb_password
+      APP_USER: cppdb
+      APP_USER_PASSWORD: cppdb_password
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
   informix:
     image: icr.io/informix/informix-developer-database:latest
     container_name: cpplinq-informix-test
@@ -66,4 +82,5 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+
 

@@ -57,7 +57,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("All", "MSSQL", "PostgreSQL", "MySQL", "Informix", "SQLite")]
+    [ValidateSet("All", "MSSQL", "PostgreSQL", "MySQL", "Oracle", "Informix", "SQLite")]
     [string]$Database = "All",
 
     [ValidateSet("Auto", "Local", "Docker")]
@@ -75,6 +75,8 @@ param(
     [string]$PostgresConn = "",
 
     [string]$MysqlConn = "",
+
+    [string]$OracleConn = "",
 
     [string]$InformixConn = "",
 
@@ -247,6 +249,16 @@ $mysqlDriver = Find-OdbcDriver @(
     "MariaDB Unicode",
     "MariaDB ODBC 3.1 Driver",
     "MySQL ODBC 5.3 Unicode Driver"
+)
+
+$oracleDriver = Find-OdbcDriver @(
+    "Oracle in OraDB23Home1",
+    "Oracle in OraDB21Home1",
+    "Oracle in OraClient19Home1",
+    "Oracle in OraClient12Home1",
+    "Oracle in instantclient_23_7",
+    "Oracle in instantclient_19_8",
+    "Oracle ODBC Driver"
 )
 
 $informixDriver = Find-OdbcDriver @(
@@ -489,7 +501,71 @@ if ($Database -in @("All", "MySQL")) {
 }
 
 # -----------------------------------------------------------------------------
-# 5. Setup IBM Informix
+# 5. Setup Oracle
+# -----------------------------------------------------------------------------
+if ($Database -in @("All", "Oracle")) {
+    Write-Step "Setting up Oracle Database Source"
+
+    if ($OracleConn) {
+        $env:CPPLINQ_ORACLE_ODBC = $OracleConn
+        $env:CPPDB_ORACLE_ODBC = $OracleConn
+        Write-Success "Using custom Oracle connection string: $env:CPPLINQ_ORACLE_ODBC"
+    } else {
+        $driver = if ($oracleDriver) { $oracleDriver } else { "Oracle in OraDB23Home1" }
+        $oracleConfigured = $false
+
+        # Check local DSN or local port 1521 if mode is Local or Auto
+        if ($Mode -in @("Auto", "Local")) {
+            $existingDsn = Get-OdbcDsn -Name "OracleDSN" -ErrorAction SilentlyContinue
+            if ($existingDsn) {
+                $env:CPPLINQ_ORACLE_ODBC = "DSN=OracleDSN;"
+                $env:CPPDB_ORACLE_ODBC = $env:CPPLINQ_ORACLE_ODBC
+                Write-Success "Oracle configured using DSN: $env:CPPLINQ_ORACLE_ODBC"
+                $oracleConfigured = $true
+            } elseif (Test-PortOpen "localhost" 1521) {
+                Write-Info "Detected Oracle instance on port 1521."
+                $env:CPPLINQ_ORACLE_ODBC = "Driver={$driver};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"
+                $env:CPPDB_ORACLE_ODBC = $env:CPPLINQ_ORACLE_ODBC
+                Write-Success "Oracle service is ready. Connection: $env:CPPLINQ_ORACLE_ODBC"
+                $oracleConfigured = $true
+            }
+        }
+
+        # If not configured and mode is Docker or Auto fallback
+        if (-not $oracleConfigured -and $Mode -in @("Auto", "Docker")) {
+            if (Invoke-DockerComposeUp "oracle") {
+                Write-Info "Waiting for Oracle container on port 1521..."
+                $ready = $false
+                for ($i = 0; $i -lt 60; $i++) {
+                    if (Test-PortOpen "127.0.0.1" 1521) {
+                        $ready = $true
+                        break
+                    }
+                    Start-Sleep -Seconds 1
+                }
+
+                if ($ready) {
+                    Start-Sleep -Seconds 2
+                    $env:CPPLINQ_ORACLE_ODBC = "Driver={$driver};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"
+                    $env:CPPDB_ORACLE_ODBC = $env:CPPLINQ_ORACLE_ODBC
+                    Write-Success "Oracle Docker container is ready. Connection: $env:CPPLINQ_ORACLE_ODBC"
+                    $oracleConfigured = $true
+                } else {
+                    Write-Warn "Timed out waiting for Oracle container port 1521."
+                }
+            } else {
+                Write-Warn "Docker not found; could not spin up Oracle container."
+            }
+        }
+
+        if (-not $oracleConfigured) {
+            Write-Warn "No local or Docker Oracle service configured. Tests may be skipped."
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 6. Setup IBM Informix
 # -----------------------------------------------------------------------------
 if ($Database -in @("All", "Informix")) {
     Write-Step "Setting up IBM Informix Source"
@@ -604,6 +680,10 @@ if (-not $SkipBuild) {
     if ($Database -in @("All", "MySQL")) {
         $targets.Add("test_mysql_integration")
     }
+    if ($Database -in @("All", "Oracle")) {
+        $targets.Add("test_oracle_query_builder")
+        $targets.Add("test_oracle_integration")
+    }
     if ($Database -in @("All", "Informix")) {
         $targets.Add("test_informix_query_builder")
         $targets.Add("test_informix_integration")
@@ -619,6 +699,7 @@ if (-not $SkipBuild) {
             -DCPPLINQ_ENABLE_MSSQL=ON `
             -DCPPLINQ_ENABLE_POSTGRES=ON `
             -DCPPLINQ_ENABLE_MYSQL=ON `
+            -DCPPLINQ_ENABLE_ORACLE=ON `
             -DCPPLINQ_ENABLE_INFORMIX=ON
         if ($LASTEXITCODE -ne 0) {
             throw "CMake configuration failed."
@@ -713,6 +794,11 @@ try {
 
     if ($Database -in @("All", "MySQL")) {
         Run-SingleTest "test_mysql_integration" "MySQL / MariaDB Integration Tests"
+    }
+
+    if ($Database -in @("All", "Oracle")) {
+        Run-SingleTest "test_oracle_query_builder" "Oracle Query Builder Tests"
+        Run-SingleTest "test_oracle_integration" "Oracle Integration Tests"
     }
 
     if ($Database -in @("All", "Informix")) {

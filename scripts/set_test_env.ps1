@@ -66,6 +66,7 @@ param(
     [string]$PostgresLibpq = "host=localhost port=5432 dbname=cppdb user=cppdb password=cppdb_password",
     [string]$MssqlOdbc = "MSSQLLocalDB",
     [string]$MysqlOdbc = "MySQLDSN",
+    [string]$OracleOdbc = "OracleDSN",
     [string]$InformixOdbc = "InformixDSN",
     [string]$SqliteOdbc = "",
     [string]$PostgresBinPath = "C:\Program Files\PostgreSQL\18\",
@@ -104,6 +105,7 @@ $varNames = @(
     "CPPLINQ_POSTGRES_LIBPQ",
     "CPPLINQ_MSSQL_ODBC",
     "CPPLINQ_MYSQL_ODBC",
+    "CPPLINQ_ORACLE_ODBC",
     "CPPLINQ_INFORMIX_ODBC",
     "CPPLINQ_SQLITE_ODBC"
 )
@@ -182,6 +184,7 @@ $envMap = [ordered]@{
     "CPPLINQ_POSTGRES_LIBPQ" = $PostgresLibpq
     "CPPLINQ_MSSQL_ODBC"     = $MssqlOdbc
     "CPPLINQ_MYSQL_ODBC"     = $MysqlOdbc
+    "CPPLINQ_ORACLE_ODBC"    = $OracleOdbc
     "CPPLINQ_INFORMIX_ODBC"  = $InformixOdbc
 
     #perfomance tests require PostgreSQL, so we only set this if it's not empty

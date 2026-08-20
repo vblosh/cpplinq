@@ -186,6 +186,7 @@ using sqlserver = mssql;
 struct mysql {};
 using mariadb = mysql;
 struct informix {};
+struct oracle {};
 
 // Connection factory (specializations in driver .cpp files)
 template <typename Backend>

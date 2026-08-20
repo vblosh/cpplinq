@@ -16,25 +16,26 @@ SKIP_BUILD=false
 MSSQL_CONN=""
 POSTGRES_CONN=""
 MYSQL_CONN=""
+ORACLE_CONN=""
 INFORMIX_CONN=""
 SQLITE_CONN=""
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
-    echo ""
     echo "Options:"
-    echo "  -d, --database <all|mssql|postgres|mysql|informix|sqlite>  Which database integration tests to run (default: all)"
-    echo "  -b, --build-type <Release|Debug|RelWithDebInfo>             CMake build type (default: Release)"
-    echo "      --build-dir <dir>                                     Build directory (default: build or build-linux on WSL/Linux)"
-    echo "      --docker                                              Start test databases using docker-compose.integration.yml"
-    echo "      --stop-docker                                         Stop docker containers after test run"
-    echo "      --skip-build                                          Skip CMake configure and build"
-    echo "      --mssql-conn <conn_str>                               Override MSSQL connection string"
-    echo "      --postgres-conn <conn_str>                            Override PostgreSQL connection string"
-    echo "      --mysql-conn <conn_str>                               Override MySQL connection string"
-    echo "      --informix-conn <conn_str>                            Override Informix connection string"
-    echo "      --sqlite-conn <conn_str>                              Override SQLite connection string"
-    echo "  -h, --help                                                Show this help message"
+    echo "  -d, --database <all|mssql|postgres|mysql|oracle|informix|sqlite>  Which database integration tests to run (default: all)"
+    echo "  -b, --build-type <Release|Debug|RelWithDebInfo>                    CMake build type (default: Release)"
+    echo "      --build-dir <dir>                                            Build directory (default: build)"
+    echo "      --docker                                                     Start test databases using docker-compose.integration.yml"
+    echo "      --stop-docker                                                Stop docker containers after test run"
+    echo "      --skip-build                                                 Skip CMake configure and build"
+    echo "      --mssql-conn <conn_str>                                      Override MSSQL connection string"
+    echo "      --postgres-conn <conn_str>                                   Override PostgreSQL connection string"
+    echo "      --mysql-conn <conn_str>                                      Override MySQL connection string"
+    echo "      --oracle-conn <conn_str>                                     Override Oracle connection string"
+    echo "      --informix-conn <conn_str>                                   Override Informix connection string"
+    echo "      --sqlite-conn <conn_str>                                     Override SQLite connection string"
+    echo "  -h, --help                                                       Show this help message"
     exit 1
 }
 
@@ -49,6 +50,7 @@ while [[ $# -gt 0 ]]; do
         --mssql-conn) MSSQL_CONN="$2"; shift 2 ;;
         --postgres-conn) POSTGRES_CONN="$2"; shift 2 ;;
         --mysql-conn) MYSQL_CONN="$2"; shift 2 ;;
+        --oracle-conn) ORACLE_CONN="$2"; shift 2 ;;
         --informix-conn) INFORMIX_CONN="$2"; shift 2 ;;
         --sqlite-conn) SQLITE_CONN="$2"; shift 2 ;;
         -h|--help) usage ;;
@@ -60,7 +62,9 @@ done
 if [ "$BUILD_DIR_SPECIFIED" = false ]; then
     if [ -f "${PROJECT_ROOT}/build/CMakeCache.txt" ]; then
         # Check if the existing build directory is a Windows CMake cache or incompatible
-        if grep -q "CMAKE_HOST_SYSTEM_NAME:STRING=Windows" "${PROJECT_ROOT}/build/CMakeCache.txt" 2>/dev/null || grep -qi '[a-z]:/' "${PROJECT_ROOT}/build/CMakeCache.txt" 2>/dev/null; then
+        if grep -q "CMAKE_HOST_SYSTEM_NAME:STRING=Windows" "${PROJECT_ROOT}/build/CMakeCache.txt" 2>/dev/null || \
+           grep -qE '^# For build in directory: [A-Za-z]:[/\\]' "${PROJECT_ROOT}/build/CMakeCache.txt" 2>/dev/null || \
+           grep -qE '^[A-Za-z0-9_]+:[A-Za-z]+=([A-Za-z]:[/\\])' "${PROJECT_ROOT}/build/CMakeCache.txt" 2>/dev/null; then
             BUILD_DIR="${PROJECT_ROOT}/build-linux"
         else
             BUILD_DIR="${PROJECT_ROOT}/build"
@@ -73,6 +77,42 @@ else
     if [[ "$BUILD_DIR" != /* ]]; then
         BUILD_DIR="${PROJECT_ROOT}/${BUILD_DIR}"
     fi
+fi
+
+# Detect and configure local user-installed ODBC paths if available
+if [ -d "$HOME/.local/usr/bin" ]; then
+    case ":$PATH:" in
+        *":$HOME/.local/usr/bin:"*) ;;
+        *) export PATH="$HOME/.local/usr/bin:$HOME/.local/bin:$PATH" ;;
+    esac
+elif [ -d "$HOME/.local/bin" ]; then
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) export PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+fi
+
+ODBC_EXTRA_LIBS=()
+[ -d "$HOME/.local/usr/lib/x86_64-linux-gnu" ] && ODBC_EXTRA_LIBS+=("$HOME/.local/usr/lib/x86_64-linux-gnu")
+[ -d "$HOME/.local/opt/microsoft/msodbcsql18/lib64" ] && ODBC_EXTRA_LIBS+=("$HOME/.local/opt/microsoft/msodbcsql18/lib64")
+for d in "$HOME/.local/opt/oracle"/instantclient_* "$HOME/.local/lib"/instantclient_* /opt/oracle/instantclient_*; do
+    [ -d "$d" ] && ODBC_EXTRA_LIBS+=("$d") && break
+done
+if [ ${#ODBC_EXTRA_LIBS[@]} -gt 0 ]; then
+    ODBC_LIB_STR="$(IFS=:; echo "${ODBC_EXTRA_LIBS[*]}")"
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *":$ODBC_LIB_STR:"*) ;;
+        *) export LD_LIBRARY_PATH="${ODBC_LIB_STR}:${LD_LIBRARY_PATH:-}" ;;
+    esac
+fi
+
+if [ -f "$HOME/.local/etc/odbcinst.ini" ]; then
+    export ODBCSYSINI="${ODBCSYSINI:-$HOME/.local/etc}"
+    export ODBCINI="${ODBCINI:-$HOME/.local/etc/odbc.ini}"
+fi
+
+if [ -d "$HOME/.local/usr/lib/x86_64-linux-gnu/libmariadb3/plugin" ]; then
+    export MARIADB_PLUGIN_DIR="${MARIADB_PLUGIN_DIR:-$HOME/.local/usr/lib/x86_64-linux-gnu/libmariadb3/plugin}"
 fi
 
 # Function to detect installed ODBC driver from a list of candidates
@@ -111,6 +151,7 @@ fi
 PG_DRIVER="$(find_odbc_driver "PostgreSQL Unicode" "PostgreSQL ANSI" "PostgreSQL Unicode(x64)" "PostgreSQL ANSI(x64)" "PostgreSQL")"
 MSSQL_DRIVER="$(find_odbc_driver "ODBC Driver 18 for SQL Server" "ODBC Driver 17 for SQL Server" "FreeTDS")"
 MYSQL_DRIVER="$(find_odbc_driver "MariaDB Unicode" "MySQL ODBC 8.0 Unicode Driver" "MySQL ODBC 8.0 ANSI Driver" "MySQL ODBC 9.0 Unicode Driver" "MariaDB ODBC 3.2 Driver" "MariaDB ODBC 3.1 Driver" "MySQL")"
+ORACLE_DRIVER="$(find_odbc_driver "Oracle in OraDB23Home1" "Oracle in OraDB21Home1" "Oracle in OraClient19Home1" "Oracle in OraClient12Home1" "Oracle in instantclient_23_7" "Oracle ODBC Driver")"
 INFORMIX_DRIVER="$(find_odbc_driver "IBM INFORMIX ODBC DRIVER (64-bit)" "IBM INFORMIX ODBC DRIVER" "IBM INFORMIX 3.82 32 BIT")"
 SQLITE_DRIVER="$(find_odbc_driver "SQLite3" "SQLite" "SQLite3 ODBC Driver" "SQLite ODBC Driver")"
 
@@ -136,6 +177,13 @@ elif [ -z "${CPPLINQ_MYSQL_ODBC:-}" ]; then
 fi
 export CPPDB_MYSQL_ODBC="$CPPLINQ_MYSQL_ODBC"
 
+if [ -n "$ORACLE_CONN" ]; then
+    export CPPLINQ_ORACLE_ODBC="$ORACLE_CONN"
+elif [ -z "${CPPLINQ_ORACLE_ODBC:-}" ]; then
+    export CPPLINQ_ORACLE_ODBC="Driver={${ORACLE_DRIVER}};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"
+fi
+export CPPDB_ORACLE_ODBC="$CPPLINQ_ORACLE_ODBC"
+
 if [ -n "$INFORMIX_CONN" ]; then
     export CPPLINQ_INFORMIX_ODBC="$INFORMIX_CONN"
 elif [ -z "${CPPLINQ_INFORMIX_ODBC:-}" ]; then
@@ -154,6 +202,7 @@ echo "[INFO] Build Directory       = ${BUILD_DIR}"
 echo "[INFO] CPPLINQ_POSTGRES_ODBC = ${CPPLINQ_POSTGRES_ODBC}"
 echo "[INFO] CPPLINQ_MSSQL_ODBC    = ${CPPLINQ_MSSQL_ODBC}"
 echo "[INFO] CPPLINQ_MYSQL_ODBC    = ${CPPLINQ_MYSQL_ODBC}"
+echo "[INFO] CPPLINQ_ORACLE_ODBC   = ${CPPLINQ_ORACLE_ODBC}"
 echo "[INFO] CPPLINQ_INFORMIX_ODBC = ${CPPLINQ_INFORMIX_ODBC}"
 echo "[INFO] CPPLINQ_SQLITE_ODBC   = ${CPPLINQ_SQLITE_ODBC}"
 
@@ -164,13 +213,23 @@ if [ "$SKIP_BUILD" = false ]; then
 
     # Check for incompatible CMake cache
     if [ -f "${BUILD_DIR}/CMakeCache.txt" ]; then
-        if grep -q "CMAKE_HOST_SYSTEM_NAME:STRING=Windows" "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null || grep -qi '[a-z]:/' "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
+        if grep -q "CMAKE_HOST_SYSTEM_NAME:STRING=Windows" "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null || \
+           grep -qE '^# For build in directory: [A-Za-z]:[/\\]' "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null || \
+           grep -qE '^[A-Za-z0-9_]+:[A-Za-z]+=([A-Za-z]:[/\\])' "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
             echo "[WARN] Incompatible Windows CMake cache found in ${BUILD_DIR}. Cleaning cache..."
             rm -rf "${BUILD_DIR}/CMakeCache.txt" "${BUILD_DIR}/CMakeFiles"
         fi
     fi
 
     if [ ! -f "${BUILD_DIR}/CMakeCache.txt" ]; then
+        CMAKE_EXTRA_ARGS=()
+        if [ -d "$HOME/.local/usr/include" ] && [ -f "$HOME/.local/usr/lib/x86_64-linux-gnu/libodbc.so" ]; then
+            CMAKE_EXTRA_ARGS+=(
+                -DODBC_INCLUDE_DIR="$HOME/.local/usr/include"
+                -DODBC_LIBRARY="$HOME/.local/usr/lib/x86_64-linux-gnu/libodbc.so"
+            )
+        fi
+
         cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
             -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
             -DCPPLINQ_BUILD_TESTS=ON \
@@ -178,7 +237,9 @@ if [ "$SKIP_BUILD" = false ]; then
             -DCPPLINQ_ENABLE_MSSQL=ON \
             -DCPPLINQ_ENABLE_POSTGRES=ON \
             -DCPPLINQ_ENABLE_MYSQL=ON \
-            -DCPPLINQ_ENABLE_INFORMIX=ON
+            -DCPPLINQ_ENABLE_ORACLE=ON \
+            -DCPPLINQ_ENABLE_INFORMIX=ON \
+            "${CMAKE_EXTRA_ARGS[@]}"
     fi
 
     TARGET_ARGS=()
@@ -193,6 +254,9 @@ if [ "$SKIP_BUILD" = false ]; then
     fi
     if [[ "$DATABASE" == "all" || "$DATABASE" == "mysql" ]]; then
         TARGET_ARGS+=(--target test_mysql_integration)
+    fi
+    if [[ "$DATABASE" == "all" || "$DATABASE" == "oracle" ]]; then
+        TARGET_ARGS+=(--target test_oracle_query_builder --target test_oracle_integration)
     fi
     if [[ "$DATABASE" == "all" || "$DATABASE" == "informix" ]]; then
         TARGET_ARGS+=(--target test_informix_query_builder --target test_informix_integration)
@@ -290,6 +354,11 @@ fi
 
 if [[ "$DATABASE" == "all" || "$DATABASE" == "mysql" ]]; then
     run_single_test "test_mysql_integration" "MySQL / MariaDB Integration Tests"
+fi
+
+if [[ "$DATABASE" == "all" || "$DATABASE" == "oracle" ]]; then
+    run_single_test "test_oracle_query_builder" "Oracle Query Builder Tests"
+    run_single_test "test_oracle_integration" "Oracle Integration Tests"
 fi
 
 if [[ "$DATABASE" == "all" || "$DATABASE" == "informix" ]]; then

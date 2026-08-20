@@ -24,6 +24,7 @@ option(CPPLINQ_ENABLE_POSTGRES "Enable PostgreSQL backend (ODBC)" ON)
 option(CPPLINQ_ENABLE_MSSQL    "Enable Microsoft SQL Server backend" ON)
 option(CPPLINQ_ENABLE_MYSQL    "Enable MySQL / MariaDB backend" ON)
 option(CPPLINQ_ENABLE_INFORMIX "Enable IBM Informix backend (ODBC)" ON)
+option(CPPLINQ_ENABLE_ORACLE   "Enable Oracle Database backend (ODBC)" ON)
 option(CPPLINQ_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 
 # SQLite3: download amalgamation and build from source

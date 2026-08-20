@@ -161,10 +161,52 @@ if ($pgDriver) {
             )
         Write-Success "Configured User DSN 'PostgreSQL35W' -> $pgDriver"
     }
+# 4. Find best matching Oracle driver
+Write-Info "Checking Oracle ODBC drivers..."
+$oracleDriver = $null
+$oracleCandidates = @(
+    "Oracle in OraDB23Home1",
+    "Oracle in OraDB21Home1",
+    "Oracle in OraClient19Home1",
+    "Oracle in OraClient12Home1",
+    "Oracle in instantclient_23_7",
+    "Oracle in instantclient_19_8",
+    "Oracle ODBC Driver"
+)
+
+foreach ($c in $oracleCandidates) {
+    $found = $allDrivers | Where-Object { $_.Name -eq $c } | Select-Object -First 1
+    if ($found) {
+        $oracleDriver = $found.Name
+        break
+    }
+}
+
+if ($oracleDriver) {
+    Write-Success "Found Oracle ODBC Driver: $oracleDriver"
+    
+    # Configure OracleDSN DSN
+    $existingOracleDsn = Get-OdbcDsn -Name "OracleDSN" -ErrorAction SilentlyContinue
+    if ($existingOracleDsn -and -not $Force) {
+        Write-Info "DSN 'OracleDSN' already exists using driver '$($existingOracleDsn.DriverName)'."
+    } else {
+        if ($existingOracleDsn) {
+            Remove-OdbcDsn -Name "OracleDSN" -DsnType User -Platform "64-bit" -ErrorAction SilentlyContinue
+        }
+        
+        Add-OdbcDsn -Name "OracleDSN" -DriverName $oracleDriver -DsnType User -Platform "64-bit" `
+            -SetPropertyValue @(
+                "ServerName=//127.0.0.1:1521/FREEPDB1",
+                "UserID=cppdb",
+                "Password=cppdb_password"
+            )
+        Write-Success "Configured User DSN 'OracleDSN' -> $oracleDriver"
+    }
 } else {
-    Write-Warn "No PostgreSQL ODBC Driver found. Download 'psqlodbc' x64 installer from postgresql.org if needed."
+    Write-Warn "No Oracle ODBC Driver found."
 }
 
 Write-Info ""
 Write-Info "Configured ODBC DSNs:"
-Get-OdbcDsn -DsnType User | Where-Object { $_.Name -in @("MSSQLLocalDB", "PostgreSQL35W") } | Format-Table -Property Name, DriverName, Platform -AutoSize
+Get-OdbcDsn -DsnType User | Where-Object { $_.Name -in @("MSSQLLocalDB", "PostgreSQL35W", "OracleDSN") } | Format-Table -Property Name, DriverName, Platform -AutoSize
+

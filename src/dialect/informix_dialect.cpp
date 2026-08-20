@@ -70,7 +70,7 @@ std::string InformixDialect::output_clause(std::string_view /*column*/) const {
     return "";
 }
 
-std::string InformixDialect::last_insert_id_query() const {
+std::string InformixDialect::last_insert_id_query(std::string_view /*table_name*/, std::string_view /*pk_col*/) const {
     return "SELECT DBINFO('sqlca.sqlerrd1') FROM \"informix\".systables WHERE tabid = 1";
 }
 

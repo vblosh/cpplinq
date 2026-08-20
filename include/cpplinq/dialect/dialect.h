@@ -45,7 +45,9 @@ public:
     }
 
     // Query to retrieve last inserted auto-increment ID
-    virtual std::string last_insert_id_query() const {
+    virtual std::string last_insert_id_query(std::string_view table_name = "", std::string_view pk_col = "") const {
+        (void)table_name;
+        (void)pk_col;
         return "SELECT LAST_INSERT_ID()";
     }
 

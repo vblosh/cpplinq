@@ -1,18 +1,18 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
 
+#ifdef CPPLINQ_HAS_ORACLE
+
 namespace cpplinq {
 
-class InformixDialect : public ISqlDialect {
+class OracleDialect : public ISqlDialect {
 public:
-    ~InformixDialect() override = default;
+    ~OracleDialect() override = default;
 
     std::string quote_id(std::string_view id) const override;
     std::string placeholder(size_t index) const override;
     std::string limit_offset(std::optional<size_t> limit,
                              std::optional<size_t> offset) const override;
-    std::string select_prefix_limit_offset(std::optional<size_t> limit,
-                                          std::optional<size_t> offset) const override;
     std::string type_name(SqlType type) const override;
     std::string auto_increment_type() const override;
     std::string returning_clause(std::string_view column) const override;
@@ -40,3 +40,5 @@ public:
 };
 
 } // namespace cpplinq
+
+#endif // CPPLINQ_HAS_ORACLE

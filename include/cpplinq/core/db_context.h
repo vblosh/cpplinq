@@ -121,7 +121,7 @@ public:
             // Dialects without RETURNING/OUTPUT (e.g. MySQL)
             stmt->execute_non_query();
             try {
-                auto last_id_stmt = conn_->prepare(conn_->dialect().last_insert_id_query());
+                auto last_id_stmt = conn_->prepare(conn_->dialect().last_insert_id_query(table.name, pk_col));
                 auto r = last_id_stmt->execute_query();
                 if (r && r->next()) {
                     return r->get_int64(0);

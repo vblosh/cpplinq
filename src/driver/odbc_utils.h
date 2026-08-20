@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX)
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -32,16 +32,17 @@ namespace cpplinq::detail::odbc {
 
 inline std::string get_odbc_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
     if (handle == SQL_NULL_HANDLE) return "Unknown ODBC error";
-    SQLCHAR sqlstate[6] = {0};
+    SQLCHAR sqlstate[8] = {0};
     SQLINTEGER native_error = 0;
-    SQLCHAR message[1024] = {0};
+    SQLCHAR message[2048] = {0};
     SQLSMALLINT text_length = 0;
     std::string full_msg;
 
     SQLSMALLINT i = 1;
-    while (SQLGetDiagRecA(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length) == SQL_SUCCESS) {
+    SQLRETURN rc;
+    while (SQL_SUCCEEDED(rc = SQLGetDiagRec(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length))) {
         if (!full_msg.empty()) full_msg += "; ";
-        full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] " + std::string(reinterpret_cast<char*>(message));
+        full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] (native=" + std::to_string(native_error) + ") " + std::string(reinterpret_cast<char*>(message));
     }
     return full_msg.empty() ? "ODBC error (no diagnostic info)" : full_msg;
 }
