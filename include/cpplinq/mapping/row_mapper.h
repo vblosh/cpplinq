@@ -27,7 +27,10 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
     } else if constexpr (std::is_floating_point_v<U>) {
         return static_cast<U>(reader.get_double(col_idx));
     } else if constexpr (std::is_same_v<U, std::string>) {
-        return reader.get_string(col_idx);
+        std::string_view sv = reader.get_string_view(col_idx);
+        return std::string(sv);
+    } else if constexpr (std::is_same_v<U, std::string_view>) {
+        return reader.get_string_view(col_idx);
     } else if constexpr (std::is_same_v<U, std::wstring>) {
         return reader.get_wstring(col_idx);
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
@@ -53,9 +56,22 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
     }
 }
 
+template <typename TargetType>
+void assign_column_value(TargetType& target, IDataReader& reader, int col_idx) {
+    using U = std::remove_cvref_t<TargetType>;
+    if constexpr (std::is_same_v<U, std::string>) {
+        std::string_view sv = reader.get_string_view(col_idx);
+        target = sv;
+    } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
+        target = reader.get_blob(col_idx);
+    } else {
+        target = read_column_value<U>(reader, col_idx);
+    }
+}
+
 template <typename T>
 BoundValue convert_to_bound_value(const T& val) {
-    using U = std::remove_cvref_t<T>;
+    using U = std::decay_t<T>;
     if constexpr (std::is_same_v<U, bool>) {
         return BoundValue{val};
     } else if constexpr (std::is_integral_v<U>) {
@@ -70,13 +86,13 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, std::string_view>) {
         return BoundValue{std::string(val)};
-    } else if constexpr (std::is_same_v<U, const char*>) {
+    } else if constexpr (std::is_same_v<U, const char*> || std::is_same_v<U, char*>) {
         return BoundValue{std::string(val ? val : "")};
     } else if constexpr (std::is_same_v<U, std::wstring>) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, std::wstring_view>) {
         return BoundValue{std::wstring(val)};
-    } else if constexpr (std::is_same_v<U, const wchar_t*>) {
+    } else if constexpr (std::is_same_v<U, const wchar_t*> || std::is_same_v<U, wchar_t*>) {
         return BoundValue{std::wstring(val ? val : L"")};
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         return BoundValue{val};
@@ -154,7 +170,7 @@ private:
             entity.*(col.member_ptr) = read_column_value<InnerType>(reader, col_idx);
         } else {
             // Handle non-optional types
-            entity.*(col.member_ptr) = read_column_value<FieldType>(reader, col_idx);
+            assign_column_value(entity.*(col.member_ptr), reader, col_idx);
         }
     }
 };

@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: cpplinq-postgres-test
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cppdb
+      POSTGRES_PASSWORD: cppdb_password
+      POSTGRES_DB: cppdb
+    volumes:
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cppdb -d cppdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: cpplinq-mssql-test
+    restart: unless-stopped
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Password123!"
+      MSSQL_PID: "Developer"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C -Q 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.0
+    container_name: cpplinq-mysql-test
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: cppdb
+      MYSQL_USER: cppdb
+      MYSQL_PASSWORD: cppdb_password
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  oracle:
+    image: gvenzl/oracle-free:latest
+    container_name: cpplinq-oracle-test
+    restart: unless-stopped
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: cppdb_password
+      APP_USER: cppdb
+      APP_USER_PASSWORD: cppdb_password
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  informix:
+    image: icr.io/informix/informix-developer-database:latest
+    container_name: cpplinq-informix-test
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "9088:9088"
+    environment:
+      LICENSE: accept
+      DBSERVERNAME: informix
+      INFORMIX_PASSWORD: in4mix
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /home/informix/.bashrc 2>/dev/null || true; onstat - | grep -q On-Line'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+

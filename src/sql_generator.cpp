@@ -30,6 +30,11 @@ std::string SqlGenerator::visit(const expr::ExprNode& node, std::vector<BoundVal
             }
         } else if constexpr (std::is_same_v<T, expr::Literal>) {
             params.push_back(sql_value_to_bound_value(item.value));
+            slots_.emplace_back(sql_value_to_bound_value(item.value));
+            size_t idx = param_counter_++;
+            return dialect_.placeholder(idx);
+        } else if constexpr (std::is_same_v<T, expr::ParamPlaceholder>) {
+            slots_.emplace_back(item.index);
             size_t idx = param_counter_++;
             return dialect_.placeholder(idx);
         } else if constexpr (std::is_same_v<T, std::shared_ptr<expr::BinaryExpr>>) {
@@ -226,6 +231,7 @@ GeneratedSql SqlGenerator::generate_cte_select(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql;
     if (!ctes.empty()) {
@@ -251,7 +257,14 @@ GeneratedSql SqlGenerator::generate_cte_select(
         sql += " ";
     }
 
-    sql += is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    sql += "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     if (columns.empty()) {
         sql += "*";
     } else {
@@ -287,6 +300,7 @@ GeneratedSql SqlGenerator::generate_cte_select(
     sql += dialect_.limit_offset(limit, offset);
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -303,8 +317,16 @@ GeneratedSql SqlGenerator::generate_select(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
-    std::string sql = is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     if (columns.empty()) {
         sql += "*";
     } else {
@@ -353,6 +375,7 @@ GeneratedSql SqlGenerator::generate_select(
     sql += dialect_.limit_offset(limit, offset);
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -388,8 +411,16 @@ GeneratedSql SqlGenerator::generate_joined_select(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
-    std::string sql = is_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (is_distinct) {
+        sql += "DISTINCT ";
+    }
     bool first_col = true;
     for (const auto& col : primary_columns) {
         if (!first_col) sql += ", ";
@@ -435,6 +466,7 @@ GeneratedSql SqlGenerator::generate_joined_select(
     sql += dialect_.limit_offset(limit, offset);
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -450,8 +482,16 @@ GeneratedSql SqlGenerator::generate_set_operation(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
-    std::string sql = base_distinct ? "SELECT DISTINCT " : "SELECT ";
+    std::string sql = "SELECT ";
+    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
+    if (!prefix_limit.empty()) {
+        sql += prefix_limit;
+    }
+    if (base_distinct) {
+        sql += "DISTINCT ";
+    }
     for (size_t i = 0; i < base_columns.size(); ++i) {
         if (i > 0) sql += ", ";
         sql += dialect_.quote_id(base_columns[i]);
@@ -509,6 +549,7 @@ GeneratedSql SqlGenerator::generate_set_operation(
     sql += dialect_.limit_offset(limit, offset);
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -520,6 +561,7 @@ GeneratedSql SqlGenerator::generate_insert(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "INSERT INTO ";
     sql += dialect_.quote_id(table_name);
@@ -545,6 +587,7 @@ GeneratedSql SqlGenerator::generate_insert(
             size_t idx = param_counter_++;
             sql += dialect_.placeholder(idx);
             result.params.push_back(values[i]);
+            slots_.emplace_back(values[i]);
         }
         sql += ")";
     }
@@ -557,6 +600,7 @@ GeneratedSql SqlGenerator::generate_insert(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -569,9 +613,14 @@ GeneratedSql SqlGenerator::generate_upsert(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
-    result.sql = dialect_.generate_upsert(table_name, insert_columns, conflict_columns, update_columns);
+    result.sql = dialect_.generate_upsert(table_name, insert_columns, values, conflict_columns, update_columns);
     result.params = values;
+    for (const auto& v : values) {
+        slots_.emplace_back(v);
+    }
+    result.slots = slots_;
     return result;
 }
 
@@ -582,6 +631,7 @@ GeneratedSql SqlGenerator::generate_update(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "UPDATE ";
     sql += dialect_.quote_id(table_name);
@@ -604,6 +654,7 @@ GeneratedSql SqlGenerator::generate_update(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -614,6 +665,7 @@ GeneratedSql SqlGenerator::generate_update(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "UPDATE ";
     sql += dialect_.quote_id(table_name);
@@ -626,6 +678,7 @@ GeneratedSql SqlGenerator::generate_update(
         size_t idx = param_counter_++;
         sql += dialect_.placeholder(idx);
         result.params.push_back(assignments[i].second);
+        slots_.emplace_back(assignments[i].second);
     }
 
     if (where.has_value()) {
@@ -634,6 +687,7 @@ GeneratedSql SqlGenerator::generate_update(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -643,6 +697,7 @@ GeneratedSql SqlGenerator::generate_delete(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "DELETE FROM ";
     sql += dialect_.quote_id(table_name);
@@ -653,6 +708,7 @@ GeneratedSql SqlGenerator::generate_delete(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -662,6 +718,7 @@ GeneratedSql SqlGenerator::generate_create_table(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = dialect_.create_table_prefix(table_name);
     sql += " (";
@@ -691,6 +748,7 @@ GeneratedSql SqlGenerator::generate_create_table(
     sql += ")";
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -702,6 +760,7 @@ GeneratedSql SqlGenerator::generate_count(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "SELECT COUNT(";
     if (is_distinct && distinct_column.has_value()) {
@@ -718,6 +777,7 @@ GeneratedSql SqlGenerator::generate_count(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
@@ -729,6 +789,7 @@ GeneratedSql SqlGenerator::generate_aggregate(
 ) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
 
     std::string sql = "SELECT ";
     sql += std::string(function_name);
@@ -747,13 +808,16 @@ GeneratedSql SqlGenerator::generate_aggregate(
     }
 
     result.sql = std::move(sql);
+    result.slots = slots_;
     return result;
 }
 
 GeneratedSql SqlGenerator::generate_expression(const expr::ExprNode& node) const {
     GeneratedSql result;
     param_counter_ = 0;
+    slots_.clear();
     result.sql = visit(node, result.params);
+    result.slots = slots_;
     return result;
 }
 

@@ -12,7 +12,7 @@
 - 🔗 **Multi-Table Joins & Relationships**: Type-safe `INNER JOIN` and `LEFT JOIN` (2 and 3+ tables) with tuple/pair hydration and nullable `std::optional<T>` mapping.
 - 🧱 **Common Table Expressions (CTEs)**: Fluent `WITH cte AS (...) SELECT ...` queries via `.with_cte()`.
 - 🪟 **Window Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, and aggregate window functions (`SUM/AVG/COUNT OVER`) with `.over().partition_by(...).order_by(...)`.
-- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, SQL Server, and MySQL.
+- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix.
 - 🔍 **Subqueries & Predicates**: `EXISTS`, `NOT EXISTS`, `IN (subquery)`, `LIKE`, `BETWEEN`, `IN (list)`, and scalar subqueries.
 - 🔄 **Cross-Dialect UPSERT & Bulk Operations**: Atomic single and batch upserts (`insert_many`, `update_many`, `delete_many`, `upsert_many`, `truncate`) with driver-accelerated ODBC array parameter binding.
 - 🔀 **SQL Set Operations**: `union_with` (`UNION`), `union_all` (`UNION ALL`), `intersect` (`INTERSECT`), and `except_from` (`EXCEPT`).
@@ -21,8 +21,10 @@
 - 💾 **Multi-Database Support**:
   - **SQLite** (built-in amalgamation, in-memory & file databases)
   - **PostgreSQL** (native ODBC/libpq with parameter binding and `RETURNING`)
-  - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
   - **MySQL / MariaDB** (native ODBC driver with backtick quoting `` `table` ``, `ON DUPLICATE KEY UPDATE`, `LAST_INSERT_ID()`)
+  - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
+  - **Oracle Database** (native ODBC driver with double-quote identifiers `"table"`, ANSI `OFFSET...FETCH`, `MERGE INTO`, `NUMTODSINTERVAL`)
+  - **IBM Informix** (native ODBC driver with double-quote identifiers `"table"`, `SERIAL`, Informix `MERGE`, `UNITS DAY`)
 
 ---
 
@@ -38,7 +40,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
 - [**Connection Pooling Guide**](doc/connection_pool.md) — Thread-safe `ConnectionPool<Backend>`, RAII `PooledConnection` leasing, timeouts, metrics, and multi-threading.
 - [**Streaming & Cancellation Guide**](doc/streaming_and_cancellation.md) — Lazy C++20 range streaming, timeouts, cooperative `std::stop_token` cancellation, `statement::cancel()`, and driver capabilities.
-- [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, Microsoft SQL Server, MySQL, MariaDB, ODBC DSN setup, and CI workflows.
+- [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix, ODBC DSN setup, and CI workflows.
 
 ---
 
@@ -83,7 +85,7 @@ inline const auto orders_table = table<Order>(
 );
 
 int main() {
-    // 3. Connect to Database (SQLite / PostgreSQL / MSSQL)
+    // 3. Connect to Database (SQLite / PostgreSQL / MySQL / MSSQL / Oracle / Informix)
     auto db = cpplinq::connect<cpplinq::sqlite>(":memory:");
 
     db.ensure_table(users_table);
@@ -148,7 +150,7 @@ int main() {
 ### Build
 ```bash
 # Configure with all backends, tests, and examples
-cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_MYSQL=ON
+cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MYSQL=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_ORACLE=ON -DCPPLINQ_ENABLE_INFORMIX=ON
 
 # Build in Release mode
 cmake --build build --config Release --parallel
@@ -156,13 +158,15 @@ cmake --build build --config Release --parallel
 
 ### Run Test Suite
 ```bash
-# Run all 10 test suites
+# Run all test suites
 ctest --test-dir build --output-on-failure -C Release
 
-# Optional: Run against live PostgreSQL, Microsoft SQL Server, or MySQL instances
+# Optional: Run against live database instances
 $env:CPPLINQ_POSTGRES_ODBC="PostgreSQL35W"
-$env:CPPLINQ_MSSQL_ODBC="MSSQLLocalDB"
 $env:CPPLINQ_MYSQL_ODBC="MySQLDSN"
+$env:CPPLINQ_MSSQL_ODBC="MSSQLLocalDB"
+$env:CPPLINQ_ORACLE_ODBC="OracleDSN"
+$env:CPPLINQ_INFORMIX_ODBC="InformixDSN"
 ctest --test-dir build --output-on-failure -C Release
 ```
 
@@ -170,14 +174,18 @@ ctest --test-dir build --output-on-failure -C Release
 |---|---|
 | `test_expression` | AST construction, boolean operators, date/time AST, window function AST |
 | `test_query_builder` | Dialect-aware SQL generator (SELECT, INSERT, CTEs, Joins, Windows, UPSERT, Set Ops) |
+| `test_oracle_query_builder` | Oracle dialect-specific query generator and ANSI pagination unit tests |
+| `test_informix_query_builder` | IBM Informix dialect-specific query generator unit tests |
 | `test_row_mapper` | Struct and tuple row materialization, optional NULL handling |
 | `test_chunked_buffer` | Zero-reallocation chunk-based buffer, placement new, and exact-fit vector extraction |
 | `test_sqlite_integration` | End-to-end SQLite in-memory integration testing (CRUD, joins, CTEs, subqueries) |
 | `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
 | `test_streaming` | Single-pass C++20 input ranges, timeouts, and cooperative stop_token cancellation |
 | `test_postgres_integration` | Live PostgreSQL integration test suite |
-| `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
 | `test_mysql_integration` | Live MySQL / MariaDB integration test suite |
+| `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
+| `test_oracle_integration` | Live Oracle Database integration test suite |
+| `test_informix_integration` | Live IBM Informix integration test suite |
 
 ---
 

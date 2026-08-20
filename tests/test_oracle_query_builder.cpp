@@ -1,0 +1,115 @@
+#include <gtest/gtest.h>
+#include "cpplinq/core/sql_generator.h"
+#include "cpplinq/core/expression.h"
+#include "cpplinq/dialect/dialect.h"
+#include "dialect/oracle_dialect.h"
+
+using namespace cpplinq;
+
+TEST(OracleQueryBuilderTest, SelectWithQuotesAndPagination) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle age("users", "age");
+    ColumnHandle name("name");
+    auto where_expr = (age > 21) && (name == "Alice");
+
+    std::vector<std::pair<ExprNode, SortDir>> order_by = {
+        {age.ref, SortDir::Desc},
+        {name.ref, SortDir::Asc}
+    };
+
+    // Limit and offset
+    auto result = gen.generate_select("users", {"id", "name", "age"}, where_expr.node, order_by, 10, 20);
+    EXPECT_EQ(result.sql, "SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE ((\"users\".\"age\" > ?) AND (\"name\" = ?)) ORDER BY \"users\".\"age\" DESC, \"name\" ASC OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY");
+    ASSERT_EQ(result.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(result.params[0]), 21);
+    EXPECT_EQ(std::get<std::string>(result.params[1]), "Alice");
+
+    // Limit only
+    auto res_limit = gen.generate_select("users", {"id"}, std::nullopt, order_by, 5, std::nullopt);
+    EXPECT_EQ(res_limit.sql, "SELECT \"id\" FROM \"users\" ORDER BY \"users\".\"age\" DESC, \"name\" ASC OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY");
+
+    // Offset only
+    auto res_offset = gen.generate_select("users", {"id"}, std::nullopt, order_by, std::nullopt, 15);
+    EXPECT_EQ(res_offset.sql, "SELECT \"id\" FROM \"users\" ORDER BY \"users\".\"age\" DESC, \"name\" ASC OFFSET 15 ROWS");
+}
+
+TEST(OracleQueryBuilderTest, UpsertMergeStatement) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name", "email", "age"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice"), std::string("alice@test.com"), int64_t(30)};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {"name", "email", "age"};
+
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"name\", ? AS \"email\", ? AS \"age\" FROM DUAL) source ON (target.\"id\" = source.\"id\") WHEN MATCHED THEN UPDATE SET target.\"name\" = source.\"name\", target.\"email\" = source.\"email\", target.\"age\" = source.\"age\" WHEN NOT MATCHED THEN INSERT (\"id\", \"name\", \"email\", \"age\") VALUES (source.\"id\", source.\"name\", source.\"email\", source.\"age\")");
+    EXPECT_EQ(result.params.size(), 4);
+}
+
+TEST(OracleQueryBuilderTest, DateFunctions) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle created_at("events", "created_at");
+
+    auto year_expr = created_at.year();
+    auto year_res = gen.generate_expression(year_expr.node);
+    EXPECT_EQ(year_res.sql, "EXTRACT(YEAR FROM TO_TIMESTAMP(SUBSTR(\"events\".\"created_at\", 1, 19), 'YYYY-MM-DD HH24:MI:SS'))");
+
+    auto month_expr = created_at.month();
+    auto month_res = gen.generate_expression(month_expr.node);
+    EXPECT_EQ(month_res.sql, "EXTRACT(MONTH FROM TO_TIMESTAMP(SUBSTR(\"events\".\"created_at\", 1, 19), 'YYYY-MM-DD HH24:MI:SS'))");
+
+    auto day_expr = created_at.day();
+    auto day_res = gen.generate_expression(day_expr.node);
+    EXPECT_EQ(day_res.sql, "EXTRACT(DAY FROM TO_TIMESTAMP(SUBSTR(\"events\".\"created_at\", 1, 19), 'YYYY-MM-DD HH24:MI:SS'))");
+
+    auto add_days_expr = created_at.add_days(7);
+    auto add_days_res = gen.generate_expression(add_days_expr.node);
+    EXPECT_EQ(add_days_res.sql, "(TO_TIMESTAMP(SUBSTR(\"events\".\"created_at\", 1, 19), 'YYYY-MM-DD HH24:MI:SS') + NUMTODSINTERVAL(?, 'DAY'))");
+    ASSERT_EQ(add_days_res.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(add_days_res.params[0]), 7);
+
+    auto now_res = gen.generate_expression(current_timestamp_val().node);
+    EXPECT_EQ(now_res.sql, "CURRENT_TIMESTAMP");
+
+    auto today_res = gen.generate_expression(current_date_val().node);
+    EXPECT_EQ(today_res.sql, "CURRENT_DATE");
+}
+
+TEST(OracleQueryBuilderTest, CreateTable) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<ColumnInfo> cols = {
+        {"id", SqlType::Integer, true, true, false, false, false},
+        {"name", SqlType::Text, false, false, true, false, false},
+        {"email", SqlType::Text, false, false, false, false, true},
+        {"active", SqlType::Boolean, false, false, true, false, false},
+        {"recorded_at", SqlType::Timestamp, false, false, false, false, false},
+        {"price", SqlType::Decimal, false, false, false, false, false},
+        {"guid_col", SqlType::Guid, false, false, false, false, false}
+    };
+
+    auto result = gen.generate_create_table("users", cols);
+    EXPECT_EQ(result.sql, "CREATE TABLE IF NOT EXISTS \"users\" (\"id\" NUMBER GENERATED BY DEFAULT ON NULL AS IDENTITY PRIMARY KEY, \"name\" VARCHAR2(255) NOT NULL, \"email\" VARCHAR2(255) UNIQUE, \"active\" NUMBER(1) NOT NULL, \"recorded_at\" TIMESTAMP, \"price\" NUMBER(28, 10), \"guid_col\" VARCHAR2(36))");
+    EXPECT_TRUE(result.params.empty());
+}
+
+TEST(OracleQueryBuilderTest, WindowAndCteGeneration) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    // CTE
+    ColumnHandle age("age");
+    SubqueryExpr sub("users", {"id", "name", "age"}, std::make_shared<expr::ExprNode>((age >= 18).node), false);
+    CteClause cte{"active_users", sub, false};
+    auto cte_res = gen.generate_cte_select({cte}, "active_users", {"id", "name"}, std::nullopt);
+    EXPECT_EQ(cte_res.sql, "WITH \"active_users\" AS (SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE (\"age\" >= ?)) SELECT \"id\", \"name\" FROM \"active_users\"");
+    ASSERT_EQ(cte_res.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(cte_res.params[0]), 18);
+}
+

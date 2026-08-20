@@ -3,7 +3,7 @@ set(CPPLINQ_SOURCES
     driver/connection.cpp
 )
 
-if(CPPLINQ_ENABLE_POSTGRES OR CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL)
+if(CPPLINQ_ENABLE_POSTGRES OR CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL OR CPPLINQ_ENABLE_INFORMIX OR CPPLINQ_ENABLE_ORACLE)
     list(APPEND CPPLINQ_SOURCES
         driver/odbc_connection.cpp
     )
@@ -34,6 +34,20 @@ if(CPPLINQ_ENABLE_MYSQL)
     list(APPEND CPPLINQ_SOURCES
         dialect/mysql_dialect.cpp
         driver/mysql_connection.cpp
+    )
+endif()
+
+if(CPPLINQ_ENABLE_INFORMIX)
+    list(APPEND CPPLINQ_SOURCES
+        dialect/informix_dialect.cpp
+        driver/informix_connection.cpp
+    )
+endif()
+
+if(CPPLINQ_ENABLE_ORACLE)
+    list(APPEND CPPLINQ_SOURCES
+        dialect/oracle_dialect.cpp
+        driver/oracle_connection.cpp
     )
 endif()
 
@@ -75,4 +89,24 @@ if(CPPLINQ_ENABLE_MYSQL)
         target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
     endif()
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_MYSQL=1)
+endif()
+
+if(CPPLINQ_ENABLE_INFORMIX)
+    if(WIN32)
+        target_link_libraries(cpplinq PUBLIC odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
+    endif()
+    target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_INFORMIX=1)
+endif()
+
+if(CPPLINQ_ENABLE_ORACLE)
+    if(WIN32)
+        target_link_libraries(cpplinq PUBLIC odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
+    endif()
+    target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_ORACLE=1)
 endif()

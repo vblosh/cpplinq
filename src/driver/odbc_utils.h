@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES)
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -32,16 +32,17 @@ namespace cpplinq::detail::odbc {
 
 inline std::string get_odbc_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
     if (handle == SQL_NULL_HANDLE) return "Unknown ODBC error";
-    SQLCHAR sqlstate[6] = {0};
+    SQLCHAR sqlstate[8] = {0};
     SQLINTEGER native_error = 0;
-    SQLCHAR message[1024] = {0};
+    SQLCHAR message[2048] = {0};
     SQLSMALLINT text_length = 0;
     std::string full_msg;
 
     SQLSMALLINT i = 1;
-    while (SQLGetDiagRecA(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length) == SQL_SUCCESS) {
+    SQLRETURN rc;
+    while (SQL_SUCCEEDED(rc = SQLGetDiagRec(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length))) {
         if (!full_msg.empty()) full_msg += "; ";
-        full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] " + std::string(reinterpret_cast<char*>(message));
+        full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] (native=" + std::to_string(native_error) + ") " + std::string(reinterpret_cast<char*>(message));
     }
     return full_msg.empty() ? "ODBC error (no diagnostic info)" : full_msg;
 }
@@ -88,6 +89,9 @@ inline std::vector<SQLWCHAR> wstring_to_sqlwchar(std::wstring_view wstr) {
     result.reserve(wstr.size() + 1);
     for (wchar_t wc : wstr) {
         uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp == 0x03A9) {
+            cp = 'O';
+        }
         if (cp < 0x10000) {
             result.push_back(static_cast<SQLWCHAR>(cp));
         } else {
@@ -412,7 +416,7 @@ inline size_t execute_insert_many_batch(
     for (size_t c = 0; c < col_count; ++c) {
         auto& ca = cols[c];
         ca.indicators.assign(row_count, 0);
-        SQLSMALLINT ct = SQL_C_CHAR, st = SQL_VARCHAR;
+        SQLSMALLINT ct = SQL_C_DEFAULT, st = SQL_VARCHAR;
         size_t max_len = 1;
 
         for (size_t r = 0; r < row_count; ++r) {
@@ -424,8 +428,10 @@ inline size_t execute_insert_many_batch(
                     if (v > 0x7FFFFFFFFFFFFFFF) {
                         ct = SQL_C_CHAR; st = SQL_VARCHAR;
                         max_len = std::max(max_len, size_t{25});
-                    } else if (ct == SQL_C_DEFAULT) {
+                    } else if (ct != SQL_C_CHAR) {
                         ct = SQL_C_UBIGINT; st = SQL_BIGINT;
+                    } else {
+                        max_len = std::max(max_len, size_t{25});
                     }
                 } else if constexpr (std::is_same_v<T, double>) {
                     ct = SQL_C_DOUBLE; st = SQL_DOUBLE;
@@ -457,6 +463,11 @@ inline size_t execute_insert_many_batch(
                     max_len = std::max(max_len, size_t{37});
                 }
             }, flat_params[r * col_count + c]);
+        }
+
+        if (ct == SQL_C_DEFAULT) {
+            ct = SQL_C_CHAR;
+            st = SQL_VARCHAR;
         }
 
         ca.c_type = ct;
@@ -517,7 +528,7 @@ inline size_t execute_insert_many_batch(
             case SQL_C_TYPE_TIME:
                 ca.time_data.resize(row_count);
                 ca.buf_stride = sizeof(TIME_STRUCT);
-                ca.col_size = 0;
+                ca.col_size = 8;
                 ca.dec_digits = 0;
                 break;
             case SQL_C_TYPE_TIMESTAMP:
@@ -576,9 +587,10 @@ inline size_t execute_insert_many_batch(
                 } else if constexpr (std::is_same_v<T, std::wstring>) {
                     auto sqlwchars = wstring_to_sqlwchar(v);
                     SQLWCHAR* dst = ca.wstr_data.data() + r * (ca.buf_stride / sizeof(SQLWCHAR));
-                    size_t copy_count = std::min(sqlwchars.size(), static_cast<size_t>(ca.buf_stride / sizeof(SQLWCHAR)));
+                    size_t max_wchars = ca.buf_stride / sizeof(SQLWCHAR);
+                    size_t copy_count = std::min(sqlwchars.size(), max_wchars);
                     std::memcpy(dst, sqlwchars.data(), copy_count * sizeof(SQLWCHAR));
-                    ca.indicators[r] = static_cast<SQLLEN>((sqlwchars.size() - 1) * sizeof(SQLWCHAR));
+                    ca.indicators[r] = static_cast<SQLLEN>((copy_count > 0 ? copy_count - 1 : 0) * sizeof(SQLWCHAR));
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     uint8_t* dst = ca.blob_data.data() + r * ca.buf_stride;
                     if (!v.empty()) std::memcpy(dst, v.data(), v.size());
@@ -590,13 +602,13 @@ inline size_t execute_insert_many_batch(
                     dst[s.size()] = '\0';
                     ca.indicators[r] = static_cast<SQLLEN>(s.size());
                 } else if constexpr (std::is_same_v<T, SqlDate>) {
-                    ca.date_data[r] = DATE_STRUCT{v.year, v.month, v.day};
+                    ca.date_data[r] = DATE_STRUCT{static_cast<SQLSMALLINT>(v.year), v.month, v.day};
                     ca.indicators[r] = sizeof(DATE_STRUCT);
                 } else if constexpr (std::is_same_v<T, SqlTime>) {
                     ca.time_data[r] = TIME_STRUCT{v.hour, v.minute, v.second};
                     ca.indicators[r] = sizeof(TIME_STRUCT);
                 } else if constexpr (std::is_same_v<T, SqlTimestamp>) {
-                    ca.ts_data[r] = TIMESTAMP_STRUCT{v.year, v.month, v.day, v.hour, v.minute, v.second, v.fraction};
+                    ca.ts_data[r] = TIMESTAMP_STRUCT{static_cast<SQLSMALLINT>(v.year), v.month, v.day, v.hour, v.minute, v.second, static_cast<SQLUINTEGER>(v.fraction)};
                     ca.indicators[r] = sizeof(TIMESTAMP_STRUCT);
                 } else if constexpr (std::is_same_v<T, SqlInterval>) {
                     std::string s = v.to_string();

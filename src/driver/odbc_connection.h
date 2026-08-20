@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES)
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -36,6 +36,7 @@ public:
     uint64_t get_uint64(int col) const override;
     double get_double(int col) const override;
     std::string get_string(int col) const override;
+    std::string_view get_string_view(int col) const override;
     std::wstring get_wstring(int col) const override;
     bool get_bool(int col) const override;
     std::vector<uint8_t> get_blob(int col) const override;
@@ -45,31 +46,43 @@ public:
     SqlTimestamp get_timestamp(int col) const override;
     SqlInterval get_interval(int col) const override;
     SqlGuid get_guid(int col) const override;
+    BoundValue get_value(int col) const override;
 
 private:
-    struct CachedCol {
-        bool is_null = true;
-        int64_t int_val = 0;
-        uint64_t uint_val = 0;
-        double double_val = 0.0;
-        std::string str_val;
-        std::wstring wstr_val;
-        bool bool_val = false;
-        std::vector<uint8_t> blob_val;
-        SqlNumeric numeric_val;
-        SqlDate date_val;
-        SqlTime time_val;
-        SqlTimestamp timestamp_val;
-        SqlInterval interval_val;
-        SqlGuid guid_val;
+    struct BoundCol {
+        SQLSMALLINT data_type = 0;
+        SQLSMALLINT c_type = 0;
+        SQLULEN col_size = 0;
+        SQLSMALLINT dec_digits = 0;
+        SQLSMALLINT nullable = 0;
+        SQLLEN ind = SQL_NULL_DATA;
+
+        union {
+            int64_t int_val = 0;
+            uint64_t uint_val;
+            double double_val;
+            unsigned char bool_val;
+            DATE_STRUCT date_val;
+            TIME_STRUCT time_val;
+            TIMESTAMP_STRUCT timestamp_val;
+            SQL_INTERVAL_STRUCT interval_val;
+            SQLGUID guid_val;
+        };
+
+        std::vector<uint8_t> buffer;
+        mutable std::string str_cache;
+        mutable std::wstring wstr_cache;
+
+        BoundCol() : int_val(0) {}
     };
 
-    void fetch_row_cache();
+    void init_bound_columns();
+    void ensure_str(const BoundCol& c) const;
 
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     bool owns_stmt_ = false;
     SQLSMALLINT col_count_ = 0;
-    std::vector<CachedCol> row_cache_;
+    std::vector<BoundCol> bound_cols_;
 };
 
 class OdbcPreparedStatement : public IPreparedStatement {
@@ -118,6 +131,8 @@ public:
 
     std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override;
     void execute(std::string_view sql) override;
+    std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql) override;
+    size_t execute_non_query_direct(std::string_view sql) override;
 
     void begin_transaction() override;
     void commit() override;
@@ -144,4 +159,4 @@ protected:
 
 } // namespace cpplinq
 
-#endif // defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES)
+#endif // defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)

@@ -27,7 +27,10 @@ struct RowRecord {
     int64_t get_int64(size_t col) const {
         if (col >= values.size()) return 0;
         if (auto* v = std::get_if<int64_t>(&values[col])) return *v;
+        if (auto* v = std::get_if<uint64_t>(&values[col])) return static_cast<int64_t>(*v);
         if (auto* v = std::get_if<double>(&values[col])) return static_cast<int64_t>(*v);
+        if (auto* v = std::get_if<bool>(&values[col])) return *v ? 1 : 0;
+        if (auto* v = std::get_if<SqlNumeric>(&values[col])) return v->to_int64();
         if (auto* v = std::get_if<std::string>(&values[col])) {
             try { return std::stoll(*v); } catch (...) {}
         }
@@ -38,6 +41,8 @@ struct RowRecord {
         if (col >= values.size()) return 0.0;
         if (auto* v = std::get_if<double>(&values[col])) return *v;
         if (auto* v = std::get_if<int64_t>(&values[col])) return static_cast<double>(*v);
+        if (auto* v = std::get_if<uint64_t>(&values[col])) return static_cast<double>(*v);
+        if (auto* v = std::get_if<SqlNumeric>(&values[col])) return v->to_double();
         if (auto* v = std::get_if<std::string>(&values[col])) {
             try { return std::stod(*v); } catch (...) {}
         }
@@ -48,8 +53,16 @@ struct RowRecord {
         if (col >= values.size()) return "";
         if (auto* v = std::get_if<std::string>(&values[col])) return *v;
         if (auto* v = std::get_if<int64_t>(&values[col])) return std::to_string(*v);
+        if (auto* v = std::get_if<uint64_t>(&values[col])) return std::to_string(*v);
         if (auto* v = std::get_if<double>(&values[col])) return std::to_string(*v);
         if (auto* v = std::get_if<bool>(&values[col])) return *v ? "true" : "false";
+        if (auto* v = std::get_if<std::wstring>(&values[col])) return wstring_to_utf8(*v);
+        if (auto* v = std::get_if<SqlNumeric>(&values[col])) return v->to_string();
+        if (auto* v = std::get_if<SqlDate>(&values[col])) return v->to_string();
+        if (auto* v = std::get_if<SqlTime>(&values[col])) return v->to_string();
+        if (auto* v = std::get_if<SqlTimestamp>(&values[col])) return v->to_string(v->fraction > 0);
+        if (auto* v = std::get_if<SqlInterval>(&values[col])) return v->to_string();
+        if (auto* v = std::get_if<SqlGuid>(&values[col])) return v->to_string();
         return "";
     }
 
@@ -57,6 +70,9 @@ struct RowRecord {
         if (col >= values.size()) return false;
         if (auto* v = std::get_if<bool>(&values[col])) return *v;
         if (auto* v = std::get_if<int64_t>(&values[col])) return *v != 0;
+        if (auto* v = std::get_if<uint64_t>(&values[col])) return *v != 0;
+        if (auto* v = std::get_if<double>(&values[col])) return *v != 0.0;
+        if (auto* v = std::get_if<SqlNumeric>(&values[col])) return v->to_int64() != 0;
         if (auto* v = std::get_if<std::string>(&values[col])) {
             return !v->empty() && *v != "0" && *v != "false";
         }
@@ -92,7 +108,7 @@ public:
     RowStream& operator=(const RowStream&) = delete;
 
     RowStream(RowStream&& other) noexcept = default;
-    RowStream& operator=(RowStream&& other) noexcept = default;
+    RowStream& operator=(RowStream&& other) noexcept = delete;
 
     ~RowStream() = default;
 
@@ -174,7 +190,7 @@ public:
                 if (stream_->reader_->is_null(i)) {
                     current_row_.values.emplace_back(std::monostate{});
                 } else {
-                    current_row_.values.emplace_back(stream_->reader_->get_string(i));
+                    current_row_.values.emplace_back(stream_->reader_->get_value(i));
                 }
             }
         }

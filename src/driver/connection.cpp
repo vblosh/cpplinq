@@ -3,6 +3,16 @@
 
 namespace cpplinq {
 
+std::unique_ptr<IDataReader> IConnection::execute_query_direct(std::string_view sql) {
+    auto stmt = prepare(sql);
+    return stmt->execute_query();
+}
+
+size_t IConnection::execute_non_query_direct(std::string_view sql) {
+    auto stmt = prepare(sql);
+    return stmt->execute_non_query();
+}
+
 RowStream IConnection::stream(
     std::string_view sql,
     const std::vector<BoundValue>& params,

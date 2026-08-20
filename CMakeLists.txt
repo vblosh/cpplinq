@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(MSVC)
+    add_compile_options(/EHsc /utf-8)
+endif()
+
 include(FetchContent)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -19,6 +23,9 @@ option(CPPLINQ_ENABLE_SQLITE  "Enable SQLite backend"     ON)
 option(CPPLINQ_ENABLE_POSTGRES "Enable PostgreSQL backend (ODBC)" ON)
 option(CPPLINQ_ENABLE_MSSQL    "Enable Microsoft SQL Server backend" ON)
 option(CPPLINQ_ENABLE_MYSQL    "Enable MySQL / MariaDB backend" ON)
+option(CPPLINQ_ENABLE_INFORMIX "Enable IBM Informix backend (ODBC)" ON)
+option(CPPLINQ_ENABLE_ORACLE   "Enable Oracle Database backend (ODBC)" ON)
+option(CPPLINQ_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 
 # SQLite3: download amalgamation and build from source
 if(CPPLINQ_ENABLE_SQLITE)
@@ -52,4 +59,9 @@ endif()
 # Examples
 if(CPPLINQ_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# Benchmarks
+if(CPPLINQ_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()

@@ -14,24 +14,6 @@
 
 namespace cpplinq {
 
-// Type-erased bound parameter
-using BoundValue = std::variant<
-    std::monostate,           // NULL
-    int64_t,
-    uint64_t,
-    double,
-    std::string,
-    std::wstring,
-    bool,
-    std::vector<uint8_t>,     // BLOB
-    SqlNumeric,
-    SqlDate,
-    SqlTime,
-    SqlTimestamp,
-    SqlInterval,
-    SqlGuid
->;
-
 // Database error
 class DbException : public std::runtime_error {
 public:
@@ -102,6 +84,9 @@ public:
     virtual uint64_t     get_uint64(int col) const = 0;
     virtual double       get_double(int col) const = 0;
     virtual std::string  get_string(int col) const = 0;
+    virtual std::string_view get_string_view(int /*col*/) const {
+        return {};
+    }
     virtual std::wstring get_wstring(int col) const = 0;
     virtual bool         get_bool(int col) const = 0;
     virtual std::vector<uint8_t> get_blob(int col) const = 0;
@@ -111,6 +96,10 @@ public:
     virtual SqlTimestamp get_timestamp(int col) const = 0;
     virtual SqlInterval  get_interval(int col) const = 0;
     virtual SqlGuid      get_guid(int col) const = 0;
+    virtual BoundValue   get_value(int col) const {
+        if (is_null(col)) return std::monostate{};
+        return get_string(col);
+    }
 };
 
 // Prepared statement
@@ -142,6 +131,10 @@ public:
 
     virtual std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) = 0;
     virtual void execute(std::string_view sql) = 0;  // direct exec, no results
+
+    // Direct execution fast path for parameterless queries
+    virtual std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql);
+    virtual size_t execute_non_query_direct(std::string_view sql);
 
     virtual void begin_transaction() = 0;
     virtual void commit() = 0;
@@ -192,6 +185,8 @@ struct mssql {};
 using sqlserver = mssql;
 struct mysql {};
 using mariadb = mysql;
+struct informix {};
+struct oracle {};
 
 // Connection factory (specializations in driver .cpp files)
 template <typename Backend>

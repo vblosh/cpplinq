@@ -21,6 +21,14 @@ public:
     virtual std::string limit_offset(std::optional<size_t> limit,
                                      std::optional<size_t> offset) const = 0;
 
+    // SELECT prefix LIMIT/OFFSET (e.g. SKIP offset FIRST limit in Informix)
+    virtual std::string select_prefix_limit_offset(std::optional<size_t> limit,
+                                                  std::optional<size_t> offset) const {
+        (void)limit;
+        (void)offset;
+        return "";
+    }
+
     // SQL type name for a given SqlType
     virtual std::string type_name(SqlType type) const = 0;
 
@@ -34,6 +42,13 @@ public:
     virtual std::string output_clause(std::string_view column) const {
         (void)column;
         return "";
+    }
+
+    // Query to retrieve last inserted auto-increment ID
+    virtual std::string last_insert_id_query(std::string_view table_name = "", std::string_view pk_col = "") const {
+        (void)table_name;
+        (void)pk_col;
+        return "SELECT LAST_INSERT_ID()";
     }
 
     // CREATE TABLE prefix (SQLite/PG vs MSSQL IF OBJECT_ID)
@@ -57,6 +72,17 @@ public:
     }
 
     // UPSERT statement generation
+    virtual std::string generate_upsert(
+        std::string_view table_name,
+        const std::vector<std::string>& insert_columns,
+        const std::vector<BoundValue>& values,
+        const std::vector<std::string>& conflict_columns,
+        const std::vector<std::string>& update_columns
+    ) const {
+        (void)values;
+        return generate_upsert(table_name, insert_columns, conflict_columns, update_columns);
+    }
+
     virtual std::string generate_upsert(
         std::string_view table_name,
         const std::vector<std::string>& insert_columns,

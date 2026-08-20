@@ -3,6 +3,9 @@ build/
 build*/
 out/
 bin/
+**/bin/
+obj/
+**/obj/
 lib/
 _deps/
 
@@ -44,11 +47,12 @@ Makefile
 Testing/
 *.log
 *.tlog
+benchmark_results*.json
 
 # IDE & Editor caches
 .idea/
 .vscode/
+.agents/
 *.swp
 *~
 .DS_Store
-scripts/set_odbc_env.ps1

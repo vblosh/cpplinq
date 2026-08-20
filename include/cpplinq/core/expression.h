@@ -117,6 +117,16 @@ struct Literal {
     Literal(SqlValue val) : value(std::move(val)) {}
 };
 
+// Parameter placeholder node for prepared queries
+struct ParamPlaceholder {
+    size_t index = 0;
+
+    ParamPlaceholder() = default;
+    explicit ParamPlaceholder(size_t idx) : index(idx) {}
+
+    bool operator==(const ParamPlaceholder& other) const = default;
+};
+
 struct CurrentTimestampExpr {};
 struct CurrentDateExpr {};
 
@@ -124,6 +134,7 @@ struct CurrentDateExpr {};
 using ExprNode = std::variant<
     ColumnRef,
     Literal,
+    ParamPlaceholder,
     std::shared_ptr<BinaryExpr>,
     std::shared_ptr<LogicExpr>,
     std::shared_ptr<UnaryExpr>,
@@ -317,6 +328,7 @@ public:
     Expr(ExprNode n) : node(std::move(n)) {}
     Expr(ColumnRef ref) : node(std::move(ref)) {}
     Expr(Literal lit) : node(std::move(lit)) {}
+    Expr(ParamPlaceholder param) : node(std::move(param)) {}
 
     // Implicit constructors from standard C++ types
     Expr(int val) : node(Literal{SqlValue(static_cast<int64_t>(val))}) {}
@@ -806,6 +818,16 @@ inline WindowBuilder count_over(const Expr& e = 1) {
     return WindowBuilder(WindowFunctionType::Count, e.node);
 }
 
+template <typename T = void>
+inline Expr param(size_t index) {
+    return Expr(ParamPlaceholder{index});
+}
+
+template <typename T = void>
+inline Expr placeholder(size_t index) {
+    return Expr(ParamPlaceholder{index});
+}
+
 } // namespace expr
 
 // Export types to namespace cpplinq
@@ -816,6 +838,7 @@ using expr::UnaryOp;
 using expr::SortDir;
 using expr::ColumnRef;
 using expr::Literal;
+using expr::ParamPlaceholder;
 using expr::BinaryExpr;
 using expr::LogicExpr;
 using expr::UnaryExpr;
@@ -863,6 +886,8 @@ using expr::dense_rank;
 using expr::sum_over;
 using expr::avg_over;
 using expr::count_over;
+using expr::param;
+using expr::placeholder;
 using expr::asc;
 using expr::desc;
 
