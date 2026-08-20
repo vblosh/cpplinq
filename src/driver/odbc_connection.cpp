@@ -19,9 +19,19 @@ using detail::odbc::check_rc;
 // OdbcDataReader
 // ============================================================================
 
+OdbcDataReader::OdbcDataReader(std::shared_ptr<detail::odbc::StmtHolder> stmt_holder)
+    : stmt_holder_(std::move(stmt_holder))
+    , hstmt_(stmt_holder_ ? stmt_holder_->handle : SQL_NULL_HSTMT)
+{
+    if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLNumResultCols(hstmt_, &col_count_);
+        init_bound_columns();
+    }
+}
+
 OdbcDataReader::OdbcDataReader(SQLHSTMT hstmt, bool owns_stmt)
-    : hstmt_(hstmt)
-    , owns_stmt_(owns_stmt)
+    : stmt_holder_(std::make_shared<detail::odbc::StmtHolder>(hstmt, owns_stmt))
+    , hstmt_(hstmt)
 {
     if (hstmt_ != SQL_NULL_HSTMT) {
         SQLNumResultCols(hstmt_, &col_count_);
@@ -31,10 +41,8 @@ OdbcDataReader::OdbcDataReader(SQLHSTMT hstmt, bool owns_stmt)
 
 OdbcDataReader::~OdbcDataReader() {
     if (hstmt_ != SQL_NULL_HSTMT) {
+        SQLFreeStmt(hstmt_, SQL_CLOSE);
         SQLFreeStmt(hstmt_, SQL_UNBIND);
-        if (owns_stmt_) {
-            SQLFreeHandle(SQL_HANDLE_STMT, hstmt_);
-        }
         hstmt_ = SQL_NULL_HSTMT;
     }
 }
@@ -474,10 +482,12 @@ BoundValue OdbcDataReader::get_value(int col) const {
 
 OdbcPreparedStatement::OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql)
     : hdbc_(hdbc)
+    , stmt_holder_(std::make_shared<detail::odbc::StmtHolder>())
     , sql_(sql)
 {
-    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt_);
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &stmt_holder_->handle);
     check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLAllocHandle(SQL_HANDLE_STMT)");
+    hstmt_ = stmt_holder_->handle;
 
     rc = SQLPrepareA(hstmt_, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql_.data())), static_cast<SQLINTEGER>(sql_.size()));
     check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLPrepareA");
@@ -485,7 +495,9 @@ OdbcPreparedStatement::OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql)
 
 OdbcPreparedStatement::~OdbcPreparedStatement() {
     if (hstmt_ != SQL_NULL_HSTMT) {
-        SQLFreeHandle(SQL_HANDLE_STMT, hstmt_);
+        SQLFreeStmt(hstmt_, SQL_RESET_PARAMS);
+        SQLFreeStmt(hstmt_, SQL_CLOSE);
+        SQLFreeStmt(hstmt_, SQL_UNBIND);
         hstmt_ = SQL_NULL_HSTMT;
     }
 }
@@ -713,7 +725,7 @@ std::unique_ptr<IDataReader> OdbcPreparedStatement::execute_query() {
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
         check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLExecute(execute_query)");
     }
-    return std::make_unique<OdbcDataReader>(hstmt_, false);
+    return std::make_unique<OdbcDataReader>(stmt_holder_);
 }
 
 size_t OdbcPreparedStatement::execute_non_query() {
@@ -827,17 +839,16 @@ std::unique_ptr<IDataReader> OdbcConnection::execute_query_direct(std::string_vi
     if (!is_open_) {
         throw DbException("Cannot execute query: " + get_driver_display_name() + " connection is not open");
     }
-    SQLHSTMT hstmt = SQL_NULL_HSTMT;
-    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
+    auto holder = std::make_shared<detail::odbc::StmtHolder>();
+    SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &holder->handle);
     check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLAllocHandle(SQL_HANDLE_STMT)");
 
-    rc = SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())), static_cast<SQLINTEGER>(sql.size()));
+    rc = SQLExecDirectA(holder->handle, reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.data())), static_cast<SQLINTEGER>(sql.size()));
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-        std::string err = get_odbc_error(SQL_HANDLE_STMT, hstmt);
-        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        std::string err = get_odbc_error(SQL_HANDLE_STMT, holder->handle);
         throw DbException(get_driver_display_name() + " execute_query_direct failed: " + err);
     }
-    return std::make_unique<OdbcDataReader>(hstmt, true);
+    return std::make_unique<OdbcDataReader>(std::move(holder));
 }
 
 size_t OdbcConnection::execute_non_query_direct(std::string_view sql) {

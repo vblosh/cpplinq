@@ -123,8 +123,8 @@ public:
             offset_
         );
 
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -344,8 +344,8 @@ public:
             offset_
         );
 
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -532,8 +532,8 @@ public:
             ops_, order_clauses_, limit_, offset_
         );
 
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -804,8 +804,8 @@ public:
                                          order_clauses_, limit_, offset_, is_distinct_,
                                          group_by_clauses_, having_clause_);
         }
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -837,8 +837,8 @@ public:
                                          order_clauses_, limit_, offset_, is_distinct_,
                                          group_by_clauses_, having_clause_);
         }
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty() && !options.query_timeout_seconds.has_value() && !options.stop_token.has_value()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -870,8 +870,8 @@ public:
     size_t count() {
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_count(table_name_, where_clause_);
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -893,8 +893,8 @@ public:
         }
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_count(table_name_, where_clause_, true, col_name);
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -1013,8 +1013,8 @@ public:
             group_by_clauses_,
             having_clause_
         );
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
@@ -1052,8 +1052,8 @@ private:
         }
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_aggregate(func_name, table_name_, col_name, where_clause_);
-        std::unique_ptr<IDataReader> reader;
         std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
         if (result.params.empty()) {
             reader = conn_.execute_query_direct(result.sql);
         } else {
