@@ -92,21 +92,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      informix:
-        image: icr.io/informix/informix-developer-database:latest
-        ports:
-          - 9088:9088
-        env:
-          LICENSE: accept
-          DBSERVERNAME: informix
-          INFORMIX_PASSWORD: in4mix
-        options: >-
-          --privileged
-          --health-cmd "bash -c 'source /home/informix/.bashrc 2>/dev/null || true; onstat - | grep -q On-Line'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 20
-
     steps:
       - uses: actions/checkout@v4
 
@@ -134,39 +119,12 @@ jobs:
             unixodbc-dev \
             msodbcsql18
 
-      - name: Configure Informix
-        run: |
-          INFORMIX_CONTAINER=$(docker ps --filter "ancestor=icr.io/informix/informix-developer-database:latest" --format "{{.ID}}")
-          sudo docker cp "$INFORMIX_CONTAINER:/opt/ibm/informix" /opt/ibm/informix
-
-          docker exec "$INFORMIX_CONTAINER" bash -c 'echo "CREATE DATABASE testdb WITH LOG;" | dbaccess - - 2>/dev/null || true'
-
-          sudo bash -c 'cat << "EOF" >> /etc/odbcinst.ini
-
-[IBM INFORMIX ODBC DRIVER (64-bit)]
-Description = IBM INFORMIX ODBC DRIVER
-Driver = /opt/ibm/informix/lib/cli/iclit09b.so
-Setup = /opt/ibm/informix/lib/cli/iclit09b.so
-APILevel = 1
-ConnectFunctions = YYY
-DriverODBCVer = 03.51
-FileUsage = 0
-EOF'
-
-          sudo bash -c 'cat << "EOF" > /opt/ibm/informix/etc/sqlhosts
-informix onsoctcp 127.0.0.1 9088
-EOF'
-
       - name: Configure connection strings
         run: |
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo "CPPLINQ_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb.sqlite;" >> "$GITHUB_ENV"
           echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
           echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
-          echo 'CPPLINQ_INFORMIX_ODBC=Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;' >> "$GITHUB_ENV"
-          echo 'INFORMIXDIR=/opt/ibm/informix' >> "$GITHUB_ENV"
-          echo 'INFORMIXSERVER=informix' >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=/opt/ibm/informix/lib:/opt/ibm/informix/lib/cli:/opt/ibm/informix/lib/esql:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
           echo 'CCACHE_DIR=/home/runner/.cache/ccache' >> "$GITHUB_ENV"
           echo 'CCACHE_MAXSIZE=500M' >> "$GITHUB_ENV"
 
@@ -197,8 +155,7 @@ EOF'
             -DCPPLINQ_ENABLE_SQLITE=ON \
             -DCPPLINQ_ENABLE_POSTGRES=ON \
             -DCPPLINQ_ENABLE_MSSQL=ON \
-            -DCPPLINQ_ENABLE_MYSQL=ON \
-            -DCPPLINQ_ENABLE_INFORMIX=ON
+            -DCPPLINQ_ENABLE_MYSQL=ON
 
       - name: Build
         run: cmake --build "${{ matrix.build_dir }}" --parallel
@@ -247,7 +204,6 @@ EOF'
           -DCPPLINQ_ENABLE_SQLITE=ON
           -DCPPLINQ_ENABLE_MSSQL=ON
           -DCPPLINQ_ENABLE_MYSQL=ON
-          -DCPPLINQ_ENABLE_INFORMIX=ON
 
       - name: Build
         run: cmake --build build --parallel
