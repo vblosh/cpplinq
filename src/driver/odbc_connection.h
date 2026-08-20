@@ -23,8 +23,45 @@
 
 namespace cpplinq {
 
+namespace detail::odbc {
+
+struct StmtHolder {
+    SQLHSTMT handle = SQL_NULL_HSTMT;
+    bool owns = true;
+
+    StmtHolder() = default;
+    explicit StmtHolder(SQLHSTMT h, bool o = true) : handle(h), owns(o) {}
+
+    ~StmtHolder() {
+        if (owns && handle != SQL_NULL_HSTMT) {
+            SQLFreeHandle(SQL_HANDLE_STMT, handle);
+            handle = SQL_NULL_HSTMT;
+        }
+    }
+
+    StmtHolder(const StmtHolder&) = delete;
+    StmtHolder& operator=(const StmtHolder&) = delete;
+    StmtHolder(StmtHolder&& other) noexcept : handle(other.handle), owns(other.owns) {
+        other.handle = SQL_NULL_HSTMT;
+    }
+    StmtHolder& operator=(StmtHolder&& other) noexcept {
+        if (this != &other) {
+            if (owns && handle != SQL_NULL_HSTMT) {
+                SQLFreeHandle(SQL_HANDLE_STMT, handle);
+            }
+            handle = other.handle;
+            owns = other.owns;
+            other.handle = SQL_NULL_HSTMT;
+        }
+        return *this;
+    }
+};
+
+} // namespace detail::odbc
+
 class OdbcDataReader : public IDataReader {
 public:
+    explicit OdbcDataReader(std::shared_ptr<detail::odbc::StmtHolder> stmt_holder);
     explicit OdbcDataReader(SQLHSTMT hstmt, bool owns_stmt = false);
     ~OdbcDataReader() override;
 
@@ -79,8 +116,8 @@ private:
     void init_bound_columns();
     void ensure_str(const BoundCol& c) const;
 
+    std::shared_ptr<detail::odbc::StmtHolder> stmt_holder_;
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
-    bool owns_stmt_ = false;
     SQLSMALLINT col_count_ = 0;
     std::vector<BoundCol> bound_cols_;
 };
@@ -112,6 +149,7 @@ private:
     void apply_bindings();
 
     SQLHDBC hdbc_ = SQL_NULL_HDBC;
+    std::shared_ptr<detail::odbc::StmtHolder> stmt_holder_;
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     std::string sql_;
     std::vector<BoundValue> params_;
