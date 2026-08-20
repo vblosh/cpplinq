@@ -41,6 +41,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 - [**Connection Pooling Guide**](doc/connection_pool.md) — Thread-safe `ConnectionPool<Backend>`, RAII `PooledConnection` leasing, timeouts, metrics, and multi-threading.
 - [**Streaming & Cancellation Guide**](doc/streaming_and_cancellation.md) — Lazy C++20 range streaming, timeouts, cooperative `std::stop_token` cancellation, `statement::cancel()`, and driver capabilities.
 - [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix, ODBC DSN setup, and CI workflows.
+- [**Manual Testing & Building Guide**](doc/manual_testing.md) — Building, testing, sanitizer flags (ASan/UBSan), Docker compose database orchestration, and WSL workflows.
 
 ---
 
