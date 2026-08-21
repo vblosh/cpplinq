@@ -69,6 +69,22 @@ if [ -z "${CPPLINQ_MYSQL_ODBC:-}" ]; then
 fi
 export CPPDB_MYSQL_ODBC="$CPPLINQ_MYSQL_ODBC"
 
+if [ -z "${CPPLINQ_MYSQL_CLIENT:-}" ]; then
+    export CPPLINQ_MYSQL_CLIENT="host=127.0.0.1;port=3306;database=cppdb;user=cppdb;password=cppdb_password"
+fi
+
+if [ -d "$HOME/.local/usr/lib/x86_64-linux-gnu/pkgconfig" ]; then
+    case ":${PKG_CONFIG_PATH:-}:" in
+        *":$HOME/.local/usr/lib/x86_64-linux-gnu/pkgconfig:"*) ;;
+        *) export PKG_CONFIG_PATH="$HOME/.local/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}" ;;
+    esac
+fi
+
+if [ -d "$HOME/.local" ]; then
+    export CMAKE_PREFIX_PATH="$HOME/.local;$HOME/.local/usr:${CMAKE_PREFIX_PATH:-}"
+fi
+
+
 if [ -z "${CPPLINQ_ORACLE_ODBC:-}" ]; then
     export CPPLINQ_ORACLE_ODBC="Driver={Oracle in OraDB23Home1};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"
 fi

@@ -6,15 +6,19 @@ struct MysqlParams {
     static constexpr const char* name = "MySQL";
 
     static bool is_enabled() {
+        const char* env_client = std::getenv("CPPLINQ_MYSQL_CLIENT");
+        if (env_client != nullptr && env_client[0] != '\0') return true;
         const char* env_conn = std::getenv("CPPLINQ_MYSQL_ODBC");
         return env_conn != nullptr && env_conn[0] != '\0';
     }
 
     static std::string skip_reason() {
-        return "CPPLINQ_MYSQL_ODBC environment variable is not set.";
+        return "CPPLINQ_MYSQL_CLIENT or CPPLINQ_MYSQL_ODBC environment variable is not set.";
     }
 
     static std::string connection_string() {
+        const char* env_client = std::getenv("CPPLINQ_MYSQL_CLIENT");
+        if (env_client && env_client[0] != '\0') return env_client;
         const char* env_conn = std::getenv("CPPLINQ_MYSQL_ODBC");
         return env_conn ? env_conn : "";
     }
