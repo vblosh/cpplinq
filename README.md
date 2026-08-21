@@ -40,6 +40,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
 - [**Connection Pooling Guide**](doc/connection_pool.md) — Thread-safe `ConnectionPool<Backend>`, RAII `PooledConnection` leasing, timeouts, metrics, and multi-threading.
 - [**Streaming & Cancellation Guide**](doc/streaming_and_cancellation.md) — Lazy C++20 range streaming, timeouts, cooperative `std::stop_token` cancellation, `statement::cancel()`, and driver capabilities.
+- [**Raw SQL Queries & Direct Execution**](doc/raw_sql.md) — Parameterless direct execution, prepared statements, positional parameter binding, cursor readers, batch inserts, and streaming.
 - [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix, ODBC DSN setup, and CI workflows.
 - [**Manual Testing & Building Guide**](doc/manual_testing.md) — Building, testing, sanitizer flags (ASan/UBSan), Docker compose database orchestration, and WSL workflows.
 

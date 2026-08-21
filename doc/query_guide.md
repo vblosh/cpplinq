@@ -207,3 +207,5 @@ stmt->reset();
 stmt->bind(0, int64_t(30));
 auto reader2 = stmt->execute_query();
 ```
+
+For a comprehensive guide on executing raw SQL, prepared statements, cursors, streaming, and batch operations, see the [Raw SQL Queries & Direct Execution Guide](raw_sql.md).
