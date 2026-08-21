@@ -1,33 +1,49 @@
 // ============================================================================
-// PostgreSQL Performance Benchmarks: libpq vs Raw ODBC vs cpplinq ORM
+// MySQL Performance Benchmarks: Raw MySQL C API vs Raw ODBC vs cpplinq ORM
 // Scales: 1,000, 10,000, 100,000 rows
 // ============================================================================
 //
-// Compares three data access layers against the same PostgreSQL instance:
-//   1. Native libpq   — PostgreSQL C client library (baseline)
-//   2. Raw ODBC       — Direct ODBC 3.x API calls (no ORM overhead)
-//   3. cpplinq ORM    — Full ORM: AST → SqlGenerator → ODBC → RowMapper
+// Compares three data access layers against the same MySQL / MariaDB instance:
+//   1. Native MySQL C API — Direct libmariadb / libmysqlclient (baseline)
+//   2. Raw ODBC          — Direct ODBC 3.x API calls (no ORM overhead)
+//   3. cpplinq ORM       — Full ORM: AST -> SqlGenerator -> Driver -> RowMapper
 //
 // Environment variables:
-//   CPPLINQ_POSTGRES_ODBC  — ODBC DSN or connection string (for raw ODBC + cpplinq)
-//   CPPLINQ_POSTGRES_LIBPQ — libpq connection string (for native libpq benchmarks)
+//   CPPLINQ_MYSQL_ODBC   — ODBC DSN or connection string (for raw ODBC + cpplinq ODBC)
+//   CPPLINQ_MYSQL_CLIENT — Native connection string or parameters (host, port, user, pwd, db)
 //
 // ============================================================================
 
 #include <benchmark/benchmark.h>
 #include "cpplinq/cpplinq.hpp"
 
-#ifdef HAS_LIBPQ
-#include <libpq-fe.h>
-#endif
-
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winsock2.h>
 #include <windows.h>
 #endif
+
+#ifdef HAS_MYSQL
+#if __has_include(<mariadb/mysql.h>)
+#include <mariadb/mysql.h>
+#elif __has_include(<mysql/mysql.h>)
+#include <mysql/mysql.h>
+#else
+#include <mysql.h>
+#endif
+
+#if !defined(MARIADB_BASE_VERSION) && !defined(MARIADB_VERSION_ID) && !defined(LIBMARIADB)
+#ifndef my_bool
+typedef bool my_bool;
+#endif
+#endif
+#endif
+
 #include <sql.h>
 #include <sqlext.h>
 
@@ -39,6 +55,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 
 using namespace cpplinq;
 
@@ -117,13 +134,57 @@ static std::vector<BenchOrder> generate_orders(size_t count) {
 // ============================================================================
 
 static std::string get_odbc_conn_str() {
-    const char* env = std::getenv("CPPLINQ_POSTGRES_ODBC");
-    return (env && env[0] != '\0') ? std::string(env) : "";
+    const char* env = std::getenv("CPPLINQ_MYSQL_ODBC");
+    if (env && env[0] != '\0') return std::string(env);
+    return "MySQLDSN";
 }
 
-static std::string get_libpq_conn_str() {
-    const char* env = std::getenv("CPPLINQ_POSTGRES_LIBPQ");
-    return (env && env[0] != '\0') ? std::string(env) : "";
+struct MysqlConnParams {
+    std::string host = "127.0.0.1";
+    unsigned int port = 3306;
+    std::string user = "cppdb";
+    std::string password = "cppdb_password";
+    std::string db = "cppdb";
+};
+
+static MysqlConnParams get_mysql_native_params() {
+    MysqlConnParams params;
+    const char* env_client = std::getenv("CPPLINQ_MYSQL_CLIENT");
+    const char* env_odbc = std::getenv("CPPLINQ_MYSQL_ODBC");
+    std::string raw = env_client ? env_client : (env_odbc ? env_odbc : "");
+
+    if (raw.empty()) return params;
+
+    // Parse key=value; pairs
+    size_t start = 0;
+    while (start < raw.size()) {
+        size_t end = raw.find(';', start);
+        if (end == std::string::npos) end = raw.size();
+        std::string token = raw.substr(start, end - start);
+        start = end + 1;
+
+        size_t eq = token.find('=');
+        if (eq != std::string::npos) {
+            std::string k = token.substr(0, eq);
+            std::string v = token.substr(eq + 1);
+            while (!k.empty() && std::isspace(static_cast<unsigned char>(k.front()))) k.erase(k.begin());
+            while (!k.empty() && std::isspace(static_cast<unsigned char>(k.back()))) k.pop_back();
+            while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.erase(v.begin());
+            while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+            if (v.size() >= 2 && v.front() == '{' && v.back() == '}') {
+                v = v.substr(1, v.size() - 2);
+            }
+            std::string lk = k;
+            std::transform(lk.begin(), lk.end(), lk.begin(), [](unsigned char c) { return std::tolower(c); });
+
+            if (lk == "host" || lk == "server") params.host = v;
+            else if (lk == "port") params.port = static_cast<unsigned int>(std::atoi(v.c_str()));
+            else if (lk == "user" || lk == "uid" || lk == "username") params.user = v;
+            else if (lk == "pwd" || lk == "password") params.password = v;
+            else if (lk == "db" || lk == "database" || lk == "dbname") params.db = v;
+        }
+    }
+    return params;
 }
 
 static void odbc_check(SQLRETURN rc, SQLSMALLINT handle_type, SQLHANDLE handle, const char* context) {
@@ -150,12 +211,8 @@ class CpplinqFixture : public benchmark::Fixture {
 public:
     void SetUp(benchmark::State& state) override {
         auto conn_str = get_odbc_conn_str();
-        if (conn_str.empty()) {
-            state.SkipWithError("CPPLINQ_POSTGRES_ODBC not set");
-            return;
-        }
         try {
-            db = std::make_unique<DbContext<postgres>>(conn_str);
+            db = std::make_unique<DbContext<mysql>>(conn_str);
             ensure_tables();
             clear_tables();
         } catch (const std::exception& e) {
@@ -176,10 +233,11 @@ public:
 
     void clear_tables() {
         try {
-            db->execute_raw("TRUNCATE TABLE \"bench_orders\", \"bench_users\" RESTART IDENTITY CASCADE");
+            db->execute_raw("TRUNCATE TABLE `bench_orders`");
+            db->execute_raw("TRUNCATE TABLE `bench_users`");
         } catch (...) {
-            try { db->execute_raw("DELETE FROM \"bench_orders\""); } catch (...) {}
-            try { db->execute_raw("DELETE FROM \"bench_users\""); } catch (...) {}
+            try { db->execute_raw("DELETE FROM `bench_orders`"); } catch (...) {}
+            try { db->execute_raw("DELETE FROM `bench_users`"); } catch (...) {}
         }
     }
 
@@ -194,7 +252,7 @@ public:
         db->insert_many(bench_orders, orders);
     }
 
-    std::unique_ptr<DbContext<postgres>> db;
+    std::unique_ptr<DbContext<mysql>> db;
 };
 
 // ── cpplinq InsertBulk ───────────────────────────────────────────────
@@ -309,10 +367,6 @@ class OdbcFixture : public benchmark::Fixture {
 public:
     void SetUp(benchmark::State& state) override {
         auto conn_str = get_odbc_conn_str();
-        if (conn_str.empty()) {
-            state.SkipWithError("CPPLINQ_POSTGRES_ODBC not set");
-            return;
-        }
         try {
             SQLRETURN rc;
             rc = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv_);
@@ -367,33 +421,34 @@ public:
 
     void ensure_tables() {
         exec_sql(
-            "CREATE TABLE IF NOT EXISTS \"bench_users\" ("
-            "\"id\" BIGSERIAL PRIMARY KEY, "
-            "\"name\" TEXT NOT NULL, "
-            "\"email\" TEXT, "
-            "\"age\" INTEGER NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS `bench_users` ("
+            "`id` BIGINT AUTO_INCREMENT PRIMARY KEY, "
+            "`name` VARCHAR(255) NOT NULL, "
+            "`email` VARCHAR(255), "
+            "`age` INT NOT NULL)"
         );
         exec_sql(
-            "CREATE TABLE IF NOT EXISTS \"bench_orders\" ("
-            "\"id\" BIGSERIAL PRIMARY KEY, "
-            "\"user_id\" INTEGER NOT NULL, "
-            "\"amount\" DOUBLE PRECISION NOT NULL, "
-            "\"status\" TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS `bench_orders` ("
+            "`id` BIGINT AUTO_INCREMENT PRIMARY KEY, "
+            "`user_id` INT NOT NULL, "
+            "`amount` DOUBLE NOT NULL, "
+            "`status` VARCHAR(64) NOT NULL)"
         );
     }
 
     void clear_tables() {
         try {
-            exec_sql("TRUNCATE TABLE \"bench_orders\", \"bench_users\" RESTART IDENTITY CASCADE");
+            exec_sql("TRUNCATE TABLE `bench_orders`");
+            exec_sql("TRUNCATE TABLE `bench_users`");
         } catch (...) {
-            try { exec_sql("DELETE FROM \"bench_orders\""); } catch (...) {}
-            try { exec_sql("DELETE FROM \"bench_users\""); } catch (...) {}
+            try { exec_sql("DELETE FROM `bench_orders`"); } catch (...) {}
+            try { exec_sql("DELETE FROM `bench_users`"); } catch (...) {}
         }
     }
 
     void insert_users_bulk(const std::vector<BenchUser>& users) {
         if (users.empty()) return;
-        exec_sql("BEGIN");
+        exec_sql("START TRANSACTION");
 
         constexpr size_t CHUNK_SIZE = 1000;
         for (size_t offset = 0; offset < users.size(); offset += CHUNK_SIZE) {
@@ -410,7 +465,7 @@ public:
             SQLSetStmtAttr(hstmt, SQL_ATTR_PARAM_STATUS_PTR, status_array, 0);
 
             SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-                "INSERT INTO \"bench_users\" (\"name\", \"email\", \"age\") VALUES (?, ?, ?)"
+                "INSERT INTO `bench_users` (`name`, `email`, `age`) VALUES (?, ?, ?)"
             )), SQL_NTS);
 
             std::vector<char> name_buf(batch_size * 256, 0);
@@ -452,7 +507,7 @@ public:
 
     void insert_orders_bulk(const std::vector<BenchOrder>& orders) {
         if (orders.empty()) return;
-        exec_sql("BEGIN");
+        exec_sql("START TRANSACTION");
 
         constexpr size_t CHUNK_SIZE = 1000;
         for (size_t offset = 0; offset < orders.size(); offset += CHUNK_SIZE) {
@@ -469,7 +524,7 @@ public:
             SQLSetStmtAttr(hstmt, SQL_ATTR_PARAM_STATUS_PTR, status_array, 0);
 
             SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-                "INSERT INTO \"bench_orders\" (\"user_id\", \"amount\", \"status\") VALUES (?, ?, ?)"
+                "INSERT INTO `bench_orders` (`user_id`, `amount`, `status`) VALUES (?, ?, ?)"
             )), SQL_NTS);
 
             std::vector<int> uid_buf(batch_size);
@@ -517,7 +572,7 @@ public:
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\""
+            "SELECT `id`, `name`, `email`, `age` FROM `bench_users`"
         )), SQL_NTS);
 
         SQLINTEGER id_val = 0, age_val = 0;
@@ -550,9 +605,9 @@ public:
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
-            "WHERE \"age\" > ? AND \"email\" IS NOT NULL "
-            "ORDER BY \"age\""
+            "SELECT `id`, `name`, `email`, `age` FROM `bench_users` "
+            "WHERE `age` > ? AND `email` IS NOT NULL "
+            "ORDER BY `age`"
         )), SQL_NTS);
 
         SQLINTEGER age_param = 30;
@@ -591,11 +646,11 @@ public:
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "SELECT u.\"id\", u.\"name\", u.\"email\", u.\"age\", "
-            "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
-            "FROM \"bench_users\" u "
-            "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > ?"
+            "SELECT u.`id`, u.`name`, u.`email`, u.`age`, "
+            "o.`id`, o.`user_id`, o.`amount`, o.`status` "
+            "FROM `bench_users` u "
+            "INNER JOIN `bench_orders` o ON u.`id` = o.`user_id` "
+            "WHERE o.`amount` > ?"
         )), SQL_NTS);
 
         double amount_param = 100.0;
@@ -646,8 +701,8 @@ public:
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "UPDATE \"bench_users\" SET \"age\" = ? "
-            "WHERE \"age\" >= ? AND \"age\" <= ?"
+            "UPDATE `bench_users` SET `age` = ? "
+            "WHERE `age` >= ? AND `age` <= ?"
         )), SQL_NTS);
 
         SQLINTEGER set_age = 99, min_age = 25, max_age = 40;
@@ -668,7 +723,7 @@ public:
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
         SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "DELETE FROM \"bench_orders\" WHERE \"status\" = ?"
+            "DELETE FROM `bench_orders` WHERE `status` = ?"
         )), SQL_NTS);
 
         char status_buf[] = "cancelled";
@@ -780,28 +835,32 @@ BENCHMARK_REGISTER_F(OdbcFixture, DeleteBulk) BENCH_ARGS;
 
 // ############################################################################
 //
-//  SECTION 3: Native libpq Benchmarks
+//  SECTION 3: Native MySQL C API Benchmarks
 //
 // ############################################################################
 
-#ifdef HAS_LIBPQ
+#ifdef HAS_MYSQL
 
-class LibpqFixture : public benchmark::Fixture {
+class MysqlClientFixture : public benchmark::Fixture {
 public:
     void SetUp(benchmark::State& state) override {
-        auto conn_str = get_libpq_conn_str();
-        if (conn_str.empty()) {
-            state.SkipWithError("CPPLINQ_POSTGRES_LIBPQ not set");
+        conn_ = mysql_init(nullptr);
+        if (!conn_) {
+            state.SkipWithError("mysql_init failed");
             return;
         }
-        conn_ = PQconnectdb(conn_str.c_str());
-        if (PQstatus(conn_) != CONNECTION_OK) {
-            std::string err = PQerrorMessage(conn_);
-            PQfinish(conn_);
+
+        auto params = get_mysql_native_params();
+        if (!mysql_real_connect(conn_, params.host.c_str(), params.user.c_str(),
+                               params.password.c_str(), params.db.c_str(),
+                               params.port, nullptr, 0)) {
+            std::string err = mysql_error(conn_);
+            mysql_close(conn_);
             conn_ = nullptr;
             state.SkipWithError(err.c_str());
             return;
         }
+
         ensure_tables();
         clear_tables();
     }
@@ -809,229 +868,385 @@ public:
     void TearDown(benchmark::State&) override {
         if (conn_) {
             try { clear_tables(); } catch (...) {}
-            PQfinish(conn_);
+            mysql_close(conn_);
             conn_ = nullptr;
         }
     }
 
     void exec_sql(const char* sql) {
-        PGresult* res = PQexec(conn_, sql);
-        if (PQresultStatus(res) != PGRES_COMMAND_OK &&
-            PQresultStatus(res) != PGRES_TUPLES_OK) {
-            std::string err = PQerrorMessage(conn_);
-            PQclear(res);
-            throw std::runtime_error(err);
+        if (mysql_query(conn_, sql) != 0) {
+            throw std::runtime_error(mysql_error(conn_));
         }
-        PQclear(res);
+        MYSQL_RES* res = mysql_store_result(conn_);
+        if (res) mysql_free_result(res);
     }
 
     void ensure_tables() {
         exec_sql(
-            "CREATE TABLE IF NOT EXISTS \"bench_users\" ("
-            "\"id\" BIGSERIAL PRIMARY KEY, "
-            "\"name\" TEXT NOT NULL, "
-            "\"email\" TEXT, "
-            "\"age\" INTEGER NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS `bench_users` ("
+            "`id` BIGINT AUTO_INCREMENT PRIMARY KEY, "
+            "`name` VARCHAR(255) NOT NULL, "
+            "`email` VARCHAR(255), "
+            "`age` INT NOT NULL)"
         );
         exec_sql(
-            "CREATE TABLE IF NOT EXISTS \"bench_orders\" ("
-            "\"id\" BIGSERIAL PRIMARY KEY, "
-            "\"user_id\" INTEGER NOT NULL, "
-            "\"amount\" DOUBLE PRECISION NOT NULL, "
-            "\"status\" TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS `bench_orders` ("
+            "`id` BIGINT AUTO_INCREMENT PRIMARY KEY, "
+            "`user_id` INT NOT NULL, "
+            "`amount` DOUBLE NOT NULL, "
+            "`status` VARCHAR(64) NOT NULL)"
         );
     }
 
     void clear_tables() {
         try {
-            exec_sql("TRUNCATE TABLE \"bench_orders\", \"bench_users\" RESTART IDENTITY CASCADE");
+            exec_sql("TRUNCATE TABLE `bench_orders`");
+            exec_sql("TRUNCATE TABLE `bench_users`");
         } catch (...) {
-            try { exec_sql("DELETE FROM \"bench_orders\""); } catch (...) {}
-            try { exec_sql("DELETE FROM \"bench_users\""); } catch (...) {}
+            try { exec_sql("DELETE FROM `bench_orders`"); } catch (...) {}
+            try { exec_sql("DELETE FROM `bench_users`"); } catch (...) {}
         }
     }
 
-    void insert_users_copy(const std::vector<BenchUser>& users) {
-        PGresult* res = PQexec(conn_,
-            "COPY \"bench_users\" (\"name\", \"email\", \"age\") FROM STDIN WITH (FORMAT text)");
-        PQclear(res);
+    void insert_users_bulk(const std::vector<BenchUser>& users) {
+        if (users.empty()) return;
+        exec_sql("START TRANSACTION");
 
-        constexpr size_t CHUNK = 50000;
+        constexpr size_t CHUNK = 5000;
         for (size_t offset = 0; offset < users.size(); offset += CHUNK) {
             size_t batch = std::min(CHUNK, users.size() - offset);
-            std::string buffer;
-            buffer.reserve(batch * 48);
-            for (size_t i = 0; i < batch; ++i) {
-                const auto& u = users[offset + i];
-                buffer += u.name;
-                buffer += '\t';
-                if (u.email.has_value()) {
-                    buffer += *u.email;
-                } else {
-                    buffer += "\\N";
-                }
-                buffer += '\t';
-                buffer += std::to_string(u.age);
-                buffer += '\n';
-            }
-            PQputCopyData(conn_, buffer.c_str(), static_cast<int>(buffer.size()));
-        }
-        PQputCopyEnd(conn_, nullptr);
+            std::string sql = "INSERT INTO `bench_users` (`name`, `email`, `age`) VALUES ";
+            sql.reserve(sql.size() + batch * 64);
 
-        res = PQgetResult(conn_);
-        PQclear(res);
+            for (size_t i = 0; i < batch; ++i) {
+                if (i > 0) sql += ",";
+                const auto& u = users[offset + i];
+                sql += "('";
+                std::vector<char> escaped_name(u.name.size() * 2 + 1);
+                unsigned long esc_len = mysql_real_escape_string(conn_, escaped_name.data(), u.name.data(), static_cast<unsigned long>(u.name.size()));
+                sql.append(escaped_name.data(), esc_len);
+                sql += "',";
+                if (u.email.has_value()) {
+                    sql += "'";
+                    std::vector<char> escaped_email(u.email->size() * 2 + 1);
+                    unsigned long email_esc_len = mysql_real_escape_string(conn_, escaped_email.data(), u.email->data(), static_cast<unsigned long>(u.email->size()));
+                    sql.append(escaped_email.data(), email_esc_len);
+                    sql += "',";
+                } else {
+                    sql += "NULL,";
+                }
+                sql += std::to_string(u.age);
+                sql += ")";
+            }
+            exec_sql(sql.c_str());
+        }
+
+        exec_sql("COMMIT");
     }
 
-    void insert_orders_copy(const std::vector<BenchOrder>& orders) {
-        PGresult* res = PQexec(conn_,
-            "COPY \"bench_orders\" (\"user_id\", \"amount\", \"status\") FROM STDIN WITH (FORMAT text)");
-        PQclear(res);
+    void insert_orders_bulk(const std::vector<BenchOrder>& orders) {
+        if (orders.empty()) return;
+        exec_sql("START TRANSACTION");
 
-        constexpr size_t CHUNK = 50000;
+        constexpr size_t CHUNK = 5000;
         for (size_t offset = 0; offset < orders.size(); offset += CHUNK) {
             size_t batch = std::min(CHUNK, orders.size() - offset);
-            std::string buffer;
-            buffer.reserve(batch * 48);
-            for (size_t i = 0; i < batch; ++i) {
-                const auto& o = orders[offset + i];
-                buffer += std::to_string(o.user_id);
-                buffer += '\t';
-                buffer += std::to_string(o.amount);
-                buffer += '\t';
-                buffer += o.status;
-                buffer += '\n';
-            }
-            PQputCopyData(conn_, buffer.c_str(), static_cast<int>(buffer.size()));
-        }
-        PQputCopyEnd(conn_, nullptr);
+            std::string sql = "INSERT INTO `bench_orders` (`user_id`, `amount`, `status`) VALUES ";
+            sql.reserve(sql.size() + batch * 64);
 
-        res = PQgetResult(conn_);
-        PQclear(res);
+            for (size_t i = 0; i < batch; ++i) {
+                if (i > 0) sql += ",";
+                const auto& o = orders[offset + i];
+                sql += "(";
+                sql += std::to_string(o.user_id);
+                sql += ",";
+                char amt_buf[32];
+                snprintf(amt_buf, sizeof(amt_buf), "%.2f", o.amount);
+                sql += amt_buf;
+                sql += ",'";
+                std::vector<char> esc_status(o.status.size() * 2 + 1);
+                unsigned long esc_len = mysql_real_escape_string(conn_, esc_status.data(), o.status.data(), static_cast<unsigned long>(o.status.size()));
+                sql.append(esc_status.data(), esc_len);
+                sql += "')";
+            }
+            exec_sql(sql.c_str());
+        }
+
+        exec_sql("COMMIT");
     }
 
     void seed_users(int64_t n) {
         auto users = generate_users(static_cast<size_t>(n));
-        insert_users_copy(users);
+        insert_users_bulk(users);
     }
 
     void seed_all(int64_t n) {
         seed_users(n);
         auto orders = generate_orders(static_cast<size_t>(n));
-        insert_orders_copy(orders);
+        insert_orders_bulk(orders);
     }
 
-    std::vector<BenchUser> select_all_libpq() {
-        PGresult* res = PQexec(conn_,
-            "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\"");
-        int nrows = PQntuples(res);
+    std::vector<BenchUser> select_all_mysql() {
+        if (mysql_query(conn_, "SELECT `id`, `name`, `email`, `age` FROM `bench_users`") != 0) {
+            throw std::runtime_error(mysql_error(conn_));
+        }
+        MYSQL_RES* res = mysql_store_result(conn_);
+        if (!res) throw std::runtime_error(mysql_error(conn_));
+
+        int nrows = static_cast<int>(mysql_num_rows(res));
         std::vector<BenchUser> results;
         results.reserve(static_cast<size_t>(nrows));
-        for (int r = 0; r < nrows; ++r) {
+
+        MYSQL_ROW row;
+        while ((row = mysql_fetch_row(res))) {
+            unsigned long* lengths = mysql_fetch_lengths(res);
             BenchUser u;
-            u.id = std::atoi(PQgetvalue(res, r, 0));
-            u.name = PQgetvalue(res, r, 1);
-            if (PQgetisnull(res, r, 2)) {
-                u.email = std::nullopt;
+            u.id = row[0] ? std::atoi(row[0]) : 0;
+            u.name = row[1] ? std::string(row[1], lengths[1]) : "";
+            if (row[2]) {
+                u.email = std::string(row[2], lengths[2]);
             } else {
-                u.email = PQgetvalue(res, r, 2);
+                u.email = std::nullopt;
             }
-            u.age = std::atoi(PQgetvalue(res, r, 3));
+            u.age = row[3] ? std::atoi(row[3]) : 0;
             results.push_back(std::move(u));
         }
-        PQclear(res);
+        mysql_free_result(res);
         return results;
     }
 
-    std::vector<BenchUser> select_filtered_libpq() {
-        const char* params[1] = {"30"};
-        PGresult* res = PQexecParams(conn_,
-            "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
-            "WHERE \"age\" > $1 AND \"email\" IS NOT NULL "
-            "ORDER BY \"age\"",
-            1, nullptr, params, nullptr, nullptr, 0);
-        int nrows = PQntuples(res);
+    std::vector<BenchUser> select_filtered_mysql() {
+        MYSQL_STMT* stmt = mysql_stmt_init(conn_);
+        const char* sql = "SELECT `id`, `name`, `email`, `age` FROM `bench_users` "
+                          "WHERE `age` > ? AND `email` IS NOT NULL "
+                          "ORDER BY `age`";
+        if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) {
+            std::string err = mysql_stmt_error(stmt);
+            mysql_stmt_close(stmt);
+            throw std::runtime_error(err);
+        }
+
+        int age_param = 30;
+        MYSQL_BIND param_bind[1];
+        std::memset(param_bind, 0, sizeof(param_bind));
+        param_bind[0].buffer_type = MYSQL_TYPE_LONG;
+        param_bind[0].buffer = &age_param;
+        param_bind[0].is_null = nullptr;
+        param_bind[0].length = nullptr;
+
+        mysql_stmt_bind_param(stmt, param_bind);
+        mysql_stmt_execute(stmt);
+
+        MYSQL_BIND res_bind[4];
+        std::memset(res_bind, 0, sizeof(res_bind));
+
+        int id_val = 0, age_val = 0;
+        char name_buf[256] = {0}, email_buf[256] = {0};
+        unsigned long name_len = 0, email_len = 0;
+        my_bool is_null[4] = {0};
+
+
+        res_bind[0].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[0].buffer = &id_val;
+        res_bind[0].is_null = &is_null[0];
+
+        res_bind[1].buffer_type = MYSQL_TYPE_STRING;
+        res_bind[1].buffer = name_buf;
+        res_bind[1].buffer_length = sizeof(name_buf);
+        res_bind[1].length = &name_len;
+        res_bind[1].is_null = &is_null[1];
+
+        res_bind[2].buffer_type = MYSQL_TYPE_STRING;
+        res_bind[2].buffer = email_buf;
+        res_bind[2].buffer_length = sizeof(email_buf);
+        res_bind[2].length = &email_len;
+        res_bind[2].is_null = &is_null[2];
+
+        res_bind[3].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[3].buffer = &age_val;
+        res_bind[3].is_null = &is_null[3];
+
+        mysql_stmt_bind_result(stmt, res_bind);
+        mysql_stmt_store_result(stmt);
+
         std::vector<BenchUser> results;
-        results.reserve(static_cast<size_t>(nrows));
-        for (int r = 0; r < nrows; ++r) {
+        while (mysql_stmt_fetch(stmt) == 0) {
             BenchUser u;
-            u.id = std::atoi(PQgetvalue(res, r, 0));
-            u.name = PQgetvalue(res, r, 1);
-            if (PQgetisnull(res, r, 2)) {
+            u.id = id_val;
+            u.name = is_null[1] ? "" : std::string(name_buf, name_len);
+            if (is_null[2]) {
                 u.email = std::nullopt;
             } else {
-                u.email = PQgetvalue(res, r, 2);
+                u.email = std::string(email_buf, email_len);
             }
-            u.age = std::atoi(PQgetvalue(res, r, 3));
+            u.age = age_val;
             results.push_back(std::move(u));
         }
-        PQclear(res);
+
+        mysql_stmt_close(stmt);
         return results;
     }
 
-    std::vector<std::pair<BenchUser, BenchOrder>> join_query_libpq() {
-        const char* params[1] = {"100.0"};
-        PGresult* res = PQexecParams(conn_,
-            "SELECT u.\"id\", u.\"name\", u.\"email\", u.\"age\", "
-            "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
-            "FROM \"bench_users\" u "
-            "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > $1",
-            1, nullptr, params, nullptr, nullptr, 0);
-        int nrows = PQntuples(res);
+    std::vector<std::pair<BenchUser, BenchOrder>> join_query_mysql() {
+        MYSQL_STMT* stmt = mysql_stmt_init(conn_);
+        const char* sql = "SELECT u.`id`, u.`name`, u.`email`, u.`age`, "
+                          "o.`id`, o.`user_id`, o.`amount`, o.`status` "
+                          "FROM `bench_users` u "
+                          "INNER JOIN `bench_orders` o ON u.`id` = o.`user_id` "
+                          "WHERE o.`amount` > ?";
+        if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) {
+            std::string err = mysql_stmt_error(stmt);
+            mysql_stmt_close(stmt);
+            throw std::runtime_error(err);
+        }
+
+        double amount_param = 100.0;
+        MYSQL_BIND param_bind[1];
+        std::memset(param_bind, 0, sizeof(param_bind));
+        param_bind[0].buffer_type = MYSQL_TYPE_DOUBLE;
+        param_bind[0].buffer = &amount_param;
+
+        mysql_stmt_bind_param(stmt, param_bind);
+        mysql_stmt_execute(stmt);
+
+        MYSQL_BIND res_bind[8];
+        std::memset(res_bind, 0, sizeof(res_bind));
+
+        int u_id = 0, u_age = 0, o_id = 0, o_uid = 0;
+        double o_amount = 0.0;
+        char u_name[256] = {0}, u_email[256] = {0}, o_status[64] = {0};
+        unsigned long u_name_len = 0, u_email_len = 0, o_status_len = 0;
+        my_bool is_null[8] = {0};
+
+
+        res_bind[0].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[0].buffer = &u_id;
+        res_bind[0].is_null = &is_null[0];
+
+        res_bind[1].buffer_type = MYSQL_TYPE_STRING;
+        res_bind[1].buffer = u_name;
+        res_bind[1].buffer_length = sizeof(u_name);
+        res_bind[1].length = &u_name_len;
+        res_bind[1].is_null = &is_null[1];
+
+        res_bind[2].buffer_type = MYSQL_TYPE_STRING;
+        res_bind[2].buffer = u_email;
+        res_bind[2].buffer_length = sizeof(u_email);
+        res_bind[2].length = &u_email_len;
+        res_bind[2].is_null = &is_null[2];
+
+        res_bind[3].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[3].buffer = &u_age;
+        res_bind[3].is_null = &is_null[3];
+
+        res_bind[4].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[4].buffer = &o_id;
+        res_bind[4].is_null = &is_null[4];
+
+        res_bind[5].buffer_type = MYSQL_TYPE_LONG;
+        res_bind[5].buffer = &o_uid;
+        res_bind[5].is_null = &is_null[5];
+
+        res_bind[6].buffer_type = MYSQL_TYPE_DOUBLE;
+        res_bind[6].buffer = &o_amount;
+        res_bind[6].is_null = &is_null[6];
+
+        res_bind[7].buffer_type = MYSQL_TYPE_STRING;
+        res_bind[7].buffer = o_status;
+        res_bind[7].buffer_length = sizeof(o_status);
+        res_bind[7].length = &o_status_len;
+        res_bind[7].is_null = &is_null[7];
+
+        mysql_stmt_bind_result(stmt, res_bind);
+        mysql_stmt_store_result(stmt);
+
         std::vector<std::pair<BenchUser, BenchOrder>> results;
-        results.reserve(static_cast<size_t>(nrows));
-        for (int r = 0; r < nrows; ++r) {
+        while (mysql_stmt_fetch(stmt) == 0) {
             BenchUser u;
-            u.id = std::atoi(PQgetvalue(res, r, 0));
-            u.name = PQgetvalue(res, r, 1);
-            if (PQgetisnull(res, r, 2)) {
+            u.id = u_id;
+            u.name = is_null[1] ? "" : std::string(u_name, u_name_len);
+            if (is_null[2]) {
                 u.email = std::nullopt;
             } else {
-                u.email = PQgetvalue(res, r, 2);
+                u.email = std::string(u_email, u_email_len);
             }
-            u.age = std::atoi(PQgetvalue(res, r, 3));
+            u.age = u_age;
 
             BenchOrder o;
-            o.id = std::atoi(PQgetvalue(res, r, 4));
-            o.user_id = std::atoi(PQgetvalue(res, r, 5));
-            o.amount = std::atof(PQgetvalue(res, r, 6));
-            o.status = PQgetvalue(res, r, 7);
+            o.id = o_id;
+            o.user_id = o_uid;
+            o.amount = o_amount;
+            o.status = is_null[7] ? "" : std::string(o_status, o_status_len);
 
             results.emplace_back(std::move(u), std::move(o));
         }
-        PQclear(res);
+
+        mysql_stmt_close(stmt);
         return results;
     }
 
-    size_t update_bulk_libpq() {
-        const char* params[3] = {"99", "25", "40"};
-        PGresult* res = PQexecParams(conn_,
-            "UPDATE \"bench_users\" SET \"age\" = $1 "
-            "WHERE \"age\" >= $2 AND \"age\" <= $3",
-            3, nullptr, params, nullptr, nullptr, 0);
-        const char* affected = PQcmdTuples(res);
-        size_t n = affected ? static_cast<size_t>(std::atoll(affected)) : 0;
-        PQclear(res);
-        return n;
+    size_t update_bulk_mysql() {
+        MYSQL_STMT* stmt = mysql_stmt_init(conn_);
+        const char* sql = "UPDATE `bench_users` SET `age` = ? "
+                          "WHERE `age` >= ? AND `age` <= ?";
+        if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) {
+            std::string err = mysql_stmt_error(stmt);
+            mysql_stmt_close(stmt);
+            throw std::runtime_error(err);
+        }
+
+        int set_age = 99, min_age = 25, max_age = 40;
+        MYSQL_BIND params[3];
+        std::memset(params, 0, sizeof(params));
+
+        params[0].buffer_type = MYSQL_TYPE_LONG;
+        params[0].buffer = &set_age;
+        params[1].buffer_type = MYSQL_TYPE_LONG;
+        params[1].buffer = &min_age;
+        params[2].buffer_type = MYSQL_TYPE_LONG;
+        params[2].buffer = &max_age;
+
+        mysql_stmt_bind_param(stmt, params);
+        mysql_stmt_execute(stmt);
+
+        size_t affected = static_cast<size_t>(mysql_stmt_affected_rows(stmt));
+        mysql_stmt_close(stmt);
+        return affected;
     }
 
-    size_t delete_bulk_libpq() {
-        const char* params[1] = {"cancelled"};
-        PGresult* res = PQexecParams(conn_,
-            "DELETE FROM \"bench_orders\" WHERE \"status\" = $1",
-            1, nullptr, params, nullptr, nullptr, 0);
-        const char* affected = PQcmdTuples(res);
-        size_t n = affected ? static_cast<size_t>(std::atoll(affected)) : 0;
-        PQclear(res);
-        return n;
+    size_t delete_bulk_mysql() {
+        MYSQL_STMT* stmt = mysql_stmt_init(conn_);
+        const char* sql = "DELETE FROM `bench_orders` WHERE `status` = ?";
+        if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) {
+            std::string err = mysql_stmt_error(stmt);
+            mysql_stmt_close(stmt);
+            throw std::runtime_error(err);
+        }
+
+        char status_buf[] = "cancelled";
+        unsigned long status_len = static_cast<unsigned long>(std::strlen(status_buf));
+        MYSQL_BIND params[1];
+        std::memset(params, 0, sizeof(params));
+
+        params[0].buffer_type = MYSQL_TYPE_STRING;
+        params[0].buffer = status_buf;
+        params[0].buffer_length = sizeof(status_buf);
+        params[0].length = &status_len;
+
+        mysql_stmt_bind_param(stmt, params);
+        mysql_stmt_execute(stmt);
+
+        size_t affected = static_cast<size_t>(mysql_stmt_affected_rows(stmt));
+        mysql_stmt_close(stmt);
+        return affected;
     }
 
-    PGconn* conn_ = nullptr;
+    MYSQL* conn_ = nullptr;
 };
 
-// ── libpq InsertCopy (COPY protocol) ─────────────────────────────────
+// ── MySQL Client InsertBulk ──────────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, InsertCopy)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, InsertBulk)(benchmark::State& state) {
     if (!conn_) return;
     auto users = generate_users(static_cast<size_t>(state.range(0)));
     for (auto _ : state) {
@@ -1039,55 +1254,55 @@ BENCHMARK_DEFINE_F(LibpqFixture, InsertCopy)(benchmark::State& state) {
         clear_tables();
         state.ResumeTiming();
 
-        insert_users_copy(users);
+        insert_users_bulk(users);
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
-BENCHMARK_REGISTER_F(LibpqFixture, InsertCopy) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, InsertBulk) BENCH_ARGS;
 
-// ── libpq SelectAll ──────────────────────────────────────────────────
+// ── MySQL Client SelectAll ───────────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, SelectAll)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, SelectAll)(benchmark::State& state) {
     if (!conn_) return;
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto results = select_all_libpq();
+        auto results = select_all_mysql();
         benchmark::DoNotOptimize(results.size());
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
-BENCHMARK_REGISTER_F(LibpqFixture, SelectAll) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, SelectAll) BENCH_ARGS;
 
-// ── libpq SelectFiltered ─────────────────────────────────────────────
+// ── MySQL Client SelectFiltered ──────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, SelectFiltered)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, SelectFiltered)(benchmark::State& state) {
     if (!conn_) return;
     clear_tables();
     seed_users(state.range(0));
     for (auto _ : state) {
-        auto results = select_filtered_libpq();
+        auto results = select_filtered_mysql();
         benchmark::DoNotOptimize(results.size());
     }
 }
-BENCHMARK_REGISTER_F(LibpqFixture, SelectFiltered) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, SelectFiltered) BENCH_ARGS;
 
-// ── libpq JoinQuery ──────────────────────────────────────────────────
+// ── MySQL Client JoinQuery ───────────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, JoinQuery)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, JoinQuery)(benchmark::State& state) {
     if (!conn_) return;
     clear_tables();
     seed_all(state.range(0));
     for (auto _ : state) {
-        auto results = join_query_libpq();
+        auto results = join_query_mysql();
         benchmark::DoNotOptimize(results.size());
     }
 }
-BENCHMARK_REGISTER_F(LibpqFixture, JoinQuery) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, JoinQuery) BENCH_ARGS;
 
-// ── libpq UpdateBulk ─────────────────────────────────────────────────
+// ── MySQL Client UpdateBulk ──────────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, UpdateBulk)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, UpdateBulk)(benchmark::State& state) {
     if (!conn_) return;
     for (auto _ : state) {
         state.PauseTiming();
@@ -1095,16 +1310,16 @@ BENCHMARK_DEFINE_F(LibpqFixture, UpdateBulk)(benchmark::State& state) {
         seed_users(state.range(0));
         state.ResumeTiming();
 
-        auto n = update_bulk_libpq();
+        auto n = update_bulk_mysql();
         benchmark::DoNotOptimize(n);
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
-BENCHMARK_REGISTER_F(LibpqFixture, UpdateBulk) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, UpdateBulk) BENCH_ARGS;
 
-// ── libpq DeleteBulk ─────────────────────────────────────────────────
+// ── MySQL Client DeleteBulk ──────────────────────────────────────────
 
-BENCHMARK_DEFINE_F(LibpqFixture, DeleteBulk)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(MysqlClientFixture, DeleteBulk)(benchmark::State& state) {
     if (!conn_) return;
     for (auto _ : state) {
         state.PauseTiming();
@@ -1112,11 +1327,11 @@ BENCHMARK_DEFINE_F(LibpqFixture, DeleteBulk)(benchmark::State& state) {
         seed_all(state.range(0));
         state.ResumeTiming();
 
-        auto n = delete_bulk_libpq();
+        auto n = delete_bulk_mysql();
         benchmark::DoNotOptimize(n);
     }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
-BENCHMARK_REGISTER_F(LibpqFixture, DeleteBulk) BENCH_ARGS;
+BENCHMARK_REGISTER_F(MysqlClientFixture, DeleteBulk) BENCH_ARGS;
 
-#endif // HAS_LIBPQ
+#endif // HAS_MYSQL

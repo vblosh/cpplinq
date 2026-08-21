@@ -3,7 +3,7 @@ set(CPPLINQ_SOURCES
     driver/connection.cpp
 )
 
-if(CPPLINQ_ENABLE_POSTGRES OR CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL OR CPPLINQ_ENABLE_INFORMIX OR CPPLINQ_ENABLE_ORACLE)
+if(CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_INFORMIX OR CPPLINQ_ENABLE_ORACLE)
     list(APPEND CPPLINQ_SOURCES
         driver/odbc_connection.cpp
     )
@@ -62,12 +62,9 @@ if(CPPLINQ_ENABLE_SQLITE)
 endif()
 
 if(CPPLINQ_ENABLE_POSTGRES)
-    if(WIN32)
-        target_link_libraries(cpplinq PUBLIC odbc32)
-    else()
-        find_package(ODBC REQUIRED)
-        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
-    endif()
+    find_package(PostgreSQL REQUIRED)
+    target_include_directories(cpplinq PUBLIC ${PostgreSQL_INCLUDE_DIRS})
+    target_link_libraries(cpplinq PUBLIC ${PostgreSQL_LIBRARIES})
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_POSTGRES=1)
 endif()
 
@@ -82,12 +79,9 @@ if(CPPLINQ_ENABLE_MSSQL)
 endif()
 
 if(CPPLINQ_ENABLE_MYSQL)
-    if(WIN32)
-        target_link_libraries(cpplinq PUBLIC odbc32)
-    else()
-        find_package(ODBC REQUIRED)
-        target_link_libraries(cpplinq PUBLIC ODBC::ODBC)
-    endif()
+    find_package(MySQL REQUIRED)
+    target_include_directories(cpplinq PUBLIC ${MySQL_INCLUDE_DIRS})
+    target_link_libraries(cpplinq PUBLIC ${MySQL_LIBRARIES})
     target_compile_definitions(cpplinq PUBLIC CPPLINQ_HAS_MYSQL=1)
 endif()
 

@@ -29,6 +29,13 @@ if(CPPLINQ_ENABLE_POSTGRES)
     )
     target_compile_features(bench_postgres_perf PRIVATE cxx_std_20)
 
+    if(WIN32)
+        target_link_libraries(bench_postgres_perf PRIVATE odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(bench_postgres_perf PRIVATE ODBC::ODBC)
+    endif()
+
     if(HAS_LIBPQ)
         target_include_directories(bench_postgres_perf PRIVATE ${PostgreSQL_INCLUDE_DIRS})
         target_link_libraries(bench_postgres_perf PRIVATE ${PostgreSQL_LIBRARIES})
@@ -37,6 +44,42 @@ if(CPPLINQ_ENABLE_POSTGRES)
 
     # Register with CTest for easy discovery
     add_test(NAME bench_postgres_perf COMMAND bench_postgres_perf --benchmark_min_time=0.5s)
+endif()
+
+# --- MySQL Benchmark executable ---
+if(CPPLINQ_ENABLE_MYSQL)
+    find_package(MySQL QUIET)
+    if(MySQL_FOUND)
+        message(STATUS "MySQL client library found: ${MySQL_LIBRARIES}")
+        set(HAS_MYSQL TRUE)
+    else()
+        message(STATUS "MySQL client library NOT found — native MySQL benchmarks will be disabled")
+        set(HAS_MYSQL FALSE)
+    endif()
+
+    add_executable(bench_mysql_perf bench_mysql_perf.cpp)
+    target_link_libraries(bench_mysql_perf PRIVATE
+        cpplinq
+        benchmark::benchmark
+        benchmark::benchmark_main
+    )
+    target_compile_features(bench_mysql_perf PRIVATE cxx_std_20)
+
+    if(WIN32)
+        target_link_libraries(bench_mysql_perf PRIVATE odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(bench_mysql_perf PRIVATE ODBC::ODBC)
+    endif()
+
+    if(HAS_MYSQL)
+        target_include_directories(bench_mysql_perf PRIVATE ${MySQL_INCLUDE_DIRS})
+        target_link_libraries(bench_mysql_perf PRIVATE ${MySQL_LIBRARIES})
+        target_compile_definitions(bench_mysql_perf PRIVATE HAS_MYSQL=1)
+    endif()
+
+    # Register with CTest for easy discovery
+    add_test(NAME bench_mysql_perf COMMAND bench_mysql_perf --benchmark_min_time=0.5s)
 endif()
 
 # --- Informix Benchmark executable ---
@@ -50,4 +93,5 @@ if(CPPLINQ_ENABLE_INFORMIX)
     target_compile_features(bench_informix_perf PRIVATE cxx_std_20)
     add_test(NAME bench_informix_perf COMMAND bench_informix_perf --benchmark_min_time=0.5s)
 endif()
+
 

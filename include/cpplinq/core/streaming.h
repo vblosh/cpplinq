@@ -107,7 +107,17 @@ public:
     RowStream(const RowStream&) = delete;
     RowStream& operator=(const RowStream&) = delete;
 
-    RowStream(RowStream&& other) noexcept = default;
+    RowStream(RowStream&& other) noexcept
+        : stmt_(std::move(other.stmt_))
+        , reader_(std::move(other.reader_))
+        , options_(std::move(other.options_))
+    {
+        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
+            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
+                try { stmt->cancel(); } catch (...) {}
+            });
+        }
+    }
     RowStream& operator=(RowStream&& other) noexcept = delete;
 
     ~RowStream() = default;
@@ -239,8 +249,19 @@ public:
     EntityStream(const EntityStream&) = delete;
     EntityStream& operator=(const EntityStream&) = delete;
 
-    EntityStream(EntityStream&&) noexcept = default;
-    EntityStream& operator=(EntityStream&&) noexcept = default;
+    EntityStream(EntityStream&& other) noexcept
+        : stmt_(std::move(other.stmt_))
+        , reader_(std::move(other.reader_))
+        , mapper_(std::move(other.mapper_))
+        , options_(std::move(other.options_))
+    {
+        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
+            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
+                try { stmt->cancel(); } catch (...) {}
+            });
+        }
+    }
+    EntityStream& operator=(EntityStream&& other) noexcept = delete;
 
     ~EntityStream() = default;
 
