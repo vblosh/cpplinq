@@ -142,9 +142,15 @@ if [ "$USE_DOCKER" = true ]; then
         docker compose -f "${SCRIPT_DIR}/docker-compose.integration.yml" up -d
         sleep 5
     fi
-    docker exec cpplinq-postgres-test psql -U cppdb -d cppdb -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cppdb') THEN CREATE ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; ELSE ALTER ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; END IF; END \$\$;" -c "SELECT 'CREATE DATABASE cppdb OWNER cppdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'cppdb')\gexec" -c "GRANT ALL PRIVILEGES ON DATABASE cppdb TO cppdb;" 2>/dev/null || true
-    docker exec cpplinq-mysql-test mysql -uroot -proot_password -e "CREATE DATABASE IF NOT EXISTS testdb; CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'testpass'; ALTER USER 'testuser'@'%' IDENTIFIED BY 'testpass'; GRANT ALL PRIVILEGES ON *.* TO 'testuser'@'%' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'cppdb'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" 2>/dev/null || true
-    docker exec cpplinq-informix-test bash -c 'echo "CREATE DATABASE testdb WITH LOG;" | dbaccess - - 2>/dev/null || true' 2>/dev/null || true
+    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-postgres-test$"; then
+        docker exec cpplinq-postgres-test psql -U cppdb -d cppdb -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cppdb') THEN CREATE ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; ELSE ALTER ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; END IF; END \$\$;" -c "SELECT 'CREATE DATABASE cppdb OWNER cppdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'cppdb')\gexec" -c "GRANT ALL PRIVILEGES ON DATABASE cppdb TO cppdb;" 2>/dev/null || true
+    fi
+    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-mysql-test$"; then
+        docker exec cpplinq-mysql-test mysql -uroot -proot_password -e "CREATE DATABASE IF NOT EXISTS testdb; CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'testpass'; ALTER USER 'testuser'@'%' IDENTIFIED BY 'testpass'; GRANT ALL PRIVILEGES ON *.* TO 'testuser'@'%' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'cppdb'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" 2>/dev/null || true
+    fi
+    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-informix-test$"; then
+        docker exec cpplinq-informix-test bash -c 'echo "CREATE DATABASE testdb WITH LOG;" | dbaccess - - 2>/dev/null || true' 2>/dev/null || true
+    fi
 fi
 
 # Detect installed drivers

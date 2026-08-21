@@ -213,9 +213,11 @@ function Find-OdbcDriver([string[]]$candidates) {
 function Invoke-DockerComposeUp([string]$serviceName) {
     $docker = Get-Command "docker" -ErrorAction SilentlyContinue
     if ($docker) {
-        docker compose -f $ComposeFile up -d $serviceName
-        $DockerStartedServices.Add($serviceName)
-        return $true
+        & docker compose -f $ComposeFile up -d $serviceName 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $DockerStartedServices.Add($serviceName)
+            return $true
+        }
     }
     return $false
 }

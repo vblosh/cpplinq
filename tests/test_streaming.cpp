@@ -142,3 +142,81 @@ TEST_F(StreamingTest, StatementCancelExplicit) {
     auto stmt = conn_->prepare("SELECT id, name FROM stream_items");
     EXPECT_NO_THROW(stmt->cancel());
 }
+
+// 8. Test RowRecord Conversion Helpers
+TEST(StreamingExtraTest, RowRecordConversions) {
+    RowRecord row;
+    row.values.push_back(BoundValue{int64_t(100)});
+    row.values.push_back(BoundValue{uint64_t(200)});
+    row.values.push_back(BoundValue{double(300.5)});
+    row.values.push_back(BoundValue{bool(true)});
+    row.values.push_back(BoundValue{std::string("400")});
+    row.values.push_back(BoundValue{std::wstring(L"WideText")});
+    row.values.push_back(BoundValue{SqlNumeric("500.25")});
+    row.values.push_back(BoundValue{SqlDate(2026, 8, 21)});
+    row.values.push_back(BoundValue{SqlTime(12, 0, 0, 0)});
+    row.values.push_back(BoundValue{SqlTimestamp(2026, 8, 21, 12, 0, 0, 0)});
+    SqlInterval iv;
+    iv.type = IntervalType::Day;
+    iv.days = 5;
+    row.values.push_back(BoundValue{iv});
+    row.values.push_back(BoundValue{SqlGuid("a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d")});
+    row.values.push_back(BoundValue{std::monostate{}});
+
+    // get_int64
+    EXPECT_EQ(row.get_int64(0), 100);
+    EXPECT_EQ(row.get_int64(1), 200);
+    EXPECT_EQ(row.get_int64(2), 300);
+    EXPECT_EQ(row.get_int64(3), 1);
+    EXPECT_EQ(row.get_int64(4), 400);
+    EXPECT_EQ(row.get_int64(6), 500);
+    EXPECT_EQ(row.get_int64(999), 0);
+
+    // get_double
+    EXPECT_DOUBLE_EQ(row.get_double(0), 100.0);
+    EXPECT_DOUBLE_EQ(row.get_double(1), 200.0);
+    EXPECT_DOUBLE_EQ(row.get_double(2), 300.5);
+    EXPECT_DOUBLE_EQ(row.get_double(4), 400.0);
+    EXPECT_NEAR(row.get_double(6), 500.25, 1e-4);
+    EXPECT_DOUBLE_EQ(row.get_double(999), 0.0);
+
+    // get_string
+    EXPECT_EQ(row.get_string(0), "100");
+    EXPECT_EQ(row.get_string(1), "200");
+    EXPECT_EQ(row.get_string(3), "true");
+    EXPECT_EQ(row.get_string(4), "400");
+    EXPECT_EQ(row.get_string(5), "WideText");
+    EXPECT_EQ(row.get_string(6), "500.25");
+    EXPECT_EQ(row.get_string(7), "2026-08-21");
+    EXPECT_EQ(row.get_string(8), "12:00:00");
+    EXPECT_EQ(row.get_string(9), "2026-08-21 12:00:00");
+    EXPECT_EQ(row.get_string(10), "5 00:00:00");
+    EXPECT_EQ(row.get_string(11), "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d");
+    EXPECT_EQ(row.get_string(999), "");
+
+    // get_bool
+    EXPECT_TRUE(row.get_bool(0));
+    EXPECT_TRUE(row.get_bool(3));
+    EXPECT_FALSE(row.get_bool(999));
+}
+
+// 9. Test Raw RowStream Cancellation with Stop Token
+TEST_F(StreamingTest, RawStreamCancellation) {
+    std::stop_source stop_source;
+    execution_options options;
+    options.stop_token = stop_source.get_token();
+
+    int count = 0;
+    EXPECT_THROW({
+        for (const auto& row : conn_->stream("SELECT id, name, value FROM stream_items ORDER BY id", {}, options)) {
+            (void)row;
+            count++;
+            if (count == 5) {
+                stop_source.request_stop();
+            }
+        }
+    }, operation_cancelled);
+
+    EXPECT_EQ(count, 5);
+}
+

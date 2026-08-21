@@ -153,3 +153,26 @@ TEST(ConnectionPoolTest, PoolClose) {
 
     EXPECT_THROW(pool->acquire(), DbException);
 }
+
+TEST(ConnectionPoolTest, TryAcquireAndTimeout) {
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 1;
+    config.acquire_timeout = std::chrono::milliseconds(50);
+
+    auto pool = make_pool<sqlite>(":memory:", config);
+    auto conn1 = pool->acquire();
+    EXPECT_TRUE(conn1.is_valid());
+
+    // try_acquire should return nullopt when pool is full
+    auto maybe_conn = pool->try_acquire(std::chrono::milliseconds(20));
+    EXPECT_FALSE(maybe_conn.has_value());
+
+    // acquire should throw when timeout expires
+    EXPECT_THROW(pool->acquire(), DbException);
+
+    // After closing, try_acquire returns nullopt
+    pool->close();
+    EXPECT_FALSE(pool->try_acquire(std::chrono::milliseconds(10)).has_value());
+}
+
