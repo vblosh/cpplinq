@@ -549,11 +549,17 @@ public:
     std::vector<BenchUser> select_filtered_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
-        SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+        SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
             "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
-            "WHERE \"age\" > 30 AND \"email\" IS NOT NULL "
+            "WHERE \"age\" > ? AND \"email\" IS NOT NULL "
             "ORDER BY \"age\""
         )), SQL_NTS);
+
+        SQLINTEGER age_param = 30;
+        SQLLEN ind_age_param = 0;
+        SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &age_param, 0, &ind_age_param);
+
+        SQLExecute(hstmt);
 
         SQLINTEGER id_val = 0, age_val = 0;
         char name_buf[256] = {0}, email_buf[256] = {0};
@@ -584,13 +590,19 @@ public:
     std::vector<std::pair<BenchUser, BenchOrder>> join_query_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
-        SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+        SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
             "SELECT u.\"id\", u.\"name\", u.\"email\", u.\"age\", "
             "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
             "FROM \"bench_users\" u "
             "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > 100.0"
+            "WHERE o.\"amount\" > ?"
         )), SQL_NTS);
+
+        double amount_param = 100.0;
+        SQLLEN ind_amt_param = 0;
+        SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_DOUBLE, SQL_DOUBLE, 0, 0, &amount_param, 0, &ind_amt_param);
+
+        SQLExecute(hstmt);
 
         SQLINTEGER u_id = 0, u_age = 0, o_id = 0, o_uid = 0;
         double o_amount = 0.0;
@@ -633,10 +645,18 @@ public:
     size_t update_bulk_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
-        SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "UPDATE \"bench_users\" SET \"age\" = 99 "
-            "WHERE \"age\" >= 25 AND \"age\" <= 40"
+        SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+            "UPDATE \"bench_users\" SET \"age\" = ? "
+            "WHERE \"age\" >= ? AND \"age\" <= ?"
         )), SQL_NTS);
+
+        SQLINTEGER set_age = 99, min_age = 25, max_age = 40;
+        SQLLEN ind1 = 0, ind2 = 0, ind3 = 0;
+        SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &set_age, 0, &ind1);
+        SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &min_age, 0, &ind2);
+        SQLBindParameter(hstmt, 3, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER, 0, 0, &max_age, 0, &ind3);
+
+        SQLExecute(hstmt);
 
         SQLLEN rows_affected = 0;
         SQLRowCount(hstmt, &rows_affected);
@@ -647,9 +667,15 @@ public:
     size_t delete_bulk_raw() {
         SQLHSTMT hstmt = SQL_NULL_HSTMT;
         SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
-        SQLExecDirectA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
-            "DELETE FROM \"bench_orders\" WHERE \"status\" = 'cancelled'"
+        SQLPrepareA(hstmt, reinterpret_cast<SQLCHAR*>(const_cast<char*>(
+            "DELETE FROM \"bench_orders\" WHERE \"status\" = ?"
         )), SQL_NTS);
+
+        char status_buf[] = "cancelled";
+        SQLLEN ind_status = SQL_NTS;
+        SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_VARCHAR, 63, 0, status_buf, sizeof(status_buf), &ind_status);
+
+        SQLExecute(hstmt);
 
         SQLLEN rows_affected = 0;
         SQLRowCount(hstmt, &rows_affected);
@@ -917,10 +943,12 @@ public:
     }
 
     std::vector<BenchUser> select_filtered_libpq() {
-        PGresult* res = PQexec(conn_,
+        const char* params[1] = {"30"};
+        PGresult* res = PQexecParams(conn_,
             "SELECT \"id\", \"name\", \"email\", \"age\" FROM \"bench_users\" "
-            "WHERE \"age\" > 30 AND \"email\" IS NOT NULL "
-            "ORDER BY \"age\"");
+            "WHERE \"age\" > $1 AND \"email\" IS NOT NULL "
+            "ORDER BY \"age\"",
+            1, nullptr, params, nullptr, nullptr, 0);
         int nrows = PQntuples(res);
         std::vector<BenchUser> results;
         results.reserve(static_cast<size_t>(nrows));
@@ -941,12 +969,14 @@ public:
     }
 
     std::vector<std::pair<BenchUser, BenchOrder>> join_query_libpq() {
-        PGresult* res = PQexec(conn_,
+        const char* params[1] = {"100.0"};
+        PGresult* res = PQexecParams(conn_,
             "SELECT u.\"id\", u.\"name\", u.\"email\", u.\"age\", "
             "o.\"id\", o.\"user_id\", o.\"amount\", o.\"status\" "
             "FROM \"bench_users\" u "
             "INNER JOIN \"bench_orders\" o ON u.\"id\" = o.\"user_id\" "
-            "WHERE o.\"amount\" > 100.0");
+            "WHERE o.\"amount\" > $1",
+            1, nullptr, params, nullptr, nullptr, 0);
         int nrows = PQntuples(res);
         std::vector<std::pair<BenchUser, BenchOrder>> results;
         results.reserve(static_cast<size_t>(nrows));
@@ -974,9 +1004,11 @@ public:
     }
 
     size_t update_bulk_libpq() {
-        PGresult* res = PQexec(conn_,
-            "UPDATE \"bench_users\" SET \"age\" = 99 "
-            "WHERE \"age\" >= 25 AND \"age\" <= 40");
+        const char* params[3] = {"99", "25", "40"};
+        PGresult* res = PQexecParams(conn_,
+            "UPDATE \"bench_users\" SET \"age\" = $1 "
+            "WHERE \"age\" >= $2 AND \"age\" <= $3",
+            3, nullptr, params, nullptr, nullptr, 0);
         const char* affected = PQcmdTuples(res);
         size_t n = affected ? static_cast<size_t>(std::atoll(affected)) : 0;
         PQclear(res);
@@ -984,8 +1016,10 @@ public:
     }
 
     size_t delete_bulk_libpq() {
-        PGresult* res = PQexec(conn_,
-            "DELETE FROM \"bench_orders\" WHERE \"status\" = 'cancelled'");
+        const char* params[1] = {"cancelled"};
+        PGresult* res = PQexecParams(conn_,
+            "DELETE FROM \"bench_orders\" WHERE \"status\" = $1",
+            1, nullptr, params, nullptr, nullptr, 0);
         const char* affected = PQcmdTuples(res);
         size_t n = affected ? static_cast<size_t>(std::atoll(affected)) : 0;
         PQclear(res);

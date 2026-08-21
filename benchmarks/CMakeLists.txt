@@ -29,6 +29,13 @@ if(CPPLINQ_ENABLE_POSTGRES)
     )
     target_compile_features(bench_postgres_perf PRIVATE cxx_std_20)
 
+    if(WIN32)
+        target_link_libraries(bench_postgres_perf PRIVATE odbc32)
+    else()
+        find_package(ODBC REQUIRED)
+        target_link_libraries(bench_postgres_perf PRIVATE ODBC::ODBC)
+    endif()
+
     if(HAS_LIBPQ)
         target_include_directories(bench_postgres_perf PRIVATE ${PostgreSQL_INCLUDE_DIRS})
         target_link_libraries(bench_postgres_perf PRIVATE ${PostgreSQL_LIBRARIES})
