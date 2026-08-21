@@ -117,13 +117,17 @@ jobs:
             default-mysql-client \
             postgresql-client \
             unixodbc-dev \
-            msodbcsql18
+            msodbcsql18 \
+            libpq-dev \
+            libmariadb-dev
 
       - name: Configure connection strings
         run: |
           echo 'CPPLINQ_POSTGRES_ODBC=Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPLINQ_POSTGRES_LIBPQ=host=localhost port=5432 dbname=cppdb user=cppdb password=cppdb_password' >> "$GITHUB_ENV"
           echo "CPPLINQ_SQLITE_ODBC=Driver={SQLite3};Database=$RUNNER_TEMP/cppdb.sqlite;" >> "$GITHUB_ENV"
           echo 'CPPLINQ_MYSQL_ODBC=Driver={MariaDB Unicode};Server=127.0.0.1;Port=3306;Database=cppdb;Uid=cppdb;Pwd=cppdb_password;' >> "$GITHUB_ENV"
+          echo 'CPPLINQ_MYSQL_CLIENT=host=127.0.0.1;port=3306;database=cppdb;user=cppdb;password=cppdb_password' >> "$GITHUB_ENV"
           echo 'CPPLINQ_MSSQL_ODBC=Driver={ODBC Driver 18 for SQL Server};Server=127.0.0.1,1433;Database=master;Uid=sa;Pwd=Password123!;TrustServerCertificate=yes;' >> "$GITHUB_ENV"
           echo 'CCACHE_DIR=/home/runner/.cache/ccache' >> "$GITHUB_ENV"
           echo 'CCACHE_MAXSIZE=500M' >> "$GITHUB_ENV"
@@ -195,6 +199,16 @@ jobs:
         run: |
           sqllocaldb create MSSQLLocalDB -s
           sqllocaldb info MSSQLLocalDB
+
+      - name: Configure PATH for MySQL client DLLs
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\Program Files\MySQL\MySQL Server 8.0\lib") {
+            "C:\Program Files\MySQL\MySQL Server 8.0\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+          if (Test-Path "C:\Program Files\MySQL\MySQL Server 8.0\bin") {
+            "C:\Program Files\MySQL\MySQL Server 8.0\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
 
       - name: Configure
         run: >-

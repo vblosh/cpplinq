@@ -1,12 +1,29 @@
 #pragma once
 #include "cpplinq/driver/connection.h"
 #include "dialect/mysql_dialect.h"
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#endif
+
 #if __has_include(<mariadb/mysql.h>)
 #include <mariadb/mysql.h>
 #elif __has_include(<mysql/mysql.h>)
 #include <mysql/mysql.h>
 #else
 #include <mysql.h>
+#endif
+
+#if !defined(MARIADB_BASE_VERSION) && !defined(MARIADB_VERSION_ID) && !defined(LIBMARIADB)
+#ifndef my_bool
+typedef bool my_bool;
+#endif
 #endif
 #include <memory>
 #include <string>

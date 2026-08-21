@@ -17,6 +17,17 @@
 #include <benchmark/benchmark.h>
 #include "cpplinq/cpplinq.hpp"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <windows.h>
+#endif
+
 #ifdef HAS_MYSQL
 #if __has_include(<mariadb/mysql.h>)
 #include <mariadb/mysql.h>
@@ -25,15 +36,14 @@
 #else
 #include <mysql.h>
 #endif
+
+#if !defined(MARIADB_BASE_VERSION) && !defined(MARIADB_VERSION_ID) && !defined(LIBMARIADB)
+#ifndef my_bool
+typedef bool my_bool;
+#endif
+#endif
 #endif
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 #include <sql.h>
 #include <sqlext.h>
 

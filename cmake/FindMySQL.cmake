@@ -37,6 +37,24 @@ find_path(MySQL_INCLUDE_DIR
         "$ENV{HOME}/.local/usr/include"
         "$ENV{HOME}/.local/usr/include/mariadb"
         "$ENV{HOME}/.local/usr/include/mysql"
+        "$ENV{MYSQL_HOME}/include"
+        "$ENV{MYSQL_DIR}/include"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 8.0/include"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 8.4/include"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 9.0/include"
+        "$ENV{ProgramFiles}/MySQL/MySQL Connector C 6.1/include"
+        "$ENV{ProgramFiles}/MySQL/MySQL Connector C++ 8.0/include"
+        "$ENV{ProgramFiles}/MariaDB/MariaDB C Connector/include"
+        "$ENV{ProgramFiles\(x86\)}/MySQL/MySQL Server 8.0/include"
+    PATHS
+        "C:/Program Files/MySQL/MySQL Server 8.0/include"
+        "C:/Program Files/MySQL/MySQL Server 8.4/include"
+        "C:/Program Files/MySQL/MySQL Server 9.0/include"
+        "C:/Program Files (x86)/MySQL/MySQL Server 8.0/include"
+        "/opt/homebrew/include"
+        "/opt/homebrew/include/mysql"
+        "/opt/homebrew/opt/mysql-client/include"
+        "/usr/local/include/mysql"
     PATH_SUFFIXES
         mariadb
         mysql
@@ -50,6 +68,7 @@ find_library(MySQL_LIBRARY
         libmariadb.so.3
         libmariadb.so
         libmysqlclient.so
+        libmysql
         mariadb
         mysqlclient
         mariadbclient
@@ -57,6 +76,7 @@ find_library(MySQL_LIBRARY
         libmysqlclient
         libmariadbclient
         mysqlclient_r
+        mysql
     HINTS
         ${PC_MYSQL_LIBRARY_DIRS}
         /usr/lib/x86_64-linux-gnu
@@ -65,9 +85,28 @@ find_library(MySQL_LIBRARY
         "$ENV{HOME}/.local/lib"
         "$ENV{HOME}/.local/usr/lib/x86_64-linux-gnu"
         "$ENV{HOME}/.local/usr/lib"
+        "$ENV{MYSQL_HOME}/lib"
+        "$ENV{MYSQL_DIR}/lib"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 8.0/lib"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 8.4/lib"
+        "$ENV{ProgramFiles}/MySQL/MySQL Server 9.0/lib"
+        "$ENV{ProgramFiles}/MySQL/MySQL Connector C 6.1/lib"
+        "$ENV{ProgramFiles}/MySQL/MySQL Connector C++ 8.0/lib"
+        "$ENV{ProgramFiles}/MariaDB/MariaDB C Connector/lib"
+        "$ENV{ProgramFiles\(x86\)}/MySQL/MySQL Server 8.0/lib"
+    PATHS
+        "C:/Program Files/MySQL/MySQL Server 8.0/lib"
+        "C:/Program Files/MySQL/MySQL Server 8.4/lib"
+        "C:/Program Files/MySQL/MySQL Server 9.0/lib"
+        "C:/Program Files (x86)/MySQL/MySQL Server 8.0/lib"
+        "/opt/homebrew/lib"
+        "/opt/homebrew/opt/mysql-client/lib"
+        "/usr/local/lib"
     PATH_SUFFIXES
         lib
         lib64
+        lib/vs14
+        lib/x64
         x86_64-linux-gnu
 )
 
