@@ -54,6 +54,8 @@ Without a pool, under high concurrency (e.g., hundreds of concurrent API request
 | `min_connections` | `size_t` | `1` | Number of idle connections created and kept alive immediately upon pool initialization. |
 | `max_connections` | `size_t` | `10` | Hard upper bound on total open connections (active + idle). |
 | `acquire_timeout` | `std::chrono::milliseconds` | `5000ms` (5s) | Maximum duration a thread will wait for an available connection before throwing a `DbException`. |
+| `async_worker_count` | `size_t` | `0` | Number of asynchronous workers. `0` uses `max_connections`; values above it are clamped. Workers start lazily on the first async submission. |
+| `async_queue_capacity` | `size_t` | `64` | Maximum number of queued asynchronous operations. A full queue returns an exceptional future immediately. |
 
 ---
 
@@ -82,6 +84,11 @@ Even if an exception is thrown inside the block, C++ stack unwinding guarantees 
 
 ### 4.3 Health Check & Auto-Recovery
 Before returning a connection to a caller, the pool validates `conn->is_open()`. If a connection was dropped due to a server restart or network interruption, it is discarded and replaced with a healthy instance automatically.
+
+### 4.4 Asynchronous Submission
+`ConnectionPool<Backend>::submit()` runs a complete callback on a bounded worker executor. The worker acquires one exclusive connection lease, creates a local `DbContext`, invokes the callback, and returns the lease through RAII when the callback finishes. See [`asynchronous_operations.md`](asynchronous_operations.md) for the complete contract and examples.
+
+The asynchronous worker count is capped at `max_connections` so the default configuration does not schedule more database workers than the pool can serve concurrently. The executor is lazy, so pools used only through synchronous APIs do not create worker threads.
 
 ---
 

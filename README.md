@@ -16,7 +16,7 @@
 - 🔍 **Subqueries & Predicates**: `EXISTS`, `NOT EXISTS`, `IN (subquery)`, `LIKE`, `BETWEEN`, `IN (list)`, and scalar subqueries.
 - 🔄 **Cross-Dialect UPSERT & Bulk Operations**: Atomic single and batch upserts (`insert_many`, `update_many`, `delete_many`, `upsert_many`, `truncate`) with driver-accelerated ODBC array parameter binding.
 - 🔀 **SQL Set Operations**: `union_with` (`UNION`), `union_all` (`UNION ALL`), `intersect` (`INTERSECT`), and `except_from` (`EXCEPT`).
-- 🏊 **Thread-Safe Connection Pool**: High-performance `ConnectionPool<Backend>` with RAII leasing (`PooledConnection`), acquisition timeouts, and recycling.
+- 🏊 **Thread-Safe Connection Pool**: High-performance `ConnectionPool<Backend>` with RAII leasing (`PooledConnection`), acquisition timeouts, recycling, and bounded asynchronous submission through `std::future`.
 - 📊 **Full Aggregations & Grouping**: `count()`, `count_distinct()`, `sum()`, `avg()`, `min_val()`, `max_val()`, `group_by()`, and `having()`.
 - 💾 **Multi-Database Support**:
   - **SQLite** (built-in amalgamation, in-memory & file databases)
@@ -39,6 +39,7 @@ Detailed documentation is available in the [`doc/`](doc/) directory:
 - [**Functions, Aggregates & Window Functions**](doc/functions_and_aggregates.md) — Scalar SQL functions, date/time operations, `GROUP BY`/`HAVING`, and window functions (`ROW_NUMBER`, `RANK`, etc.).
 - [**Data Modifications & Transactions**](doc/data_modifications.md) — `insert`, `insert_many`, `update`, `remove`, `upsert`, RAII `Transaction`, and `ConnectionPool`.
 - [**Connection Pooling Guide**](doc/connection_pool.md) — Thread-safe `ConnectionPool<Backend>`, RAII `PooledConnection` leasing, timeouts, metrics, and multi-threading.
+- [**Asynchronous Operations**](doc/asynchronous_operations.md) — Pool-scoped `std::future` submission, worker configuration, queue backpressure, queued cancellation, shutdown, and lease boundaries.
 - [**Streaming & Cancellation Guide**](doc/streaming_and_cancellation.md) — Lazy C++20 range streaming, timeouts, cooperative `std::stop_token` cancellation, `statement::cancel()`, and driver capabilities.
 - [**Dialects & Drivers**](doc/dialects_and_drivers.md) — Connecting to SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix, ODBC DSN setup, and CI workflows.
 - [**Manual Testing & Building Guide**](doc/manual_testing.md) — Building, testing, sanitizer flags (ASan/UBSan), Docker compose database orchestration, and WSL workflows.
@@ -181,6 +182,7 @@ ctest --test-dir build --output-on-failure -C Release
 | `test_chunked_buffer` | Zero-reallocation chunk-based buffer, placement new, and exact-fit vector extraction |
 | `test_sqlite_integration` | End-to-end SQLite in-memory integration testing (CRUD, joins, CTEs, subqueries) |
 | `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
+| `test_async_connection_pool` | Bounded future submission, queued cancellation, backpressure, exceptions, and shutdown |
 | `test_streaming` | Single-pass C++20 input ranges, timeouts, and cooperative stop_token cancellation |
 | `test_postgres_integration` | Live PostgreSQL integration test suite |
 | `test_mysql_integration` | Live MySQL / MariaDB integration test suite |

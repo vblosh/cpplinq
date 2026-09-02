@@ -12,7 +12,7 @@ endif()
 
 set(TEST_TARGETS test_expression test_query_builder test_row_mapper test_chunked_buffer)
 if(CPPLINQ_ENABLE_SQLITE)
-    list(APPEND TEST_TARGETS test_sqlite_integration test_connection_pool test_streaming)
+    list(APPEND TEST_TARGETS test_sqlite_integration test_connection_pool test_async_connection_pool test_streaming)
 endif()
 if(CPPLINQ_ENABLE_POSTGRES)
     list(APPEND TEST_TARGETS test_postgres_integration)

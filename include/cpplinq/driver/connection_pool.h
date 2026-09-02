@@ -1,9 +1,12 @@
 #pragma once
 
 #include "cpplinq/driver/connection.h"
+#include "cpplinq/driver/async_executor.h"
 #include "cpplinq/core/db_context.h"
 #include <chrono>
 #include <condition_variable>
+#include <exception>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -11,6 +14,8 @@
 #include <functional>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace cpplinq {
 
@@ -18,29 +23,139 @@ struct PoolConfig {
     size_t min_connections = 1;
     size_t max_connections = 10;
     std::chrono::milliseconds acquire_timeout{5000};
+    size_t async_worker_count = 0;
+    size_t async_queue_capacity = 64;
 };
 
 template <typename Backend>
-class ConnectionPool;
+class PooledConnection;
+
+namespace detail {
+
+template <typename Backend>
+class ConnectionPoolState {
+public:
+    ConnectionPoolState(std::string connection_string, PoolConfig config)
+        : connection_string_(std::move(connection_string)),
+          config_(config) {
+        if (config_.max_connections == 0) {
+            config_.max_connections = 1;
+        }
+        if (config_.min_connections > config_.max_connections) {
+            config_.min_connections = config_.max_connections;
+        }
+        if (config_.async_worker_count == 0 ||
+            config_.async_worker_count > config_.max_connections) {
+            config_.async_worker_count = config_.max_connections;
+        }
+        if (config_.async_queue_capacity == 0) {
+            config_.async_queue_capacity = 1;
+        }
+    }
+
+    void initialize();
+
+    PooledConnection<Backend> acquire(
+        const std::shared_ptr<ConnectionPoolState<Backend>>& self
+    );
+
+    std::optional<PooledConnection<Backend>> try_acquire(
+        std::chrono::milliseconds timeout,
+        const std::shared_ptr<ConnectionPoolState<Backend>>& self
+    );
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return total_connections_;
+    }
+
+    size_t idle_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return idle_connections_.size();
+    }
+
+    size_t active_count() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return total_connections_ - idle_connections_.size();
+    }
+
+    bool is_closed() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_;
+    }
+
+    const PoolConfig& config() const noexcept {
+        return config_;
+    }
+
+    void close() {
+        std::vector<std::unique_ptr<IConnection>> to_close;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_) return;
+            closed_ = true;
+            to_close = std::move(idle_connections_);
+            total_connections_ -= to_close.size();
+            condition_.notify_all();
+        }
+        for (auto& conn : to_close) {
+            if (conn && conn->is_open()) {
+                try { conn->close(); } catch(...) {}
+            }
+        }
+    }
+
+    void return_connection(std::unique_ptr<IConnection> conn) {
+        if (!conn) return;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_ || !conn->is_open()) {
+            total_connections_--;
+            try { if (conn->is_open()) conn->close(); } catch(...) {}
+        } else {
+            idle_connections_.push_back(std::move(conn));
+        }
+        condition_.notify_one();
+    }
+
+private:
+    std::unique_ptr<IConnection> create_new_connection() {
+        auto conn = make_connection<Backend>(connection_string_);
+        conn->open();
+        return conn;
+    }
+
+    std::string connection_string_;
+    PoolConfig config_;
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::vector<std::unique_ptr<IConnection>> idle_connections_;
+    size_t total_connections_ = 0;
+    bool closed_ = false;
+};
+
+} // namespace detail
 
 template <typename Backend>
 class PooledConnection {
 public:
     PooledConnection() = default;
 
-    PooledConnection(std::shared_ptr<ConnectionPool<Backend>> pool, std::unique_ptr<IConnection> conn)
-        : pool_(std::move(pool)), conn_(std::move(conn)) {}
+    PooledConnection(
+        std::shared_ptr<detail::ConnectionPoolState<Backend>> state,
+        std::unique_ptr<IConnection> conn
+    ) : state_(std::move(state)), conn_(std::move(conn)) {}
 
     PooledConnection(const PooledConnection&) = delete;
     PooledConnection& operator=(const PooledConnection&) = delete;
 
     PooledConnection(PooledConnection&& other) noexcept
-        : pool_(std::move(other.pool_)), conn_(std::move(other.conn_)) {}
+        : state_(std::move(other.state_)), conn_(std::move(other.conn_)) {}
 
     PooledConnection& operator=(PooledConnection&& other) noexcept {
         if (this != &other) {
             release();
-            pool_ = std::move(other.pool_);
+            state_ = std::move(other.state_);
             conn_ = std::move(other.conn_);
         }
         return *this;
@@ -75,9 +190,94 @@ public:
 private:
     void release();
 
-    std::shared_ptr<ConnectionPool<Backend>> pool_;
+    std::shared_ptr<detail::ConnectionPoolState<Backend>> state_;
     std::unique_ptr<IConnection> conn_;
 };
+
+namespace detail {
+
+template <typename Backend>
+PooledConnection<Backend> ConnectionPoolState<Backend>::acquire(
+    const std::shared_ptr<ConnectionPoolState<Backend>>& self
+) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (closed_) {
+        throw DbException("Cannot acquire connection: ConnectionPool is closed");
+    }
+
+    auto timeout = config_.acquire_timeout;
+    bool success = condition_.wait_for(lock, timeout, [this]() {
+        return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
+    });
+
+    if (closed_) {
+        throw DbException("Cannot acquire connection: ConnectionPool was closed while waiting");
+    }
+
+    if (!success) {
+        throw DbException("Connection acquisition timed out after " + std::to_string(timeout.count()) + "ms");
+    }
+
+    if (!idle_connections_.empty()) {
+        auto conn = std::move(idle_connections_.back());
+        idle_connections_.pop_back();
+        return PooledConnection<Backend>(self, std::move(conn));
+    }
+
+    if (total_connections_ < config_.max_connections) {
+        auto conn = create_new_connection();
+        total_connections_++;
+        return PooledConnection<Backend>(self, std::move(conn));
+    }
+
+    throw DbException("Failed to acquire connection from pool");
+}
+
+template <typename Backend>
+std::optional<PooledConnection<Backend>> ConnectionPoolState<Backend>::try_acquire(
+    std::chrono::milliseconds timeout,
+    const std::shared_ptr<ConnectionPoolState<Backend>>& self
+) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (closed_) return std::nullopt;
+
+    bool success = condition_.wait_for(lock, timeout, [this]() {
+        return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
+    });
+
+    if (closed_ || !success) return std::nullopt;
+
+    if (!idle_connections_.empty()) {
+        auto conn = std::move(idle_connections_.back());
+        idle_connections_.pop_back();
+        return PooledConnection<Backend>(self, std::move(conn));
+    }
+
+    if (total_connections_ < config_.max_connections) {
+        auto conn = create_new_connection();
+        total_connections_++;
+        return PooledConnection<Backend>(self, std::move(conn));
+    }
+
+    return std::nullopt;
+}
+
+template <typename Backend>
+void ConnectionPoolState<Backend>::initialize() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (size_t i = 0; i < config_.min_connections; ++i) {
+        try {
+            auto conn = create_new_connection();
+            idle_connections_.push_back(std::move(conn));
+            total_connections_++;
+        } catch (...) {
+            // If initial creation fails, proceed with available connections.
+            break;
+        }
+    }
+}
+
+} // namespace detail
 
 template <typename Backend>
 class ConnectionPool : public std::enable_shared_from_this<ConnectionPool<Backend>> {
@@ -89,7 +289,6 @@ public:
         auto pool = std::shared_ptr<ConnectionPool<Backend>>(
             new ConnectionPool<Backend>(std::move(connection_string), config)
         );
-        pool->initialize();
         return pool;
     }
 
@@ -101,62 +300,11 @@ public:
     ConnectionPool& operator=(const ConnectionPool&) = delete;
 
     PooledConnection<Backend> acquire() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (closed_) {
-            throw DbException("Cannot acquire connection: ConnectionPool is closed");
-        }
-
-        auto timeout = config_.acquire_timeout;
-        bool success = cv_.wait_for(lock, timeout, [this]() {
-            return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
-        });
-
-        if (closed_) {
-            throw DbException("Cannot acquire connection: ConnectionPool was closed while waiting");
-        }
-
-        if (!success) {
-            throw DbException("Connection acquisition timed out after " + std::to_string(timeout.count()) + "ms");
-        }
-
-        if (!idle_connections_.empty()) {
-            auto conn = std::move(idle_connections_.back());
-            idle_connections_.pop_back();
-            return PooledConnection<Backend>(this->shared_from_this(), std::move(conn));
-        }
-
-        if (total_connections_ < config_.max_connections) {
-            auto conn = create_new_connection();
-            total_connections_++;
-            return PooledConnection<Backend>(this->shared_from_this(), std::move(conn));
-        }
-
-        throw DbException("Failed to acquire connection from pool");
+        return state_->acquire(state_);
     }
 
     std::optional<PooledConnection<Backend>> try_acquire(std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (closed_) return std::nullopt;
-
-        bool success = cv_.wait_for(lock, timeout, [this]() {
-            return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
-        });
-
-        if (closed_ || !success) return std::nullopt;
-
-        if (!idle_connections_.empty()) {
-            auto conn = std::move(idle_connections_.back());
-            idle_connections_.pop_back();
-            return PooledConnection<Backend>(this->shared_from_this(), std::move(conn));
-        }
-
-        if (total_connections_ < config_.max_connections) {
-            auto conn = create_new_connection();
-            total_connections_++;
-            return PooledConnection<Backend>(this->shared_from_this(), std::move(conn));
-        }
-
-        return std::nullopt;
+        return state_->try_acquire(timeout, state_);
     }
 
     template <typename Func>
@@ -173,106 +321,107 @@ public:
     }
 
     size_t size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return total_connections_;
+        return state_->size();
     }
 
     size_t idle_count() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return idle_connections_.size();
+        return state_->idle_count();
     }
 
     size_t active_count() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return total_connections_ - idle_connections_.size();
+        return state_->active_count();
     }
 
     size_t max_size() const noexcept {
-        return config_.max_connections;
+        return state_->config().max_connections;
     }
 
     bool is_closed() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return closed_;
+        return state_->is_closed();
     }
 
     void close() {
-        std::vector<std::unique_ptr<IConnection>> to_close;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (closed_) return;
-            closed_ = true;
-            to_close = std::move(idle_connections_);
-            total_connections_ -= to_close.size();
-            cv_.notify_all();
-        }
-        for (auto& conn : to_close) {
-            if (conn && conn->is_open()) {
-                try { conn->close(); } catch(...) {}
-            }
-        }
+        std::lock_guard<std::mutex> close_lock(close_mutex_);
+        state_->close();
+        executor_.shutdown();
     }
 
-    void return_connection(std::unique_ptr<IConnection> conn) {
-        if (!conn) return;
+    template <typename Func>
+    auto submit(Func&& fn) {
+        return submit_impl(std::nullopt, std::forward<Func>(fn));
+    }
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || !conn->is_open()) {
-            total_connections_--;
-            try { if (conn->is_open()) conn->close(); } catch(...) {}
-        } else {
-            idle_connections_.push_back(std::move(conn));
-        }
-        cv_.notify_one();
+    template <typename Func>
+    auto submit(std::stop_token stop_token, Func&& fn) {
+        return submit_impl(stop_token, std::forward<Func>(fn));
     }
 
 private:
     ConnectionPool(std::string connection_string, PoolConfig config)
-        : connection_string_(std::move(connection_string)),
-          config_(config) {
-        if (config_.max_connections == 0) {
-            config_.max_connections = 1;
-        }
-        if (config_.min_connections > config_.max_connections) {
-            config_.min_connections = config_.max_connections;
-        }
+        : state_(std::make_shared<detail::ConnectionPoolState<Backend>>(
+              std::move(connection_string), config)),
+          executor_(state_->config().async_worker_count,
+                    state_->config().async_queue_capacity) {
+        state_->initialize();
     }
 
-    void initialize() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (size_t i = 0; i < config_.min_connections; ++i) {
-            try {
-                auto conn = create_new_connection();
-                idle_connections_.push_back(std::move(conn));
-                total_connections_++;
-            } catch (...) {
-                // If initial creation fails, proceed with available connections
-                break;
+    template <typename Func>
+    auto submit_impl(std::optional<std::stop_token> stop_token, Func&& fn) {
+        using Function = std::decay_t<Func>;
+        using Result = std::invoke_result_t<Function&, DbContext<Backend>&>;
+        using FutureResult = std::decay_t<Result>;
+
+        static_assert(!std::is_reference_v<Result>,
+                      "ConnectionPool::submit callbacks must return values, not references");
+
+        std::lock_guard<std::mutex> close_lock(close_mutex_);
+        if (state_->is_closed()) {
+            std::promise<FutureResult> promise;
+            auto future = promise.get_future();
+            promise.set_exception(std::make_exception_ptr(
+                DbException("Cannot submit asynchronous operation: ConnectionPool is closed")
+            ));
+            return future;
+        }
+
+        std::weak_ptr<detail::ConnectionPoolState<Backend>> weak_state = state_;
+        return executor_.template submit<FutureResult>(
+            [weak_state, stop_token, fn = std::forward<Func>(fn)]() mutable -> FutureResult {
+                if (stop_token.has_value() && stop_token->stop_requested()) {
+                    throw OperationCancelled("Asynchronous operation was cancelled before it started");
+                }
+
+                auto state = weak_state.lock();
+                if (!state) {
+                    throw DbException("Asynchronous operation cannot acquire its connection pool");
+                }
+
+                auto conn = state->acquire(state);
+                if (stop_token.has_value() && stop_token->stop_requested()) {
+                    throw OperationCancelled("Asynchronous operation was cancelled before it started");
+                }
+
+                auto db = conn.get_context();
+                if constexpr (std::is_void_v<FutureResult>) {
+                    std::invoke(fn, db);
+                } else {
+                    return std::invoke(fn, db);
+                }
             }
-        }
+        );
     }
 
-    std::unique_ptr<IConnection> create_new_connection() {
-        auto conn = make_connection<Backend>(connection_string_);
-        conn->open();
-        return conn;
-    }
-
-    std::string connection_string_;
-    PoolConfig config_;
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::vector<std::unique_ptr<IConnection>> idle_connections_;
-    size_t total_connections_ = 0;
-    bool closed_ = false;
+    std::shared_ptr<detail::ConnectionPoolState<Backend>> state_;
+    detail::BoundedTaskExecutor executor_;
+    std::mutex close_mutex_;
 };
 
 template <typename Backend>
 void PooledConnection<Backend>::release() {
-    if (conn_ && pool_) {
-        pool_->return_connection(std::move(conn_));
+    if (conn_ && state_) {
+        state_->return_connection(std::move(conn_));
         conn_.reset();
-        pool_.reset();
+        state_.reset();
     }
 }
 

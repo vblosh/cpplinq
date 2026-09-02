@@ -629,6 +629,30 @@ TYPED_TEST_P(IntegrationTestSuite, ConnectionPool) {
     });
 }
 
+TYPED_TEST_P(IntegrationTestSuite, AsyncConnectionPoolSubmission) {
+    using backend_type = typename TypeParam::backend_type;
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 1;
+    config.async_worker_count = 1;
+
+    auto pool = make_pool<backend_type>(this->conn_str_, config);
+    auto insert_future = pool->submit([](auto& db) {
+        db.ensure_table(users_table);
+        return db.insert(users_table, User{0, "AsyncPoolUser", "async@test.com", 36});
+    });
+    EXPECT_GT(insert_future.get(), 0);
+
+    auto count_future = pool->submit([](auto& db) {
+        return db.from(users_table)
+            .where(users_table["name"] == "AsyncPoolUser")
+            .count();
+    });
+    EXPECT_EQ(count_future.get(), 1);
+    EXPECT_EQ(pool->active_count(), 0);
+    pool->close();
+}
+
 TYPED_TEST_P(IntegrationTestSuite, SubqueriesExistsAndIn) {
     auto& db = this->db;
     if (!db) return;
@@ -1173,6 +1197,7 @@ REGISTER_TYPED_TEST_SUITE_P(
     UpsertEntity,
     SetOperations,
     ConnectionPool,
+    AsyncConnectionPoolSubmission,
     SubqueriesExistsAndIn,
     DateTimeFunctions,
     WindowFunctions,
