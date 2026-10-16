@@ -328,67 +328,9 @@ GeneratedSql SqlGenerator::generate_select(
     const std::vector<expr::ExprNode>& group_by,
     const std::optional<expr::ExprNode>& having
 ) const {
-    GeneratedSql result;
-    Context ctx;
-
-    std::string sql = "SELECT ";
-    std::string prefix_limit = dialect_.select_prefix_limit_offset(limit, offset);
-    if (!prefix_limit.empty()) {
-        sql += prefix_limit;
-    }
-    if (is_distinct) {
-        sql += "DISTINCT ";
-    }
-    if (columns.empty()) {
-        sql += "*";
-    } else {
-        for (size_t i = 0; i < columns.size(); ++i) {
-            if (i > 0) sql += ", ";
-            sql += dialect_.quote_id(columns[i]);
-        }
-    }
-
-    sql += " FROM ";
-    sql += dialect_.quote_id(table_name);
-
-    if (where.has_value()) {
-        sql += " WHERE ";
-        sql += visit(*where, result.params, ctx);
-    }
-
-    if (!group_by.empty()) {
-        sql += " GROUP BY ";
-        for (size_t i = 0; i < group_by.size(); ++i) {
-            if (i > 0) sql += ", ";
-            sql += visit(group_by[i], result.params, ctx);
-        }
-    }
-
-    if (having.has_value()) {
-        sql += " HAVING ";
-        sql += visit(*having, result.params, ctx);
-    }
-
-    if (!order_by.empty()) {
-        sql += " ORDER BY ";
-        for (size_t i = 0; i < order_by.size(); ++i) {
-            if (i > 0) sql += ", ";
-            sql += visit(order_by[i].first, result.params, ctx);
-            if (order_by[i].second == expr::SortDir::Desc) {
-                sql += " DESC";
-            } else {
-                sql += " ASC";
-            }
-        }
-    } else if ((limit.has_value() || offset.has_value()) && dialect_.limit_offset(limit, offset).find("OFFSET") != std::string::npos) {
-        sql += " ORDER BY (SELECT NULL)";
-    }
-
-    sql += dialect_.limit_offset(limit, offset);
-
-    result.sql = std::move(sql);
-    result.slots = std::move(ctx.slots);
-    return result;
+    return generate_cte_select(
+        {}, table_name, columns, where, order_by, limit, offset, is_distinct, group_by, having
+    );
 }
 
 GeneratedSql SqlGenerator::generate_select(
@@ -528,9 +470,13 @@ GeneratedSql SqlGenerator::generate_set_operation(
     if (base_distinct) {
         sql += "DISTINCT ";
     }
-    for (size_t i = 0; i < base_columns.size(); ++i) {
-        if (i > 0) sql += ", ";
-        sql += dialect_.quote_id(base_columns[i]);
+    if (base_columns.empty()) {
+        sql += "*";
+    } else {
+        for (size_t i = 0; i < base_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += dialect_.quote_id(base_columns[i]);
+        }
     }
     sql += " FROM " + dialect_.quote_id(base_table);
     if (base_where.has_value()) {
@@ -553,9 +499,13 @@ GeneratedSql SqlGenerator::generate_set_operation(
                 break;
         }
         sql += op.is_distinct ? "SELECT DISTINCT " : "SELECT ";
-        for (size_t i = 0; i < op.columns.size(); ++i) {
-            if (i > 0) sql += ", ";
-            sql += dialect_.quote_id(op.columns[i]);
+        if (op.columns.empty()) {
+            sql += "*";
+        } else {
+            for (size_t i = 0; i < op.columns.size(); ++i) {
+                if (i > 0) sql += ", ";
+                sql += dialect_.quote_id(op.columns[i]);
+            }
         }
         sql += " FROM " + dialect_.quote_id(op.table_name);
         if (op.where.has_value()) {
@@ -623,14 +573,16 @@ GeneratedSql SqlGenerator::generate_insert(
             sql += dialect_.quote_id(column_names[i]);
         }
         sql += ")";
+    }
 
-        if (returning_column.has_value() && !returning_column->empty()) {
-            std::string out_clause = dialect_.output_clause(*returning_column);
-            if (!out_clause.empty()) {
-                sql += out_clause;
-            }
+    if (returning_column.has_value() && !returning_column->empty()) {
+        std::string out_clause = dialect_.output_clause(*returning_column);
+        if (!out_clause.empty()) {
+            sql += out_clause;
         }
+    }
 
+    if (!column_names.empty()) {
         sql += " VALUES (";
         for (size_t i = 0; i < values.size(); ++i) {
             if (i > 0) sql += ", ";
@@ -640,6 +592,8 @@ GeneratedSql SqlGenerator::generate_insert(
             ctx.slots.emplace_back(values[i]);
         }
         sql += ")";
+    } else {
+        sql += " DEFAULT VALUES";
     }
 
     if (returning_column.has_value() && !returning_column->empty()) {
@@ -766,9 +720,13 @@ GeneratedSql SqlGenerator::generate_create_table(
     Context ctx;
 
     size_t pk_count = 0;
+    bool has_auto_inc = false;
     for (const auto& col : column_infos) {
-        if (col.is_primary_key && !col.is_auto_increment) {
+        if (col.is_primary_key) {
             ++pk_count;
+        }
+        if (col.is_auto_increment) {
+            has_auto_inc = true;
         }
     }
 
@@ -785,7 +743,7 @@ GeneratedSql SqlGenerator::generate_create_table(
             }
         } else {
             sql += dialect_.quote_id(col.name) + " " + dialect_.type_name(col.sql_type);
-            if (col.is_primary_key && pk_count <= 1) {
+            if (col.is_primary_key && pk_count == 1 && !has_auto_inc) {
                 sql += " PRIMARY KEY";
             }
             if (col.is_not_null) {
@@ -797,7 +755,7 @@ GeneratedSql SqlGenerator::generate_create_table(
         }
     }
 
-    if (pk_count > 1) {
+    if (pk_count > 1 && !has_auto_inc) {
         sql += ", PRIMARY KEY (";
         bool first_pk = true;
         for (const auto& col : column_infos) {
@@ -855,7 +813,7 @@ GeneratedSql SqlGenerator::generate_aggregate(
     Context ctx;
 
     std::string sql = "SELECT ";
-    sql += std::string(function_name);
+    sql += dialect_.function_name(function_name);
     sql += "(";
     if (column_name == "*") {
         sql += "*";

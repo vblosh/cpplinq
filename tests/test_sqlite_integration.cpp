@@ -236,3 +236,46 @@ TEST(SqliteReviewFixesTest, DialectSupportsLastInsertId) {
     EXPECT_TRUE(db.connection().dialect().supports_last_insert_id());
     EXPECT_EQ(db.connection().dialect().last_insert_id_query("test", "id"), "SELECT last_insert_rowid()");
 }
+
+TEST(SqliteReviewFixesTest, EmptyBlobBindingNotNull) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.connection().execute_non_query_direct("CREATE TABLE test_blob (id INTEGER PRIMARY KEY, data BLOB NOT NULL)");
+
+    auto stmt = db.connection().prepare("INSERT INTO test_blob (id, data) VALUES (1, ?)");
+    std::vector<uint8_t> empty_blob;
+    stmt->bind(0, empty_blob);
+    EXPECT_NO_THROW(stmt->execute_non_query());
+
+    auto qstmt = db.connection().prepare("SELECT data FROM test_blob WHERE id = 1");
+    auto reader = qstmt->execute_query();
+    ASSERT_TRUE(reader->next());
+    EXPECT_FALSE(reader->is_null(0));
+    auto blob_result = reader->get_blob(0);
+    EXPECT_TRUE(blob_result.empty());
+}
+
+TEST(SqliteReviewFixesTest, StringBooleanAndNullHandling) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    auto reader = db.connection().execute_query_direct(
+        "SELECT 'true' AS b1, 't' AS b2, '1' AS b3, 'false' AS b4, NULL AS n1, 'True' AS b5, 'yes' AS b6, 'Y' AS b7"
+    );
+    ASSERT_TRUE(reader->next());
+    EXPECT_TRUE(reader->get_bool(0));
+    EXPECT_TRUE(reader->get_bool(1));
+    EXPECT_TRUE(reader->get_bool(2));
+    EXPECT_FALSE(reader->get_bool(3));
+    EXPECT_FALSE(reader->get_bool(4));
+    EXPECT_TRUE(reader->get_bool(5));
+    EXPECT_TRUE(reader->get_bool(6));
+    EXPECT_TRUE(reader->get_bool(7));
+
+    // Test null guards in getters
+    EXPECT_TRUE(reader->is_null(4));
+    EXPECT_EQ(reader->get_numeric(4).to_string(), "0");
+    EXPECT_EQ(reader->get_date(4).to_string(), "1970-01-01");
+    EXPECT_EQ(reader->get_time(4).to_string(), "00:00:00");
+    EXPECT_EQ(reader->get_timestamp(4).to_string(), "1970-01-01 00:00:00");
+    EXPECT_EQ(reader->get_interval(4).to_string(), "0 00:00:00");
+    EXPECT_EQ(reader->get_guid(4).to_string(), "00000000-0000-0000-0000-000000000000");
+}
+

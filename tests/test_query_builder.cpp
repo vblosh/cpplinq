@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "cpplinq/core/sql_generator.h"
 #include "cpplinq/core/expression.h"
+#include "cpplinq/core/table.h"
+#include "cpplinq/core/column.h"
 
 using namespace cpplinq;
 using namespace cpplinq::expr;
@@ -1354,6 +1356,91 @@ TEST(SqlGeneratorTest, SetOperationCountGeneration) {
     EXPECT_EQ(std::get<int64_t>(res.params[1]), 30);
 }
 
+TEST(ReviewFixesTest, InsertEmptyColumnsDefaultValues) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
 
+    auto res = gen.generate_insert("users", {}, {});
+    EXPECT_EQ(res.sql, "INSERT INTO \"users\" DEFAULT VALUES");
+}
 
+TEST(ReviewFixesTest, SetOperationEmptyColumnsEmitsStar) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
 
+    SetOpClause op{
+        SetOpType::Union,
+        "other_users",
+        {},
+        std::nullopt,
+        false
+    };
+
+    auto res = gen.generate_set_operation("users", {}, std::nullopt, false, {op});
+    EXPECT_EQ(res.sql, "SELECT * FROM \"users\" UNION SELECT * FROM \"other_users\"");
+}
+
+TEST(ReviewFixesTest, CreateTableAutoIncWithAdditionalPk) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<ColumnInfo> cols = {
+        {"id", SqlType::Integer, true, true, true, false},
+        {"tenant_id", SqlType::Integer, false, false, true, false},
+        {"name", SqlType::Text, false, false, false, false}
+    };
+
+    auto res = gen.generate_create_table("users", cols);
+    // Should NOT have duplicate PRIMARY KEY
+    EXPECT_EQ(res.sql, "CREATE TABLE IF NOT EXISTS \"users\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"tenant_id\" INTEGER NOT NULL, \"name\" TEXT)");
+}
+
+TEST(ReviewFixesTest, AggregateUsesDialectFunctionName) {
+    class CustomDialect : public MockSqliteDialect {
+    public:
+        std::string function_name(std::string_view name) const override {
+            if (name == "COUNT") return "CUSTOM_COUNT";
+            return std::string(name);
+        }
+    };
+
+    CustomDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_aggregate("COUNT", "users", "*", std::nullopt);
+    EXPECT_EQ(res.sql, "SELECT CUSTOM_COUNT(*) FROM \"users\"");
+}
+
+TEST(ReviewFixesTest, TableAndColumnAcceptStringView) {
+    struct TestItem {
+        int id;
+        std::string val;
+    };
+
+    std::string_view col_name_sv = "id";
+    std::string_view tbl_name_sv = "items";
+
+    auto c1 = column(col_name_sv, &TestItem::id, primary_key);
+    auto c2 = column(std::string_view("val"), &TestItem::val);
+    auto t = table<TestItem>(tbl_name_sv, c1, c2);
+
+    auto handle = t[col_name_sv];
+    EXPECT_EQ(handle.ref.table_name, "items");
+    EXPECT_EQ(handle.ref.column_name, "id");
+}
+
+TEST(ReviewFixesTest, InsertEmptyColumnsWithReturningMssqlOutput) {
+    MockMssqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_insert("users", {}, {}, "id");
+    EXPECT_EQ(res.sql, "INSERT INTO [users] OUTPUT INSERTED.[id] DEFAULT VALUES");
+}
+
+TEST(ReviewFixesTest, InsertEmptyColumnsWithReturningSqliteReturning) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_insert("users", {}, {}, "id");
+    EXPECT_EQ(res.sql, "INSERT INTO \"users\" DEFAULT VALUES RETURNING \"id\"");
+}

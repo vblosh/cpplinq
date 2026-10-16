@@ -60,11 +60,7 @@ void OdbcDataReader::init_bound_columns() {
                         &col.nullable);
 
         switch (col.data_type) {
-            case SQL_BIGINT: {
-                col.c_type = SQL_C_UBIGINT;
-                SQLBindCol(hstmt_, i, col.c_type, &col.uint_val, sizeof(col.uint_val), &col.ind);
-                break;
-            }
+            case SQL_BIGINT:
             case SQL_INTEGER:
             case SQL_SMALLINT:
             case SQL_TINYINT: {
@@ -365,11 +361,11 @@ bool OdbcDataReader::get_bool(int col) const {
         case SQL_C_DOUBLE: return c.double_val != 0.0;
         case SQL_C_CHAR: {
             std::string_view sv = get_string_view(col);
-            return (sv == "1" || sv == "true" || sv == "TRUE" || sv == "t" || sv == "T");
+            return (sv == "1" || sv == "true" || sv == "TRUE" || sv == "True" || sv == "t" || sv == "T" || sv == "yes" || sv == "YES" || sv == "Yes" || sv == "y" || sv == "Y");
         }
         case SQL_C_WCHAR: {
             std::wstring ws = get_wstring(col);
-            return (ws == L"1" || ws == L"true" || ws == L"TRUE" || ws == L"t" || ws == L"T");
+            return (ws == L"1" || ws == L"true" || ws == L"TRUE" || ws == L"True" || ws == L"t" || ws == L"T" || ws == L"yes" || ws == L"YES" || ws == L"Yes" || ws == L"y" || ws == L"Y");
         }
         default: return false;
     }
@@ -379,7 +375,9 @@ std::vector<uint8_t> OdbcDataReader::get_blob(int col) const {
     if (is_null(col)) return {};
     const auto& c = bound_cols_[col];
     if (c.c_type == SQL_C_BINARY) {
-        size_t len = (c.ind >= 0) ? std::min(static_cast<size_t>(c.ind), c.buffer.size()) : 0;
+        size_t len = (c.ind >= 0)
+            ? std::min(static_cast<size_t>(c.ind), c.buffer.size())
+            : c.buffer.size();
         return std::vector<uint8_t>(c.buffer.data(), c.buffer.data() + len);
     }
     return {};
@@ -494,6 +492,7 @@ OdbcPreparedStatement::OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql)
 }
 
 OdbcPreparedStatement::~OdbcPreparedStatement() {
+    stop_cb_.reset();
     if (hstmt_ != SQL_NULL_HSTMT) {
         SQLFreeStmt(hstmt_, SQL_RESET_PARAMS);
         SQLFreeStmt(hstmt_, SQL_CLOSE);
@@ -535,6 +534,7 @@ void OdbcPreparedStatement::set_timeout(uint32_t seconds) {
 }
 
 void OdbcPreparedStatement::set_stop_token(std::stop_token token) {
+    stop_cb_.reset();
     stop_token_ = token;
     if (token.stop_possible() && hstmt_ != SQL_NULL_HSTMT) {
         stop_cb_.emplace(token, [this]() {
@@ -564,16 +564,15 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, nullptr, 0, &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(NULL)");
             } else if constexpr (std::is_same_v<T, int64_t>) {
-                std::string s = std::to_string(val);
-                store.c_type = SQL_C_CHAR;
-                store.sql_type = SQL_NUMERIC;
+                store.c_type = SQL_C_SBIGINT;
+                store.sql_type = SQL_BIGINT;
                 store.col_size = 19;
                 store.dec_digits = 0;
-                store.ind = static_cast<SQLLEN>(s.size());
-                store.buffer.resize(s.size() + 1);
-                std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
+                store.ind = sizeof(int64_t);
+                store.buffer.resize(sizeof(int64_t));
+                std::memcpy(store.buffer.data(), &val, sizeof(int64_t));
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                                store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                                                store.col_size, store.dec_digits, store.buffer.data(), sizeof(int64_t), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(int64)");
             } else if constexpr (std::is_same_v<T, uint64_t>) {
                 std::string s = std::to_string(val);
@@ -613,7 +612,7 @@ void OdbcPreparedStatement::apply_bindings() {
                 auto sqlwchars = detail::odbc::wstring_to_sqlwchar(val);
                 store.c_type = SQL_C_WCHAR;
                 store.sql_type = SQL_WVARCHAR;
-                store.col_size = val.empty() ? 1 : static_cast<SQLULEN>(val.size());
+                store.col_size = (sqlwchars.size() > 1) ? static_cast<SQLULEN>(sqlwchars.size() - 1) : 1;
                 store.dec_digits = 0;
                 store.ind = static_cast<SQLLEN>((sqlwchars.size() - 1) * sizeof(SQLWCHAR));
                 store.buffer.resize(sqlwchars.size() * sizeof(SQLWCHAR));
@@ -639,6 +638,9 @@ void OdbcPreparedStatement::apply_bindings() {
                 store.dec_digits = 0;
                 store.ind = static_cast<SQLLEN>(val.size());
                 store.buffer = val;
+                if (store.buffer.empty()) {
+                    store.buffer.push_back(0);
+                }
                 SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
                                                 store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(blob)");
@@ -880,14 +882,22 @@ void OdbcConnection::begin_transaction() {
 void OdbcConnection::commit() {
     if (!is_open_) throw DbException(get_driver_display_name() + " connection is not open");
     SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_COMMIT);
-    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLEndTran(SQL_COMMIT)");
+    if (!SQL_SUCCEEDED(rc)) {
+        std::string err = get_odbc_error(SQL_HANDLE_DBC, hdbc_);
+        SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
+        throw DbException("SQLEndTran(SQL_COMMIT): " + err);
+    }
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
 }
 
 void OdbcConnection::rollback() {
     if (!is_open_) throw DbException(get_driver_display_name() + " connection is not open");
     SQLRETURN rc = SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_ROLLBACK);
-    check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLEndTran(SQL_ROLLBACK)");
+    if (!SQL_SUCCEEDED(rc)) {
+        std::string err = get_odbc_error(SQL_HANDLE_DBC, hdbc_);
+        SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
+        throw DbException("SQLEndTran(SQL_ROLLBACK): " + err);
+    }
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), SQL_IS_UINTEGER);
 }
 

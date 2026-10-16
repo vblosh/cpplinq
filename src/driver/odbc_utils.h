@@ -89,9 +89,6 @@ inline std::vector<SQLWCHAR> wstring_to_sqlwchar(std::wstring_view wstr) {
     result.reserve(wstr.size() + 1);
     for (wchar_t wc : wstr) {
         uint32_t cp = static_cast<uint32_t>(wc);
-        if (cp == 0x03A9) {
-            cp = 'O';
-        }
         if (cp < 0x10000) {
             result.push_back(static_cast<SQLWCHAR>(cp));
         } else {
@@ -442,7 +439,11 @@ inline size_t execute_insert_many_batch(
                     max_len = std::max(max_len, v.size() + 1);
                 } else if constexpr (std::is_same_v<T, std::wstring>) {
                     ct = SQL_C_WCHAR; st = SQL_WVARCHAR;
-                    max_len = std::max(max_len, v.size() + 1);
+                    size_t wlen = 1; // null-terminator
+                    for (wchar_t wc : v) {
+                        wlen += (static_cast<uint32_t>(wc) >= 0x10000) ? 2 : 1;
+                    }
+                    max_len = std::max(max_len, wlen);
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     ct = SQL_C_BINARY; st = SQL_VARBINARY;
                     max_len = std::max(max_len, v.size() > 0 ? v.size() : 1);
@@ -668,7 +669,7 @@ inline size_t execute_insert_many_batch(
 
     SQLLEN affected = -1;
     SQLRowCount(hstmt, &affected);
-    return (affected >= static_cast<SQLLEN>(row_count)) ? static_cast<size_t>(affected) : row_count;
+    return (affected >= 0) ? static_cast<size_t>(affected) : row_count;
 }
 
 } // namespace cpplinq::detail::odbc
