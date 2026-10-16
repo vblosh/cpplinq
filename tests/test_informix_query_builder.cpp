@@ -87,3 +87,47 @@ TEST(InformixQueryBuilderTest, CreateTable) {
     EXPECT_EQ(result.sql, "CREATE TABLE IF NOT EXISTS \"users\" (\"id\" SERIAL PRIMARY KEY, \"name\" VARCHAR(255) NOT NULL, \"email\" VARCHAR(255) UNIQUE, \"active\" BOOLEAN NOT NULL, \"recorded_at\" DATETIME YEAR TO FRACTION(3))");
     EXPECT_TRUE(result.params.empty());
 }
+
+TEST(InformixQueryBuilderTest, UpsertWithoutUpdateColumns) {
+    InformixDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice")};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {};
+
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "MERGE INTO \"users\" AS target USING (SELECT CAST(? AS BIGINT) AS \"id\", CAST(? AS VARCHAR(255)) AS \"name\" FROM \"informix\".systables WHERE tabid = 1) AS source ON (target.\"id\" = source.\"id\") WHEN NOT MATCHED THEN INSERT (\"id\", \"name\") VALUES (source.\"id\", source.\"name\")");
+    EXPECT_EQ(result.params.size(), 2);
+}
+
+TEST(InformixQueryBuilderTest, UpsertCastTypesUint64BlobAndLvarchar) {
+    InformixDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::string long_str(300, 'x');
+    std::wstring long_wstr(300, L'y');
+    std::vector<std::string> insert_cols = {"u64_col", "blob_col", "long_str_col", "short_str_col", "long_wstr_col", "short_wstr_col"};
+    std::vector<BoundValue> values = {
+        uint64_t(123456789),
+        std::vector<uint8_t>{1, 2, 3, 4},
+        long_str,
+        std::string("short"),
+        long_wstr,
+        std::wstring(L"short")
+    };
+    std::vector<std::string> conflict_cols = {"u64_col"};
+    std::vector<std::string> update_cols = {"blob_col", "long_str_col"};
+
+    auto result = gen.generate_upsert("items", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "MERGE INTO \"items\" AS target USING (SELECT CAST(? AS DECIMAL(20, 0)) AS \"u64_col\", CAST(? AS BLOB) AS \"blob_col\", CAST(? AS LVARCHAR(300)) AS \"long_str_col\", CAST(? AS VARCHAR(255)) AS \"short_str_col\", CAST(? AS LVARCHAR(300)) AS \"long_wstr_col\", CAST(? AS NVARCHAR(255)) AS \"short_wstr_col\" FROM \"informix\".systables WHERE tabid = 1) AS source ON (target.\"u64_col\" = source.\"u64_col\") WHEN MATCHED THEN UPDATE SET target.\"blob_col\" = source.\"blob_col\", target.\"long_str_col\" = source.\"long_str_col\" WHEN NOT MATCHED THEN INSERT (\"u64_col\", \"blob_col\", \"long_str_col\", \"short_str_col\", \"long_wstr_col\", \"short_wstr_col\") VALUES (source.\"u64_col\", source.\"blob_col\", source.\"long_str_col\", source.\"short_str_col\", source.\"long_wstr_col\", source.\"short_wstr_col\")");
+    EXPECT_EQ(result.params.size(), 6);
+}
+
+TEST(InformixQueryBuilderTest, FunctionName) {
+    InformixDialect dialect;
+    EXPECT_EQ(dialect.function_name("SUBSTR"), "SUBSTR");
+    EXPECT_EQ(dialect.function_name("UPPER"), "UPPER");
+    EXPECT_EQ(dialect.function_name("LOWER"), "LOWER");
+}

@@ -1,4 +1,5 @@
 #include "integration_test_suite.h"
+#include "dialect/sqlite_dialect.h"
 
 struct SqliteParams {
     using backend_type = cpplinq::sqlite;
@@ -307,6 +308,39 @@ TEST(SqliteReviewFixesTest, InsertManyBatchOverflowGuard) {
     size_t large_row_count = SIZE_MAX / 2 + 1;
     size_t col_count = 2;
     EXPECT_THROW(db.connection().insert_many_batch("INSERT INTO test VALUES (?, ?)", flat_params, col_count, large_row_count), DbException);
+}
+
+TEST(SqliteReviewFixesTest, DateAddDaysNegativeAndPositiveExecution) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    SqliteDialect dialect;
+    std::string sql_neg = "SELECT " + dialect.date_add_days_func("'2026-10-16'", "-7") + " AS d";
+    auto reader_neg = db.connection().execute_query_direct(sql_neg);
+    ASSERT_TRUE(reader_neg->next());
+    EXPECT_FALSE(reader_neg->is_null(0));
+    EXPECT_EQ(reader_neg->get_string(0), "2026-10-09");
+
+    std::string sql_pos = "SELECT " + dialect.date_add_days_func("'2026-10-16'", "7") + " AS d";
+    auto reader_pos = db.connection().execute_query_direct(sql_pos);
+    ASSERT_TRUE(reader_pos->next());
+    EXPECT_FALSE(reader_pos->is_null(0));
+    EXPECT_EQ(reader_pos->get_string(0), "2026-10-23");
+}
+
+TEST(SqliteReviewFixesTest, OffsetWithoutLimitExecutesValidSql) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.connection().execute_non_query_direct("CREATE TABLE test_offset (id INT)");
+    db.connection().execute_non_query_direct("INSERT INTO test_offset VALUES (1), (2), (3)");
+
+    SqliteDialect dialect;
+    std::string sql = "SELECT id FROM test_offset" + dialect.limit_offset(std::nullopt, 1);
+    EXPECT_EQ(sql, "SELECT id FROM test_offset LIMIT -1 OFFSET 1");
+
+    auto reader = db.connection().execute_query_direct(sql);
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_int64(0), 2);
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_int64(0), 3);
+    EXPECT_FALSE(reader->next());
 }
 
 

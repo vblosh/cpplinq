@@ -1,7 +1,5 @@
 #include "dialect/oracle_dialect.h"
 
-#ifdef CPPLINQ_HAS_ORACLE
-
 namespace cpplinq {
 
 std::string OracleDialect::quote_id(std::string_view id) const {
@@ -124,10 +122,13 @@ std::string OracleDialect::generate_upsert(
         if (i > 0) sql += " AND ";
         sql += "target." + quote_id(conflict_columns[i]) + " = source." + quote_id(conflict_columns[i]);
     }
-    sql += ") WHEN MATCHED THEN UPDATE SET ";
-    for (size_t i = 0; i < update_columns.size(); ++i) {
-        if (i > 0) sql += ", ";
-        sql += "target." + quote_id(update_columns[i]) + " = source." + quote_id(update_columns[i]);
+    sql += ")";
+    if (!update_columns.empty()) {
+        sql += " WHEN MATCHED THEN UPDATE SET ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += "target." + quote_id(update_columns[i]) + " = source." + quote_id(update_columns[i]);
+        }
     }
     sql += " WHEN NOT MATCHED THEN INSERT (";
     for (size_t i = 0; i < insert_columns.size(); ++i) {
@@ -144,5 +145,3 @@ std::string OracleDialect::generate_upsert(
 }
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_ORACLE

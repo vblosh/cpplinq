@@ -113,3 +113,22 @@ TEST(OracleQueryBuilderTest, WindowAndCteGeneration) {
     EXPECT_EQ(std::get<int64_t>(cte_res.params[0]), 18);
 }
 
+TEST(OracleQueryBuilderTest, QuoteIdAndPolymorphicDestructor) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<OracleDialect>();
+    EXPECT_EQ(dialect->quote_id("col\"name"), "\"col\"\"name\"");
+}
+
+TEST(OracleQueryBuilderTest, UpsertWithoutUpdateColumns) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice")};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {};
+
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"name\" FROM DUAL) source ON (target.\"id\" = source.\"id\") WHEN NOT MATCHED THEN INSERT (\"id\", \"name\") VALUES (source.\"id\", source.\"name\")");
+    EXPECT_EQ(result.params.size(), 2);
+}
+

@@ -1,6 +1,5 @@
 #include "dialect/informix_dialect.h"
-
-#ifdef CPPLINQ_HAS_INFORMIX
+#include <algorithm>
 
 namespace cpplinq {
 
@@ -79,7 +78,6 @@ std::string InformixDialect::create_table_prefix(std::string_view table_name) co
 }
 
 std::string InformixDialect::function_name(std::string_view func) const {
-    if (func == "SUBSTR") return "SUBSTR";
     return std::string(func);
 }
 
@@ -108,14 +106,22 @@ std::string get_informix_cast_type(const BoundValue& val) {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, int64_t>) {
             return "BIGINT";
+        } else if constexpr (std::is_same_v<T, uint64_t>) {
+            return "DECIMAL(20, 0)";
         } else if constexpr (std::is_same_v<T, double>) {
             return "FLOAT";
         } else if constexpr (std::is_same_v<T, std::string>) {
-            return "VARCHAR(255)";
+            return v.size() > 255
+                ? "LVARCHAR(" + std::to_string(std::min<size_t>(v.size(), 32739)) + ")"
+                : "VARCHAR(255)";
         } else if constexpr (std::is_same_v<T, std::wstring>) {
-            return "NVARCHAR(255)";
+            return v.size() > 255
+                ? "LVARCHAR(" + std::to_string(std::min<size_t>(v.size(), 32739)) + ")"
+                : "NVARCHAR(255)";
         } else if constexpr (std::is_same_v<T, bool>) {
             return "BOOLEAN";
+        } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+            return "BLOB";
         } else if constexpr (std::is_same_v<T, SqlDate>) {
             return "DATE";
         } else if constexpr (std::is_same_v<T, SqlTime>) {
@@ -162,10 +168,13 @@ std::string InformixDialect::generate_upsert(
         if (i > 0) sql += " AND ";
         sql += "target." + quote_id(conflict_columns[i]) + " = source." + quote_id(conflict_columns[i]);
     }
-    sql += ") WHEN MATCHED THEN UPDATE SET ";
-    for (size_t i = 0; i < update_columns.size(); ++i) {
-        if (i > 0) sql += ", ";
-        sql += "target." + quote_id(update_columns[i]) + " = source." + quote_id(update_columns[i]);
+    sql += ")";
+    if (!update_columns.empty()) {
+        sql += " WHEN MATCHED THEN UPDATE SET ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += "target." + quote_id(update_columns[i]) + " = source." + quote_id(update_columns[i]);
+        }
     }
     sql += " WHEN NOT MATCHED THEN INSERT (";
     for (size_t i = 0; i < insert_columns.size(); ++i) {
@@ -182,5 +191,3 @@ std::string InformixDialect::generate_upsert(
 }
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_INFORMIX

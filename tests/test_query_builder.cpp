@@ -12,6 +12,12 @@
 #ifdef CPPLINQ_HAS_MYSQL
 #include "dialect/mysql_dialect.h"
 #endif
+#ifdef CPPLINQ_HAS_SQLITE
+#include "dialect/sqlite_dialect.h"
+#endif
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
+#include "driver/odbc_utils.h"
+#endif
 
 using namespace cpplinq;
 using namespace cpplinq::expr;
@@ -1514,6 +1520,88 @@ TEST(ReviewFixesTest, MysqlUpsertEmptyUpdateColumnsFallbackToInsertColumns) {
 TEST(ReviewFixesTest, MysqlUpsertEmptyInsertColumnsThrows) {
     MysqlDialect dialect;
     EXPECT_THROW(dialect.generate_upsert("users", {}, {}, {}), std::invalid_argument);
+}
+#endif
+
+#ifdef CPPLINQ_HAS_SQLITE
+TEST(ReviewFixesTest, SqliteQuoteIdAndReturningEscapesDoubleQuotes) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect.returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+
+TEST(ReviewFixesTest, SqliteLimitOffsetWithoutLimitEmitsLimitMinusOne) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.limit_offset(10, 5), " LIMIT 10 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(10, std::nullopt), " LIMIT 10");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, 5), " LIMIT -1 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, std::nullopt), "");
+}
+
+TEST(ReviewFixesTest, SqliteExtractPartFuncSupportsTimeParts) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.extract_part_func("YEAR", "ts"), "CAST(strftime('%Y', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("MONTH", "ts"), "CAST(strftime('%m', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("DAY", "ts"), "CAST(strftime('%d', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("HOUR", "ts"), "CAST(strftime('%H', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("MINUTE", "ts"), "CAST(strftime('%M', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("SECOND", "ts"), "CAST(strftime('%S', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("OTHER", "ts"), "strftime('OTHER', ts)");
+}
+
+TEST(ReviewFixesTest, SqliteDateAddDaysRemovesPlusPrefix) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.date_add_days_func("ts", "-7"), "date(ts, (-7) || ' days')");
+    EXPECT_EQ(dialect.date_add_days_func("ts", "7"), "date(ts, (7) || ' days')");
+}
+
+TEST(ReviewFixesTest, SqlitePolymorphicDestructor) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<SqliteDialect>();
+    EXPECT_EQ(dialect->placeholder(0), "?");
+}
+#endif
+
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
+TEST(ReviewFixesTest, OdbcUtilsNegativeScaleAppendsZeros) {
+    using namespace cpplinq::detail::odbc;
+    SQL_NUMERIC_STRUCT ns{};
+    ns.sign = 1;
+    ns.precision = 5;
+    ns.scale = -3;
+    ns.val[0] = 42;
+    std::string s = numeric_struct_to_string(ns);
+    EXPECT_EQ(s, "42000");
+
+    ns.sign = 0;
+    EXPECT_EQ(numeric_struct_to_string(ns), "-42000");
+}
+
+TEST(ReviewFixesTest, OdbcUtilsStringToNumericLeadingZeroPrecisionAndScaleClamping) {
+    using namespace cpplinq::detail::odbc;
+    auto ns = string_to_numeric_struct("00012.34");
+    EXPECT_EQ(ns.scale, 2);
+    EXPECT_EQ(ns.precision, 4);
+    EXPECT_EQ(numeric_struct_to_string(ns), "12.34");
+
+    auto ns_zero = string_to_numeric_struct("000");
+    EXPECT_EQ(ns_zero.scale, 0);
+    EXPECT_EQ(ns_zero.precision, 1);
+    EXPECT_EQ(numeric_struct_to_string(ns_zero), "0");
+
+    auto ns_small = string_to_numeric_struct("0.05");
+    EXPECT_EQ(ns_small.scale, 2);
+    EXPECT_EQ(ns_small.precision, 2);
+    EXPECT_EQ(numeric_struct_to_string(ns_small), "0.05");
+
+    std::string large_scale = "1." + std::string(50, '9');
+    auto ns_clamp = string_to_numeric_struct(large_scale);
+    EXPECT_EQ(ns_clamp.scale, 38);
+    EXPECT_EQ(ns_clamp.precision, 38);
+    EXPECT_EQ(numeric_struct_to_string(ns_clamp), "1." + std::string(38, '9'));
+
+    auto ns_default_scale = string_to_numeric_struct(large_scale, 0, 2);
+    EXPECT_EQ(ns_default_scale.scale, 2);
+    EXPECT_EQ(numeric_struct_to_string(ns_default_scale), "1.99");
 }
 #endif
 

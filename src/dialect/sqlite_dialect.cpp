@@ -3,7 +3,16 @@
 namespace cpplinq {
 
 std::string SqliteDialect::quote_id(std::string_view id) const {
-    return "\"" + std::string(id) + "\"";
+    std::string quoted = "\"";
+    for (char c : id) {
+        if (c == '"') {
+            quoted += "\"\"";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "\"";
+    return quoted;
 }
 
 std::string SqliteDialect::placeholder(size_t /*index*/) const {
@@ -15,6 +24,8 @@ std::string SqliteDialect::limit_offset(std::optional<size_t> limit,
     std::string result;
     if (limit.has_value()) {
         result += " LIMIT " + std::to_string(*limit);
+    } else if (offset.has_value()) {
+        result += " LIMIT -1";
     }
     if (offset.has_value()) {
         result += " OFFSET " + std::to_string(*offset);
@@ -47,18 +58,21 @@ std::string SqliteDialect::auto_increment_type() const {
 }
 
 std::string SqliteDialect::returning_clause(std::string_view column) const {
-    return " RETURNING \"" + std::string(column) + "\"";
+    return " RETURNING " + quote_id(column);
 }
 
 std::string SqliteDialect::extract_part_func(std::string_view part, std::string_view expr_sql) const {
     if (part == "YEAR") return "CAST(strftime('%Y', " + std::string(expr_sql) + ") AS INTEGER)";
     if (part == "MONTH") return "CAST(strftime('%m', " + std::string(expr_sql) + ") AS INTEGER)";
     if (part == "DAY") return "CAST(strftime('%d', " + std::string(expr_sql) + ") AS INTEGER)";
+    if (part == "HOUR") return "CAST(strftime('%H', " + std::string(expr_sql) + ") AS INTEGER)";
+    if (part == "MINUTE") return "CAST(strftime('%M', " + std::string(expr_sql) + ") AS INTEGER)";
+    if (part == "SECOND") return "CAST(strftime('%S', " + std::string(expr_sql) + ") AS INTEGER)";
     return "strftime('" + std::string(part) + "', " + std::string(expr_sql) + ")";
 }
 
 std::string SqliteDialect::date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const {
-    return "date(" + std::string(expr_sql) + ", '+' || (" + std::string(days_sql) + ") || ' days')";
+    return "date(" + std::string(expr_sql) + ", (" + std::string(days_sql) + ") || ' days')";
 }
 
 } // namespace cpplinq

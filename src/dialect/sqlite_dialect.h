@@ -5,6 +5,8 @@ namespace cpplinq {
 
 class SqliteDialect : public ISqlDialect {
 public:
+    ~SqliteDialect() override = default;
+
     std::string quote_id(std::string_view id) const override;
     std::string placeholder(size_t index) const override;
     std::string limit_offset(std::optional<size_t> limit,

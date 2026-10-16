@@ -1,8 +1,6 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
 
-#ifdef CPPLINQ_HAS_ORACLE
-
 namespace cpplinq {
 
 class OracleDialect : public ISqlDialect {
@@ -40,5 +38,3 @@ public:
 };
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_ORACLE
