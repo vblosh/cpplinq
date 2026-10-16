@@ -672,7 +672,10 @@ inline size_t execute_insert_many_batch(
 
     SQLLEN affected = -1;
     SQLRowCount(hstmt, &affected);
-    return (affected >= 0) ? static_cast<size_t>(affected) : row_count;
+    if (affected == 0) {
+        return 0;
+    }
+    return (affected >= static_cast<SQLLEN>(row_count)) ? static_cast<size_t>(affected) : row_count;
 }
 
 } // namespace cpplinq::detail::odbc

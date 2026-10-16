@@ -478,11 +478,19 @@ BoundValue OdbcDataReader::get_value(int col) const {
 // OdbcPreparedStatement
 // ============================================================================
 
-OdbcPreparedStatement::OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql)
+OdbcPreparedStatement::OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql, std::string driver_name)
     : hdbc_(hdbc)
     , stmt_holder_(std::make_shared<detail::odbc::StmtHolder>())
     , sql_(sql)
+    , driver_name_(std::move(driver_name))
 {
+    if (driver_name_.empty() && hdbc_ != SQL_NULL_HDBC) {
+        char buf[256] = {0};
+        SQLSMALLINT len = 0;
+        if (SQL_SUCCEEDED(SQLGetInfoA(hdbc_, SQL_DBMS_NAME, buf, sizeof(buf), &len))) {
+            driver_name_ = buf;
+        }
+    }
     SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &stmt_holder_->handle);
     check_rc(rc, SQL_HANDLE_DBC, hdbc_, "SQLAllocHandle(SQL_HANDLE_STMT)");
     hstmt_ = stmt_holder_->handle;
@@ -564,16 +572,30 @@ void OdbcPreparedStatement::apply_bindings() {
                                                 store.col_size, store.dec_digits, nullptr, 0, &store.ind);
                 check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(NULL)");
             } else if constexpr (std::is_same_v<T, int64_t>) {
-                store.c_type = SQL_C_SBIGINT;
-                store.sql_type = SQL_BIGINT;
-                store.col_size = 19;
-                store.dec_digits = 0;
-                store.ind = sizeof(int64_t);
-                store.buffer.resize(sizeof(int64_t));
-                std::memcpy(store.buffer.data(), &val, sizeof(int64_t));
-                SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
-                                                store.col_size, store.dec_digits, store.buffer.data(), sizeof(int64_t), &store.ind);
-                check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(int64)");
+                if (driver_name_ == "Oracle" || driver_name_.find("Oracle") != std::string::npos) {
+                    std::string s = std::to_string(val);
+                    store.c_type = SQL_C_CHAR;
+                    store.sql_type = SQL_NUMERIC;
+                    store.col_size = 19;
+                    store.dec_digits = 0;
+                    store.ind = static_cast<SQLLEN>(s.size());
+                    store.buffer.resize(s.size() + 1);
+                    std::memcpy(store.buffer.data(), s.c_str(), s.size() + 1);
+                    SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                    store.col_size, store.dec_digits, store.buffer.data(), static_cast<SQLLEN>(store.buffer.size()), &store.ind);
+                    check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(int64)");
+                } else {
+                    store.c_type = SQL_C_SBIGINT;
+                    store.sql_type = SQL_BIGINT;
+                    store.col_size = 19;
+                    store.dec_digits = 0;
+                    store.ind = sizeof(int64_t);
+                    store.buffer.resize(sizeof(int64_t));
+                    std::memcpy(store.buffer.data(), &val, sizeof(int64_t));
+                    SQLRETURN rc = SQLBindParameter(hstmt_, param_num, SQL_PARAM_INPUT, store.c_type, store.sql_type,
+                                                    store.col_size, store.dec_digits, store.buffer.data(), sizeof(int64_t), &store.ind);
+                    check_rc(rc, SQL_HANDLE_STMT, hstmt_, "SQLBindParameter(int64)");
+                }
             } else if constexpr (std::is_same_v<T, uint64_t>) {
                 std::string s = std::to_string(val);
                 store.c_type = SQL_C_CHAR;
@@ -817,7 +839,7 @@ std::unique_ptr<IPreparedStatement> OdbcConnection::prepare(std::string_view sql
     if (!is_open_) {
         throw DbException("Cannot prepare statement: " + get_driver_display_name() + " connection is not open");
     }
-    return std::make_unique<OdbcPreparedStatement>(hdbc_, sql);
+    return std::make_unique<OdbcPreparedStatement>(hdbc_, sql, get_driver_display_name());
 }
 
 void OdbcConnection::execute(std::string_view sql) {

@@ -95,7 +95,7 @@ fi
 export CPPDB_ORACLE_ODBC="$CPPLINQ_ORACLE_ODBC"
 
 if [ -z "${CPPLINQ_INFORMIX_ODBC:-}" ]; then
-    export CPPLINQ_INFORMIX_ODBC="Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;"
+    export CPPLINQ_INFORMIX_ODBC="Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;DB_LOCALE=en_us.utf8;"
 fi
 export CPPDB_INFORMIX_ODBC="$CPPLINQ_INFORMIX_ODBC"
 
