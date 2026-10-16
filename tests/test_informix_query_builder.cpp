@@ -131,3 +131,25 @@ TEST(InformixQueryBuilderTest, FunctionName) {
     EXPECT_EQ(dialect.function_name("UPPER"), "UPPER");
     EXPECT_EQ(dialect.function_name("LOWER"), "LOWER");
 }
+
+#ifdef CPPLINQ_HAS_INFORMIX
+#include "driver/informix_connection.h"
+
+TEST(InformixConnectionTest, ConnectionFactoryAndMetadata) {
+    auto conn = make_connection<informix>("SERVER=ol_informix1210;DATABASE=testdb");
+    ASSERT_NE(conn, nullptr);
+    EXPECT_EQ(conn->info().dbms_name, "Informix");
+    EXPECT_EQ(conn->info().driver_name, "IBM INFORMIX ODBC DRIVER (64-bit)");
+    EXPECT_TRUE(conn->capabilities().window_functions);
+    EXPECT_TRUE(conn->capabilities().ctes);
+    EXPECT_TRUE(conn->capabilities().upsert);
+    EXPECT_TRUE(conn->capabilities().cancel);
+    EXPECT_EQ(conn->dialect().quote_id("col"), "\"col\"");
+}
+
+TEST(InformixConnectionTest, ConnectionFactoryDsnWithoutEquals) {
+    auto conn = make_connection<informix>("my_informix_dsn");
+    ASSERT_NE(conn, nullptr);
+    EXPECT_EQ(conn->info().dbms_name, "Informix");
+}
+#endif

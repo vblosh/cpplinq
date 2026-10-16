@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "cpplinq/core/sql_generator.h"
 #include "cpplinq/core/expression.h"
 #include "cpplinq/core/table.h"
@@ -1465,6 +1466,12 @@ TEST(ReviewFixesTest, PostgresQuoteIdAndReturningEscapesDoubleQuotes) {
     PostgresDialect dialect;
     EXPECT_EQ(dialect.quote_id("user\"name"), "\"user\"\"name\"");
     EXPECT_EQ(dialect.returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+
+TEST(ReviewFixesTest, PostgresPolymorphicDestructorAndQuoteId) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<PostgresDialect>();
+    EXPECT_EQ(dialect->quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect->returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
 }
 #endif
 

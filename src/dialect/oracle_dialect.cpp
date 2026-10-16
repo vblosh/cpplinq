@@ -1,4 +1,5 @@
 #include "dialect/oracle_dialect.h"
+#include <algorithm>
 
 namespace cpplinq {
 
@@ -112,6 +113,9 @@ std::string OracleDialect::generate_upsert(
     const std::vector<std::string>& conflict_columns,
     const std::vector<std::string>& update_columns
 ) const {
+    if (insert_columns.empty() || conflict_columns.empty()) {
+        return "";
+    }
     std::string sql = "MERGE INTO " + quote_id(table_name) + " target USING (SELECT ";
     for (size_t i = 0; i < insert_columns.size(); ++i) {
         if (i > 0) sql += ", ";
@@ -123,11 +127,17 @@ std::string OracleDialect::generate_upsert(
         sql += "target." + quote_id(conflict_columns[i]) + " = source." + quote_id(conflict_columns[i]);
     }
     sql += ")";
-    if (!update_columns.empty()) {
+    std::vector<std::string> non_conflict_updates;
+    for (const auto& col : update_columns) {
+        if (std::find(conflict_columns.begin(), conflict_columns.end(), col) == conflict_columns.end()) {
+            non_conflict_updates.push_back(col);
+        }
+    }
+    if (!non_conflict_updates.empty()) {
         sql += " WHEN MATCHED THEN UPDATE SET ";
-        for (size_t i = 0; i < update_columns.size(); ++i) {
+        for (size_t i = 0; i < non_conflict_updates.size(); ++i) {
             if (i > 0) sql += ", ";
-            sql += "target." + quote_id(update_columns[i]) + " = source." + quote_id(update_columns[i]);
+            sql += "target." + quote_id(non_conflict_updates[i]) + " = source." + quote_id(non_conflict_updates[i]);
         }
     }
     sql += " WHEN NOT MATCHED THEN INSERT (";

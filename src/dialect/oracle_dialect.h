@@ -22,6 +22,9 @@ public:
     std::string current_date_func() const override;
     std::string extract_part_func(std::string_view part, std::string_view expr_sql) const override;
     std::string date_add_days_func(std::string_view expr_sql, std::string_view days_sql) const override;
+    // Generates an Oracle MERGE statement for upsert. Columns present in conflict_columns
+    // are filtered out from the UPDATE SET clause to prevent ORA-38104.
+    // Returns an empty string if insert_columns or conflict_columns is empty.
     std::string generate_upsert(
         std::string_view table_name,
         const std::vector<std::string>& insert_columns,

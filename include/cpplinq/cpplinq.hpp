@@ -1,17 +1,25 @@
 #pragma once
 
+// Core mapping & data types
 #include "cpplinq/mapping/data_types.h"
 #include "cpplinq/mapping/type_traits.h"
-#include "cpplinq/core/column.h"
-#include "cpplinq/core/expression.h"
-#include "cpplinq/core/table.h"
-#include "cpplinq/dialect/dialect.h"
-#include "cpplinq/driver/connection.h"
-#include "cpplinq/core/sql_generator.h"
 #include "cpplinq/mapping/row_mapper.h"
+
+// AST, schema & SQL generation
+#include "cpplinq/core/column.h"
+#include "cpplinq/core/table.h"
+#include "cpplinq/core/expression.h"
+#include "cpplinq/dialect/dialect.h"
+#include "cpplinq/core/sql_generator.h"
+
+// Memory & streaming execution
 #include "cpplinq/core/chunked_buffer.h"
-#include "cpplinq/core/query_builder.h"
-#include "cpplinq/core/prepared_query.h"
-#include "cpplinq/core/db_context.h"
 #include "cpplinq/core/streaming.h"
+
+// Database interfaces, query building & context
+#include "cpplinq/driver/connection.h"
+#include "cpplinq/core/prepared_query.h"
+#include "cpplinq/core/query_builder.h"
+#include "cpplinq/core/db_context.h"
 #include "cpplinq/driver/connection_pool.h"
+#include "cpplinq/driver/async_executor.h"
