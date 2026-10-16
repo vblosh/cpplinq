@@ -153,3 +153,24 @@ TEST(ConnectionPoolTest, PoolClose) {
 
     EXPECT_THROW(pool->acquire(), DbException);
 }
+
+TEST(ConnectionPoolTest, TransactionDoubleCommitIsSafe) {
+    auto conn = make_connection<sqlite>(":memory:");
+    conn->open();
+
+    Transaction txn(*conn);
+    EXPECT_NO_THROW(txn.commit());
+    EXPECT_NO_THROW(txn.commit()); // second commit should be a no-op
+}
+
+TEST(ConnectionPoolTest, InitializePropagatesExceptionOnBadConnectionString) {
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 2;
+
+    // A path in a non-existent directory cannot be opened by sqlite without parent directories
+    EXPECT_THROW(
+        make_pool<sqlite>("/non_existent_directory_987654321/db.sqlite", config),
+        DbException
+    );
+}

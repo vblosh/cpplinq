@@ -60,7 +60,7 @@ std::string_view SqliteDataReader::get_string_view(int col) const {
     if (!stmt_) return {};
     const unsigned char* txt = sqlite3_column_text(stmt_.get(), col);
     int bytes = sqlite3_column_bytes(stmt_.get(), col);
-    return (txt && bytes > 0) ? std::string_view(reinterpret_cast<const char*>(txt), static_cast<size_t>(bytes)) : std::string_view();
+    return txt ? std::string_view(reinterpret_cast<const char*>(txt), static_cast<size_t>(bytes)) : std::string_view();
 }
 
 std::string SqliteDataReader::get_string(int col) const {

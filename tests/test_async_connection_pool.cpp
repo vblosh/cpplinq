@@ -167,6 +167,47 @@ TEST(AsyncConnectionPoolTest, CancelsQueuedOperationBeforeCallbackStarts) {
     pool->close();
 }
 
+TEST(AsyncConnectionPoolTest, CancelsWaitingAcquisitionWhenStopTokenTriggered) {
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 1;
+    config.acquire_timeout = std::chrono::seconds(10);
+
+    auto pool = make_pool<sqlite>(make_database_path(), config);
+    // Exhaust the 1 available connection
+    auto conn = pool->acquire();
+    EXPECT_TRUE(conn.is_valid());
+
+    std::stop_source stop_source;
+    std::atomic<bool> thread_started{false};
+    std::atomic<bool> threw_cancelled{false};
+
+    std::thread waiter([&]() {
+        thread_started.store(true);
+        try {
+            pool->acquire(stop_source.get_token());
+        } catch (const OperationCancelled&) {
+            threw_cancelled.store(true);
+        }
+    });
+
+    while (!thread_started.load()) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto t0 = std::chrono::steady_clock::now();
+    stop_source.request_stop();
+
+    waiter.join();
+    auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    EXPECT_TRUE(threw_cancelled.load());
+    EXPECT_LT(elapsed, std::chrono::seconds(2));
+
+    pool->close();
+}
+
 TEST(AsyncConnectionPoolTest, WorkerCanClosePoolWithoutSelfJoin) {
     auto pool = make_pool<sqlite>(make_database_path(), single_worker_config());
     auto close_future = pool->submit([pool](auto&) {

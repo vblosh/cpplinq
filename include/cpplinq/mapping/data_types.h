@@ -39,6 +39,15 @@ struct is_chrono_duration<std::chrono::duration<Rep, Period>> : std::true_type {
 template <typename T>
 inline constexpr bool is_chrono_duration_v = is_chrono_duration<T>::value;
 
+template <typename T>
+struct is_hh_mm_ss : std::false_type {};
+
+template <typename Duration>
+struct is_hh_mm_ss<std::chrono::hh_mm_ss<Duration>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_hh_mm_ss_v = is_hh_mm_ss<T>::value;
+
 // ----------------------------------------------------------------------------
 // Unicode / UTF-8 / UTF-16 helpers
 // ----------------------------------------------------------------------------
@@ -231,13 +240,11 @@ struct SqlNumeric {
     SqlNumeric(const std::string& str) : SqlNumeric(std::string_view(str)) {}
     
     SqlNumeric(int64_t val) {
-        if (val < 0) {
-            is_negative = true;
-            val = -val;
-        } else {
-            is_negative = false;
-        }
-        value = (is_negative ? "-" : "") + std::to_string(static_cast<uint64_t>(val));
+        is_negative = (val < 0);
+        uint64_t mag = is_negative
+            ? (0ULL - static_cast<uint64_t>(val))
+            : static_cast<uint64_t>(val);
+        value = (is_negative ? "-" : "") + std::to_string(mag);
         scale = 0;
         precision = static_cast<uint8_t>(value.size() - (is_negative ? 1 : 0));
     }
@@ -253,8 +260,11 @@ struct SqlNumeric {
     SqlNumeric(uint32_t val) : SqlNumeric(static_cast<uint64_t>(val)) {}
 
     SqlNumeric(double val, int target_scale = 6) {
-        if (std::isnan(val)) {
+        if (std::isnan(val) || std::isinf(val)) {
             value = "0";
+            precision = 1;
+            scale = 0;
+            is_negative = false;
             return;
         }
         std::ostringstream oss;
@@ -295,17 +305,84 @@ struct SqlNumeric {
         }
     }
 
-    bool operator==(const SqlNumeric& other) const {
-        return to_string() == other.to_string();
+    std::strong_ordering operator<=>(const SqlNumeric& other) const {
+        bool this_zero = is_zero();
+        bool other_zero = other.is_zero();
+        if (this_zero && other_zero) {
+            return std::strong_ordering::equal;
+        }
+        if (this_zero) {
+            return other.is_negative ? std::strong_ordering::greater : std::strong_ordering::less;
+        }
+        if (other_zero) {
+            return is_negative ? std::strong_ordering::less : std::strong_ordering::greater;
+        }
+
+        if (is_negative != other.is_negative) {
+            return is_negative ? std::strong_ordering::less : std::strong_ordering::greater;
+        }
+
+        auto cmp = compare_magnitudes(other);
+        if (is_negative) {
+            if (cmp == std::strong_ordering::less) return std::strong_ordering::greater;
+            if (cmp == std::strong_ordering::greater) return std::strong_ordering::less;
+            return std::strong_ordering::equal;
+        }
+        return cmp;
     }
 
-    auto operator<=>(const SqlNumeric& other) const {
-        double d1 = to_double();
-        double d2 = other.to_double();
-        return d1 <=> d2;
+    bool operator==(const SqlNumeric& other) const {
+        return (*this <=> other) == 0;
     }
 
 private:
+    bool is_zero() const {
+        for (char c : value) {
+            if (std::isdigit(static_cast<unsigned char>(c)) && c != '0') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::strong_ordering compare_magnitudes(const SqlNumeric& other) const {
+        std::string_view v1 = value;
+        if (!v1.empty() && (v1.front() == '-' || v1.front() == '+')) v1.remove_prefix(1);
+        std::string_view v2 = other.value;
+        if (!v2.empty() && (v2.front() == '-' || v2.front() == '+')) v2.remove_prefix(1);
+
+        size_t dot1 = v1.find('.');
+        std::string_view int1 = (dot1 == std::string_view::npos) ? v1 : v1.substr(0, dot1);
+        std::string_view frac1 = (dot1 == std::string_view::npos) ? std::string_view{} : v1.substr(dot1 + 1);
+
+        size_t dot2 = v2.find('.');
+        std::string_view int2 = (dot2 == std::string_view::npos) ? v2 : v2.substr(0, dot2);
+        std::string_view frac2 = (dot2 == std::string_view::npos) ? std::string_view{} : v2.substr(dot2 + 1);
+
+        while (int1.size() > 1 && int1.front() == '0') int1.remove_prefix(1);
+        while (int2.size() > 1 && int2.front() == '0') int2.remove_prefix(1);
+        if (int1.empty()) int1 = "0";
+        if (int2.empty()) int2 = "0";
+
+        if (int1.size() != int2.size()) {
+            return int1.size() <=> int2.size();
+        }
+        if (int1 != int2) {
+            return int1 <=> int2;
+        }
+
+        while (!frac1.empty() && frac1.back() == '0') frac1.remove_suffix(1);
+        while (!frac2.empty() && frac2.back() == '0') frac2.remove_suffix(1);
+
+        size_t common_len = std::min(frac1.size(), frac2.size());
+        for (size_t i = 0; i < common_len; ++i) {
+            if (frac1[i] != frac2[i]) {
+                return frac1[i] <=> frac2[i];
+            }
+        }
+        return frac1.size() <=> frac2.size();
+    }
+
     void assign_string(std::string_view str) {
         std::string s(str);
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
@@ -323,15 +400,46 @@ private:
             is_negative = false;
             if (s.front() == '+') s.erase(s.begin());
         }
+
+        bool has_digit = false;
+        for (char c : s) {
+            if (std::isdigit(static_cast<unsigned char>(c))) {
+                has_digit = true;
+                break;
+            }
+        }
+        if (!has_digit) {
+            value = "0";
+            precision = 1;
+            scale = 0;
+            is_negative = false;
+            return;
+        }
+
         value = s;
         size_t dot = s.find('.');
         if (dot != std::string::npos) {
             scale = static_cast<int8_t>(s.size() - dot - 1);
-            size_t digits_count = s.size() - 1 - (is_negative ? 1 : 0);
+            size_t digits_count = (s.size() > 1 + (is_negative ? 1 : 0)) ? (s.size() - 1 - (is_negative ? 1 : 0)) : 0;
             precision = static_cast<uint8_t>(digits_count);
         } else {
             scale = 0;
-            precision = static_cast<uint8_t>(s.size() - (is_negative ? 1 : 0));
+            size_t digits_count = (s.size() >= (is_negative ? 1 : 0)) ? (s.size() - (is_negative ? 1 : 0)) : 0;
+            precision = static_cast<uint8_t>(digits_count);
+        }
+
+        bool all_zero = true;
+        for (char c : s) {
+            if (std::isdigit(static_cast<unsigned char>(c)) && c != '0') {
+                all_zero = false;
+                break;
+            }
+        }
+        if (all_zero) {
+            is_negative = false;
+            if (!value.empty() && value.front() == '-') {
+                value.erase(value.begin());
+            }
         }
     }
 };
@@ -347,8 +455,21 @@ struct SqlDate {
     SqlDate() = default;
     SqlDate(int16_t y, uint8_t m, uint8_t d) : year(y), month(m), day(d) {}
 
+    explicit SqlDate(std::chrono::year_month_day ymd)
+        : year(static_cast<int16_t>(static_cast<int>(ymd.year()))),
+          month(static_cast<uint8_t>(static_cast<unsigned>(ymd.month()))),
+          day(static_cast<uint8_t>(static_cast<unsigned>(ymd.day()))) {}
+
     explicit SqlDate(std::string_view iso_str) {
         *this = from_string(iso_str);
+    }
+
+    std::chrono::year_month_day to_year_month_day() const {
+        return std::chrono::year_month_day{
+            std::chrono::year{year},
+            std::chrono::month{month},
+            std::chrono::day{day}
+        };
     }
 
     std::string to_string() const {
@@ -392,8 +513,24 @@ struct SqlTime {
     SqlTime(uint8_t h, uint8_t m, uint8_t s, uint32_t f = 0)
         : hour(h), minute(m), second(s), fraction(f) {}
 
+    template <typename Duration>
+    explicit SqlTime(const std::chrono::hh_mm_ss<Duration>& hms)
+        : hour(static_cast<uint8_t>(hms.hours().count())),
+          minute(static_cast<uint8_t>(hms.minutes().count())),
+          second(static_cast<uint8_t>(hms.seconds().count())),
+          fraction(static_cast<uint32_t>(std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(hms.subseconds()).count()))) {}
+
     explicit SqlTime(std::string_view str) {
         *this = from_string(str);
+    }
+
+    template <typename Duration = std::chrono::nanoseconds>
+    std::chrono::hh_mm_ss<Duration> to_hh_mm_ss() const {
+        auto total_dur = std::chrono::hours(hour) +
+                         std::chrono::minutes(minute) +
+                         std::chrono::seconds(second) +
+                         std::chrono::nanoseconds(fraction);
+        return std::chrono::hh_mm_ss<Duration>(std::chrono::duration_cast<Duration>(total_dur));
     }
 
     std::string to_string(bool include_fraction = false) const {
@@ -403,7 +540,7 @@ struct SqlTime {
             << std::setw(2) << static_cast<int>(minute) << ":"
             << std::setw(2) << static_cast<int>(second);
         if (include_fraction || fraction > 0) {
-            oss << "." << std::setw(6) << (fraction / 1000);
+            oss << "." << std::setfill('0') << std::setw(9) << fraction;
         }
         return oss.str();
     }
@@ -420,13 +557,19 @@ struct SqlTime {
             t.minute = static_cast<uint8_t>(m);
             t.second = static_cast<uint8_t>(s);
             if (iss.peek() == '.') {
-                char dot = 0;
-                iss >> dot;
+                iss.get();
                 std::string frac_str;
-                iss >> frac_str;
-                while (frac_str.size() < 9) frac_str.push_back('0');
-                if (frac_str.size() > 9) frac_str.resize(9);
-                try { t.fraction = static_cast<uint32_t>(std::stoul(frac_str)); } catch (...) {}
+                while (std::isdigit(static_cast<unsigned char>(iss.peek()))) {
+                    frac_str.push_back(static_cast<char>(iss.get()));
+                }
+                if (!frac_str.empty()) {
+                    if (frac_str.size() > 9) {
+                        frac_str.resize(9);
+                    } else {
+                        while (frac_str.size() < 9) frac_str.push_back('0');
+                    }
+                    try { t.fraction = static_cast<uint32_t>(std::stoul(frac_str)); } catch (...) {}
+                }
             }
         }
         return t;
@@ -471,7 +614,14 @@ struct SqlTimestamp {
             << std::setw(2) << static_cast<int>(minute) << ":"
             << std::setw(2) << static_cast<int>(second);
         if (include_fraction || fraction > 0) {
-            oss << "." << std::setw(6) << (fraction / 1000);
+            oss << "." << std::setfill('0') << std::setw(9) << fraction;
+        }
+        if (tz_offset_minutes != 0) {
+            int h = std::abs(tz_offset_minutes) / 60;
+            int m = std::abs(tz_offset_minutes) % 60;
+            oss << (tz_offset_minutes < 0 ? "-" : "+")
+                << std::setfill('0') << std::setw(2) << h << ":"
+                << std::setfill('0') << std::setw(2) << m;
         }
         return oss.str();
     }
@@ -495,13 +645,42 @@ struct SqlTimestamp {
                 ts.minute = static_cast<uint8_t>(mi);
                 ts.second = static_cast<uint8_t>(sec);
                 if (iss.peek() == '.') {
-                    char dot = 0;
-                    iss >> dot;
+                    iss.get();
                     std::string frac_str;
-                    iss >> frac_str;
-                    while (frac_str.size() < 9) frac_str.push_back('0');
-                    if (frac_str.size() > 9) frac_str.resize(9);
-                    try { ts.fraction = static_cast<uint32_t>(std::stoul(frac_str)); } catch (...) {}
+                    while (std::isdigit(static_cast<unsigned char>(iss.peek()))) {
+                        frac_str.push_back(static_cast<char>(iss.get()));
+                    }
+                    if (!frac_str.empty()) {
+                        if (frac_str.size() > 9) {
+                            frac_str.resize(9);
+                        } else {
+                            while (frac_str.size() < 9) frac_str.push_back('0');
+                        }
+                        try { ts.fraction = static_cast<uint32_t>(std::stoul(frac_str)); } catch (...) {}
+                    }
+                }
+                while (std::isspace(static_cast<unsigned char>(iss.peek()))) {
+                    iss.get();
+                }
+                int c = iss.peek();
+                if (c == 'Z' || c == 'z') {
+                    iss.get();
+                    ts.tz_offset_minutes = 0;
+                } else if (c == '+' || c == '-') {
+                    char sign = static_cast<char>(iss.get());
+                    int tz_h = 0;
+                    char tz_sep = 0;
+                    int tz_m = 0;
+                    if (iss >> tz_h) {
+                        if (iss.peek() == ':') {
+                            iss >> tz_sep >> tz_m;
+                        } else if (tz_h >= 100) {
+                            tz_m = tz_h % 100;
+                            tz_h = tz_h / 100;
+                        }
+                        int16_t offset = static_cast<int16_t>(tz_h * 60 + tz_m);
+                        ts.tz_offset_minutes = (sign == '-') ? -offset : offset;
+                    }
                 }
             }
         }
@@ -509,28 +688,23 @@ struct SqlTimestamp {
     }
 
     std::chrono::system_clock::time_point to_time_point() const {
-        std::tm tm{};
-        tm.tm_year = year - 1900;
-        tm.tm_mon = month - 1;
-        tm.tm_mday = day;
-        tm.tm_hour = hour;
-        tm.tm_min = minute;
-        tm.tm_sec = second;
-        tm.tm_isdst = -1;
-#if defined(_WIN32)
-        std::time_t t = _mkgmtime(&tm);
-#else
-        std::time_t t = timegm(&tm);
-#endif
-        if (t == -1) t = 0;
-        auto tp = std::chrono::system_clock::from_time_t(t);
-        tp += std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::nanoseconds(fraction));
+        std::chrono::year_month_day ymd{
+            std::chrono::year{year},
+            std::chrono::month{month},
+            std::chrono::day{day}
+        };
+        auto tp = std::chrono::sys_days{ymd}
+            + std::chrono::hours{hour}
+            + std::chrono::minutes{minute}
+            - std::chrono::minutes{tz_offset_minutes}
+            + std::chrono::seconds{second}
+            + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::nanoseconds{fraction});
         return tp;
     }
 
     static SqlTimestamp from_time_point(std::chrono::system_clock::time_point tp) {
         auto dur = tp.time_since_epoch();
-        auto sec_dur = std::chrono::duration_cast<std::chrono::seconds>(dur);
+        auto sec_dur = std::chrono::floor<std::chrono::seconds>(dur);
         auto frac_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(dur - sec_dur).count();
         if (frac_ns < 0) frac_ns = 0;
 
@@ -552,8 +726,24 @@ struct SqlTimestamp {
         );
     }
 
-    bool operator==(const SqlTimestamp& other) const = default;
-    auto operator<=>(const SqlTimestamp& other) const = default;
+    auto to_utc_tuple() const {
+        std::chrono::year_month_day ymd{
+            std::chrono::year{year},
+            std::chrono::month{month},
+            std::chrono::day{day}
+        };
+        int64_t days = std::chrono::sys_days{ymd}.time_since_epoch().count();
+        int64_t total_minutes = days * 1440LL + static_cast<int64_t>(hour) * 60 + static_cast<int64_t>(minute) - tz_offset_minutes;
+        return std::make_tuple(total_minutes, second, fraction);
+    }
+
+    bool operator==(const SqlTimestamp& other) const {
+        return to_utc_tuple() == other.to_utc_tuple();
+    }
+
+    auto operator<=>(const SqlTimestamp& other) const {
+        return to_utc_tuple() <=> other.to_utc_tuple();
+    }
 };
 
 // ----------------------------------------------------------------------------
@@ -611,12 +801,14 @@ struct SqlInterval {
 
     template <typename Rep, typename Period>
     static SqlInterval from_duration(const std::chrono::duration<Rep, Period>& dur) {
-        auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count();
-        bool negative = total_ns < 0;
-        if (negative) total_ns = -total_ns;
+        auto total_ns_signed = std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count();
+        bool negative = total_ns_signed < 0;
+        uint64_t total_ns = negative
+            ? (0ULL - static_cast<uint64_t>(total_ns_signed))
+            : static_cast<uint64_t>(total_ns_signed);
 
-        uint64_t total_sec = static_cast<uint64_t>(total_ns / 1'000'000'000LL);
-        uint32_t frac = static_cast<uint32_t>(total_ns % 1'000'000'000LL);
+        uint64_t total_sec = total_ns / 1'000'000'000ULL;
+        uint32_t frac = static_cast<uint32_t>(total_ns % 1'000'000'000ULL);
 
         uint32_t days = static_cast<uint32_t>(total_sec / 86400);
         uint32_t rem = static_cast<uint32_t>(total_sec % 86400);
@@ -630,12 +822,28 @@ struct SqlInterval {
 
     template <typename Duration = std::chrono::seconds>
     Duration to_duration() const {
-        int64_t total_sec = static_cast<int64_t>(days) * 86400 +
-                            static_cast<int64_t>(hours) * 3600 +
-                            static_cast<int64_t>(minutes) * 60 +
-                            static_cast<int64_t>(seconds);
-        int64_t total_ns = total_sec * 1'000'000'000LL + static_cast<int64_t>(fraction);
-        if (is_negative) total_ns = -total_ns;
+        if (type == IntervalType::YearToMonth || type == IntervalType::Year || type == IntervalType::Month) {
+            int64_t total_months = static_cast<int64_t>(years) * 12 + static_cast<int64_t>(months);
+            if (is_negative) total_months = -total_months;
+            return std::chrono::duration_cast<Duration>(std::chrono::months(total_months));
+        }
+        uint64_t total_sec = static_cast<uint64_t>(days) * 86400ULL +
+                             static_cast<uint64_t>(hours) * 3600ULL +
+                             static_cast<uint64_t>(minutes) * 60ULL +
+                             static_cast<uint64_t>(seconds);
+        uint64_t total_ns_u = total_sec * 1'000'000'000ULL + static_cast<uint64_t>(fraction);
+        if (years > 0 || months > 0) {
+            int64_t total_months = static_cast<int64_t>(years) * 12 + static_cast<int64_t>(months);
+            int64_t total_ns_s = is_negative
+                ? static_cast<int64_t>(0ULL - total_ns_u)
+                : static_cast<int64_t>(total_ns_u);
+            auto dur = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::months(is_negative ? -total_months : total_months)) +
+                       std::chrono::nanoseconds(total_ns_s);
+            return std::chrono::duration_cast<Duration>(dur);
+        }
+        int64_t total_ns = is_negative
+            ? static_cast<int64_t>(0ULL - total_ns_u)
+            : static_cast<int64_t>(total_ns_u);
         return std::chrono::duration_cast<Duration>(std::chrono::nanoseconds(total_ns));
     }
 
@@ -651,7 +859,7 @@ struct SqlInterval {
                 << std::setw(2) << minutes << ":"
                 << std::setw(2) << seconds;
             if (fraction > 0) {
-                oss << "." << std::setw(6) << (fraction / 1000);
+                oss << "." << std::setfill('0') << std::setw(9) << fraction;
             }
         }
         return oss.str();
@@ -668,6 +876,25 @@ struct SqlInterval {
         } else if (s.front() == '+') {
             s.erase(s.begin());
         }
+
+        auto parse_fraction = [](std::istringstream& iss) -> uint32_t {
+            if (iss.peek() == '.') {
+                iss.get();
+                std::string frac_str;
+                while (std::isdigit(static_cast<unsigned char>(iss.peek()))) {
+                    frac_str.push_back(static_cast<char>(iss.get()));
+                }
+                if (!frac_str.empty()) {
+                    if (frac_str.size() > 9) {
+                        frac_str.resize(9);
+                    } else {
+                        while (frac_str.size() < 9) frac_str.push_back('0');
+                    }
+                    try { return static_cast<uint32_t>(std::stoul(frac_str)); } catch (...) {}
+                }
+            }
+            return 0;
+        };
         
         if (s.find('-') != std::string::npos && s.find(':') == std::string::npos && s.find("day") == std::string::npos) {
             iv.type = IntervalType::YearToMonth;
@@ -691,6 +918,7 @@ struct SqlInterval {
                 iv.hours = static_cast<uint32_t>(h);
                 iv.minutes = static_cast<uint32_t>(mi);
                 iv.seconds = static_cast<uint32_t>(sec);
+                iv.fraction = parse_fraction(iss);
             }
         } else {
             iv.type = IntervalType::DayToSecond;
@@ -703,6 +931,7 @@ struct SqlInterval {
                     iv.hours = static_cast<uint32_t>(h);
                     iv.minutes = static_cast<uint32_t>(mi);
                     iv.seconds = static_cast<uint32_t>(sec);
+                    iv.fraction = parse_fraction(iss);
                 }
             } else if (s.find(':') != std::string::npos) {
                 std::istringstream iss(s);
@@ -711,6 +940,7 @@ struct SqlInterval {
                     iv.hours = static_cast<uint32_t>(h);
                     iv.minutes = static_cast<uint32_t>(mi);
                     iv.seconds = static_cast<uint32_t>(sec);
+                    iv.fraction = parse_fraction(iss);
                 }
             }
         }

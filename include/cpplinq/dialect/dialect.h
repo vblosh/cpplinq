@@ -3,6 +3,7 @@
 #include <string_view>
 #include <cstddef>
 #include <optional>
+#include <vector>
 #include "cpplinq/mapping/type_traits.h"
 
 namespace cpplinq {
@@ -110,10 +111,14 @@ public:
             if (i > 0) sql += ", ";
             sql += quote_id(conflict_columns[i]);
         }
-        sql += ") DO UPDATE SET ";
-        for (size_t i = 0; i < update_columns.size(); ++i) {
-            if (i > 0) sql += ", ";
-            sql += quote_id(update_columns[i]) + " = EXCLUDED." + quote_id(update_columns[i]);
+        if (update_columns.empty()) {
+            sql += ") DO NOTHING";
+        } else {
+            sql += ") DO UPDATE SET ";
+            for (size_t i = 0; i < update_columns.size(); ++i) {
+                if (i > 0) sql += ", ";
+                sql += quote_id(update_columns[i]) + " = EXCLUDED." + quote_id(update_columns[i]);
+            }
         }
         return sql;
     }

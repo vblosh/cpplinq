@@ -56,12 +56,14 @@ public:
     void initialize();
 
     PooledConnection<Backend> acquire(
-        const std::shared_ptr<ConnectionPoolState<Backend>>& self
+        const std::shared_ptr<ConnectionPoolState<Backend>>& self,
+        std::optional<std::stop_token> stop_token = std::nullopt
     );
 
     std::optional<PooledConnection<Backend>> try_acquire(
         std::chrono::milliseconds timeout,
-        const std::shared_ptr<ConnectionPoolState<Backend>>& self
+        const std::shared_ptr<ConnectionPoolState<Backend>>& self,
+        std::optional<std::stop_token> stop_token = std::nullopt
     );
 
     size_t size() const {
@@ -108,14 +110,21 @@ public:
     void return_connection(std::unique_ptr<IConnection> conn) {
         if (!conn) return;
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || !conn->is_open()) {
-            total_connections_--;
-            try { if (conn->is_open()) conn->close(); } catch(...) {}
-        } else {
-            idle_connections_.push_back(std::move(conn));
+        bool need_close = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (closed_ || !conn->is_open()) {
+                total_connections_--;
+                need_close = conn->is_open();
+            } else {
+                idle_connections_.push_back(std::move(conn));
+            }
+            condition_.notify_one();
         }
-        condition_.notify_one();
+
+        if (need_close) {
+            try { conn->close(); } catch(...) {}
+        }
     }
 
 private:
@@ -198,17 +207,36 @@ namespace detail {
 
 template <typename Backend>
 PooledConnection<Backend> ConnectionPoolState<Backend>::acquire(
-    const std::shared_ptr<ConnectionPoolState<Backend>>& self
+    const std::shared_ptr<ConnectionPoolState<Backend>>& self,
+    std::optional<std::stop_token> stop_token
 ) {
+    if (stop_token.has_value() && stop_token->stop_requested()) {
+        throw OperationCancelled("Connection acquisition cancelled by stop token");
+    }
+
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+    if (stop_token.has_value() && stop_token->stop_possible()) {
+        stop_cb.emplace(*stop_token, [this]() {
+            condition_.notify_all();
+        });
+    }
+
     std::unique_lock<std::mutex> lock(mutex_);
     if (closed_) {
         throw DbException("Cannot acquire connection: ConnectionPool is closed");
     }
 
     auto timeout = config_.acquire_timeout;
-    bool success = condition_.wait_for(lock, timeout, [this]() {
+    bool success = condition_.wait_for(lock, timeout, [this, &stop_token]() {
+        if (stop_token.has_value() && stop_token->stop_requested()) {
+            return true;
+        }
         return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
     });
+
+    if (stop_token.has_value() && stop_token->stop_requested()) {
+        throw OperationCancelled("Connection acquisition cancelled by stop token");
+    }
 
     if (closed_) {
         throw DbException("Cannot acquire connection: ConnectionPool was closed while waiting");
@@ -225,9 +253,17 @@ PooledConnection<Backend> ConnectionPoolState<Backend>::acquire(
     }
 
     if (total_connections_ < config_.max_connections) {
-        auto conn = create_new_connection();
-        total_connections_++;
-        return PooledConnection<Backend>(self, std::move(conn));
+        ++total_connections_;
+        lock.unlock();
+        try {
+            auto conn = create_new_connection();
+            return PooledConnection<Backend>(self, std::move(conn));
+        } catch (...) {
+            std::lock_guard<std::mutex> relock(mutex_);
+            --total_connections_;
+            condition_.notify_one();
+            throw;
+        }
     }
 
     throw DbException("Failed to acquire connection from pool");
@@ -236,14 +272,33 @@ PooledConnection<Backend> ConnectionPoolState<Backend>::acquire(
 template <typename Backend>
 std::optional<PooledConnection<Backend>> ConnectionPoolState<Backend>::try_acquire(
     std::chrono::milliseconds timeout,
-    const std::shared_ptr<ConnectionPoolState<Backend>>& self
+    const std::shared_ptr<ConnectionPoolState<Backend>>& self,
+    std::optional<std::stop_token> stop_token
 ) {
+    if (stop_token.has_value() && stop_token->stop_requested()) {
+        throw OperationCancelled("Connection acquisition cancelled by stop token");
+    }
+
+    std::optional<std::stop_callback<std::function<void()>>> stop_cb;
+    if (stop_token.has_value() && stop_token->stop_possible()) {
+        stop_cb.emplace(*stop_token, [this]() {
+            condition_.notify_all();
+        });
+    }
+
     std::unique_lock<std::mutex> lock(mutex_);
     if (closed_) return std::nullopt;
 
-    bool success = condition_.wait_for(lock, timeout, [this]() {
+    bool success = condition_.wait_for(lock, timeout, [this, &stop_token]() {
+        if (stop_token.has_value() && stop_token->stop_requested()) {
+            return true;
+        }
         return closed_ || !idle_connections_.empty() || total_connections_ < config_.max_connections;
     });
+
+    if (stop_token.has_value() && stop_token->stop_requested()) {
+        throw OperationCancelled("Connection acquisition cancelled by stop token");
+    }
 
     if (closed_ || !success) return std::nullopt;
 
@@ -254,9 +309,17 @@ std::optional<PooledConnection<Backend>> ConnectionPoolState<Backend>::try_acqui
     }
 
     if (total_connections_ < config_.max_connections) {
-        auto conn = create_new_connection();
-        total_connections_++;
-        return PooledConnection<Backend>(self, std::move(conn));
+        ++total_connections_;
+        lock.unlock();
+        try {
+            auto conn = create_new_connection();
+            return PooledConnection<Backend>(self, std::move(conn));
+        } catch (...) {
+            std::lock_guard<std::mutex> relock(mutex_);
+            --total_connections_;
+            condition_.notify_one();
+            throw;
+        }
     }
 
     return std::nullopt;
@@ -264,16 +327,16 @@ std::optional<PooledConnection<Backend>> ConnectionPoolState<Backend>::try_acqui
 
 template <typename Backend>
 void ConnectionPoolState<Backend>::initialize() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::unique_ptr<IConnection>> created;
+    created.reserve(config_.min_connections);
     for (size_t i = 0; i < config_.min_connections; ++i) {
-        try {
-            auto conn = create_new_connection();
-            idle_connections_.push_back(std::move(conn));
-            total_connections_++;
-        } catch (...) {
-            // If initial creation fails, proceed with available connections.
-            break;
-        }
+        auto conn = create_new_connection();
+        created.push_back(std::move(conn));
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& conn : created) {
+        idle_connections_.push_back(std::move(conn));
+        total_connections_++;
     }
 }
 
@@ -299,12 +362,15 @@ public:
     ConnectionPool(const ConnectionPool&) = delete;
     ConnectionPool& operator=(const ConnectionPool&) = delete;
 
-    PooledConnection<Backend> acquire() {
-        return state_->acquire(state_);
+    PooledConnection<Backend> acquire(std::optional<std::stop_token> stop_token = std::nullopt) {
+        return state_->acquire(state_, stop_token);
     }
 
-    std::optional<PooledConnection<Backend>> try_acquire(std::chrono::milliseconds timeout) {
-        return state_->try_acquire(timeout, state_);
+    std::optional<PooledConnection<Backend>> try_acquire(
+        std::chrono::milliseconds timeout,
+        std::optional<std::stop_token> stop_token = std::nullopt
+    ) {
+        return state_->try_acquire(timeout, state_, stop_token);
     }
 
     template <typename Func>
@@ -396,7 +462,7 @@ private:
                     throw DbException("Asynchronous operation cannot acquire its connection pool");
                 }
 
-                auto conn = state->acquire(state);
+                auto conn = state->acquire(state, stop_token);
                 if (stop_token.has_value() && stop_token->stop_requested()) {
                     throw OperationCancelled("Asynchronous operation was cancelled before it started");
                 }

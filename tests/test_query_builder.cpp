@@ -947,6 +947,17 @@ TEST(SqlGeneratorTest, UpsertSqlite) {
     ASSERT_EQ(result.params.size(), 3);
 }
 
+TEST(SqlGeneratorTest, UpsertEmptyUpdateColumnsEmitsDoNothing) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<BoundValue> values = {int64_t{1}, std::string{"Alice"}};
+    auto result = gen.generate_upsert("users", {"id", "name"}, values, {"id", "name"}, {});
+
+    EXPECT_EQ(result.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) ON CONFLICT (\"id\", \"name\") DO NOTHING");
+    ASSERT_EQ(result.params.size(), 2);
+}
+
 TEST(SqlGeneratorTest, UpsertMssql) {
     MockMssqlDialect dialect;
     SqlGenerator gen(dialect);

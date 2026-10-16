@@ -577,3 +577,240 @@ TEST(RowMapperTest, FieldToBoundValueAdvancedTypes) {
     BoundValue bv_w = field_to_bound_value(rec, &AdvancedTypesRecord::wide_text);
     EXPECT_EQ(std::get<std::wstring>(bv_w), L"WideStringTest");
 }
+
+class MockStringOnlyReader : public IDataReader {
+public:
+    bool next() override { return true; }
+    int column_count() const override { return 1; }
+    bool is_null(int) const override { return false; }
+    int64_t get_int64(int) const override { return 0; }
+    uint64_t get_uint64(int) const override { return 0; }
+    double get_double(int) const override { return 0; }
+    std::string get_string(int) const override { return "driver_string_value"; }
+    // Intentionally do NOT override get_string_view; uses default returning {}
+    std::wstring get_wstring(int) const override { return {}; }
+    bool get_bool(int) const override { return false; }
+    std::vector<uint8_t> get_blob(int) const override { return {}; }
+    SqlNumeric get_numeric(int) const override { return {}; }
+    SqlDate get_date(int) const override { return {}; }
+    SqlTime get_time(int) const override { return {}; }
+    SqlTimestamp get_timestamp(int) const override { return {}; }
+    SqlInterval get_interval(int) const override { return {}; }
+    SqlGuid get_guid(int) const override { return {}; }
+};
+
+TEST(RowMapperTest, StringFallsBackToGetStringWhenViewEmpty) {
+    MockStringOnlyReader reader;
+    auto val = read_column_value<std::string>(reader, 0);
+    EXPECT_EQ(val, "driver_string_value");
+
+    std::string target;
+    assign_column_value(target, reader, 0);
+    EXPECT_EQ(target, "driver_string_value");
+}
+
+class MockEmptyStringViewReader : public IDataReader {
+public:
+    bool next() override { return true; }
+    int column_count() const override { return 1; }
+    bool is_null(int) const override { return false; }
+    int64_t get_int64(int) const override { return 0; }
+    uint64_t get_uint64(int) const override { return 0; }
+    double get_double(int) const override { return 0; }
+    std::string get_string(int) const override {
+        throw std::runtime_error("get_string should not be called when string_view is valid");
+    }
+    std::string_view get_string_view(int) const override {
+        static const char empty[] = "";
+        return std::string_view(empty, 0);
+    }
+    std::wstring get_wstring(int) const override { return {}; }
+    bool get_bool(int) const override { return false; }
+    std::vector<uint8_t> get_blob(int) const override { return {}; }
+    SqlNumeric get_numeric(int) const override { return {}; }
+    SqlDate get_date(int) const override { return {}; }
+    SqlTime get_time(int) const override { return {}; }
+    SqlTimestamp get_timestamp(int) const override { return {}; }
+    SqlInterval get_interval(int) const override { return {}; }
+    SqlGuid get_guid(int) const override { return {}; }
+};
+
+TEST(RowMapperTest, ValidEmptyStringViewAvoidsGetString) {
+    MockEmptyStringViewReader reader;
+    EXPECT_NO_THROW({
+        auto val = read_column_value<std::string>(reader, 0);
+        EXPECT_EQ(val, "");
+    });
+
+    std::string target;
+    EXPECT_NO_THROW({
+        assign_column_value(target, reader, 0);
+        EXPECT_EQ(target, "");
+    });
+}
+
+struct SimpleEntity {
+    int id = 0;
+    std::string name;
+};
+
+TEST(RowMapperTest, InPlaceMapRowResetsNonOptionalOnNull) {
+    const auto cols = std::make_tuple(
+        column("id", &SimpleEntity::id),
+        column("name", &SimpleEntity::name)
+    );
+    RowMapper<SimpleEntity, decltype(std::get<0>(cols)), decltype(std::get<1>(cols))> mapper(cols);
+
+    // Row 1: has values
+    MockDataReader reader1({
+        {int64_t(42), std::string("initial_name")}
+    });
+    reader1.next();
+
+    SimpleEntity entity;
+    mapper.map_row(reader1, entity);
+    EXPECT_EQ(entity.id, 42);
+    EXPECT_EQ(entity.name, "initial_name");
+
+    // Row 2: columns are NULL
+    MockDataReader reader2({
+        {std::monostate{}, std::monostate{}}
+    });
+    reader2.next();
+
+    // Map in-place into the same entity: should NOT retain previous row's values
+    mapper.map_row(reader2, entity);
+    EXPECT_EQ(entity.id, 0);
+    EXPECT_EQ(entity.name, "");
+}
+
+TEST(RowMapperTest, ChronoAndCharMappings) {
+    // char mapping
+    char ch = 'Z';
+    BoundValue bv_char = convert_to_bound_value(ch);
+    EXPECT_TRUE(std::holds_alternative<int64_t>(bv_char) || std::holds_alternative<uint64_t>(bv_char));
+
+    // year_month_day mapping
+    std::chrono::year_month_day ymd{std::chrono::year{2026}, std::chrono::month{10}, std::chrono::day{16}};
+    BoundValue bv_ymd = convert_to_bound_value(ymd);
+    ASSERT_TRUE(std::holds_alternative<SqlDate>(bv_ymd));
+    EXPECT_EQ(std::get<SqlDate>(bv_ymd).to_string(), "2026-10-16");
+
+    // hh_mm_ss mapping
+    std::chrono::hh_mm_ss hms{std::chrono::hours(14) + std::chrono::minutes(30) + std::chrono::seconds(45)};
+    BoundValue bv_hms = convert_to_bound_value(hms);
+    ASSERT_TRUE(std::holds_alternative<SqlTime>(bv_hms));
+    EXPECT_EQ(std::get<SqlTime>(bv_hms).to_string(), "14:30:45");
+
+    // Read back via reader
+    MockDataReader reader({
+        {SqlDate(2026, 10, 16), SqlTime(14, 30, 45)}
+    });
+    reader.next();
+
+    auto read_ymd = read_column_value<std::chrono::year_month_day>(reader, 0);
+    EXPECT_EQ(static_cast<int>(read_ymd.year()), 2026);
+    EXPECT_EQ(static_cast<unsigned>(read_ymd.month()), 10);
+    EXPECT_EQ(static_cast<unsigned>(read_ymd.day()), 16);
+
+    auto read_hms = read_column_value<std::chrono::hh_mm_ss<std::chrono::seconds>>(reader, 1);
+    EXPECT_EQ(read_hms.hours().count(), 14);
+    EXPECT_EQ(read_hms.minutes().count(), 30);
+    EXPECT_EQ(read_hms.seconds().count(), 45);
+}
+
+TEST(DataTypesTest, SqlNumericExactComparisonsAndOverflowSafety) {
+    // Safe INT64_MIN constructor (no UB)
+    int64_t min_val = std::numeric_limits<int64_t>::min();
+    SqlNumeric num_min(min_val);
+    EXPECT_EQ(num_min.to_string(), "-9223372036854775808");
+    EXPECT_TRUE(num_min.is_negative);
+
+    // Consistent and exact comparisons
+    EXPECT_TRUE(SqlNumeric("1.50") == SqlNumeric("1.5"));
+    EXPECT_TRUE((SqlNumeric("1.50") <=> SqlNumeric("1.5")) == 0);
+    EXPECT_TRUE(SqlNumeric("-0") == SqlNumeric("0"));
+    EXPECT_TRUE((SqlNumeric("-0") <=> SqlNumeric("0")) == 0);
+    EXPECT_TRUE(SqlNumeric("0.00") == SqlNumeric("0"));
+
+    // Arbitrary precision decimals exceeding 53 bits (> 17 digits)
+    SqlNumeric big1("123456789012345678901234567890");
+    SqlNumeric big2("123456789012345678901234567891");
+    EXPECT_TRUE(big1 < big2);
+    EXPECT_FALSE(big1 == big2);
+    EXPECT_TRUE((big1 <=> big2) < 0);
+
+    // Negative comparisons
+    EXPECT_TRUE(SqlNumeric("-2.5") < SqlNumeric("-1.5"));
+    EXPECT_TRUE(SqlNumeric("-1.5") > SqlNumeric("-2.5"));
+    EXPECT_TRUE(SqlNumeric("-1.50") == SqlNumeric("-1.5"));
+
+    // Underflow edge cases
+    SqlNumeric underflow1("-");
+    EXPECT_EQ(underflow1.to_string(), "0");
+    SqlNumeric underflow2("-.");
+    EXPECT_EQ(underflow2.to_string(), "0");
+    SqlNumeric underflow3(".");
+    EXPECT_EQ(underflow3.to_string(), "0");
+
+    // Infinity rejection
+    SqlNumeric inf_pos(std::numeric_limits<double>::infinity());
+    EXPECT_EQ(inf_pos.to_string(), "0");
+    SqlNumeric inf_neg(-std::numeric_limits<double>::infinity());
+    EXPECT_EQ(inf_neg.to_string(), "0");
+}
+
+TEST(DataTypesTest, SqlTimeAndTimestampSubsecondsAndTimezone) {
+    // Fractional seconds with ISO-8601 timezone suffix
+    SqlTimestamp ts_z = SqlTimestamp::from_string("2026-10-16T14:15:00.5Z");
+    EXPECT_EQ(ts_z.fraction, 500'000'000U);
+    EXPECT_EQ(ts_z.tz_offset_minutes, 0);
+
+    SqlTimestamp ts_offset = SqlTimestamp::from_string("2026-10-16T14:15:00.123+02:00");
+    EXPECT_EQ(ts_offset.fraction, 123'000'000U);
+    EXPECT_EQ(ts_offset.tz_offset_minutes, 120);
+
+    SqlTime t_frac = SqlTime::from_string("14:15:00.5Z");
+    EXPECT_EQ(t_frac.fraction, 500'000'000U);
+
+    // Pre-1970 subsecond floor test
+    // 1969-12-31 23:59:59.500 UTC = -500ms from epoch
+    auto pre1970_tp = std::chrono::system_clock::time_point(std::chrono::milliseconds(-500));
+    SqlTimestamp ts_pre = SqlTimestamp::from_time_point(pre1970_tp);
+    EXPECT_EQ(ts_pre.year, 1969);
+    EXPECT_EQ(ts_pre.month, 12);
+    EXPECT_EQ(ts_pre.day, 31);
+    EXPECT_EQ(ts_pre.hour, 23);
+    EXPECT_EQ(ts_pre.minute, 59);
+    EXPECT_EQ(ts_pre.second, 59);
+    EXPECT_EQ(ts_pre.fraction, 500'000'000U);
+
+    // Timestamp comparison normalizing tz_offset_minutes
+    // 14:15:00 +02:00 == 12:15:00 +00:00
+    SqlTimestamp ts1(2026, 10, 16, 14, 15, 0, 0, 120);
+    SqlTimestamp ts2(2026, 10, 16, 12, 15, 0, 0, 0);
+    EXPECT_TRUE(ts1 == ts2);
+    EXPECT_TRUE((ts1 <=> ts2) == 0);
+}
+
+TEST(DataTypesTest, SqlIntervalSubsecondsAndYearToMonth) {
+    // INT64_MIN safe negation in from_duration and to_duration
+    auto min_duration = std::chrono::nanoseconds(std::numeric_limits<int64_t>::min());
+    SqlInterval iv_min = SqlInterval::from_duration(min_duration);
+    EXPECT_TRUE(iv_min.is_negative);
+    auto roundtrip_min = iv_min.to_duration<std::chrono::nanoseconds>();
+    EXPECT_EQ(roundtrip_min.count(), std::numeric_limits<int64_t>::min());
+
+    // Parsing subseconds in interval
+    SqlInterval iv_sub = SqlInterval::from_string("1 02:03:04.500000000");
+    EXPECT_EQ(iv_sub.days, 1);
+    EXPECT_EQ(iv_sub.hours, 2);
+    EXPECT_EQ(iv_sub.minutes, 3);
+    EXPECT_EQ(iv_sub.seconds, 4);
+    EXPECT_EQ(iv_sub.fraction, 500'000'000U);
+
+    // YearToMonth to_duration
+    SqlInterval iv_ym = SqlInterval::from_year_month(2, 6); // 2 years 6 months = 30 months
+    auto months_dur = iv_ym.to_duration<std::chrono::months>();
+    EXPECT_EQ(months_dur.count(), 30);
+}
