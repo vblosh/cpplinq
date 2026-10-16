@@ -279,3 +279,35 @@ TEST(SqliteReviewFixesTest, StringBooleanAndNullHandling) {
     EXPECT_EQ(reader->get_guid(4).to_string(), "00000000-0000-0000-0000-000000000000");
 }
 
+TEST(SqliteReviewFixesTest, InsertManyBatchOutOfBoundsThrows) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    std::vector<BoundValue> flat_params = {int64_t(1), std::string("Alice")};
+    EXPECT_THROW(db.connection().insert_many_batch("INSERT INTO test VALUES (?, ?)", flat_params, 2, 2), DbException);
+}
+
+TEST(SqliteReviewFixesTest, InsertManyBatchExecution) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.connection().execute_non_query_direct("CREATE TABLE batch_test (id INT, name TEXT)");
+    std::vector<BoundValue> flat_params = {
+        int64_t(1), std::string("Alice"),
+        int64_t(2), std::string("Bob"),
+        int64_t(3), std::string("Charlie")
+    };
+    size_t affected = db.connection().insert_many_batch("INSERT INTO batch_test VALUES (?, ?)", flat_params, 2, 3);
+    EXPECT_EQ(affected, 3u);
+
+    auto reader = db.connection().execute_query_direct("SELECT COUNT(*) FROM batch_test");
+    ASSERT_TRUE(reader->next());
+    EXPECT_EQ(reader->get_int64(0), 3);
+}
+
+TEST(SqliteReviewFixesTest, InsertManyBatchOverflowGuard) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    std::vector<BoundValue> flat_params = {int64_t(1), std::string("Alice")};
+    size_t large_row_count = SIZE_MAX / 2 + 1;
+    size_t col_count = 2;
+    EXPECT_THROW(db.connection().insert_many_batch("INSERT INTO test VALUES (?, ?)", flat_params, col_count, large_row_count), DbException);
+}
+
+
+

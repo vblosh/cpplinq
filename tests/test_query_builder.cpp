@@ -3,6 +3,15 @@
 #include "cpplinq/core/expression.h"
 #include "cpplinq/core/table.h"
 #include "cpplinq/core/column.h"
+#ifdef CPPLINQ_HAS_POSTGRES
+#include "dialect/postgres_dialect.h"
+#endif
+#ifdef CPPLINQ_HAS_MSSQL
+#include "dialect/mssql_dialect.h"
+#endif
+#ifdef CPPLINQ_HAS_MYSQL
+#include "dialect/mysql_dialect.h"
+#endif
 
 using namespace cpplinq;
 using namespace cpplinq::expr;
@@ -1444,3 +1453,67 @@ TEST(ReviewFixesTest, InsertEmptyColumnsWithReturningSqliteReturning) {
     auto res = gen.generate_insert("users", {}, {}, "id");
     EXPECT_EQ(res.sql, "INSERT INTO \"users\" DEFAULT VALUES RETURNING \"id\"");
 }
+
+#ifdef CPPLINQ_HAS_POSTGRES
+TEST(ReviewFixesTest, PostgresQuoteIdAndReturningEscapesDoubleQuotes) {
+    PostgresDialect dialect;
+    EXPECT_EQ(dialect.quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect.returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+#endif
+
+#ifdef CPPLINQ_HAS_MSSQL
+TEST(ReviewFixesTest, MssqlCreateTablePrefixEscapesSingleQuotes) {
+    MssqlDialect dialect;
+    EXPECT_EQ(dialect.create_table_prefix("user'table"), "IF OBJECT_ID(N'user''table', N'U') IS NULL CREATE TABLE [user'table]");
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyUpdateColumns) {
+    MssqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"id", "name"}, {"id"}, {});
+    EXPECT_EQ(sql, "MERGE INTO [users] WITH (HOLDLOCK) AS [target] USING (VALUES (?, ?)) AS [source] ([id], [name]) ON ([target].[id] = [source].[id]) WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES ([source].[id], [source].[name]);");
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyInsertColumnsThrows) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {}, {"id"}, {"name"}), std::invalid_argument);
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyConflictColumnsThrows) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {"id", "name"}, {}, {"name"}), std::invalid_argument);
+}
+
+TEST(ReviewFixesTest, MssqlLimitZeroThrowsInvalidArgument) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.limit_offset(0, std::nullopt), std::invalid_argument);
+    EXPECT_THROW(dialect.limit_offset(0, 10), std::invalid_argument);
+}
+#endif
+
+#ifdef CPPLINQ_HAS_MYSQL
+TEST(ReviewFixesTest, MysqlFunctionNameLengthToCharLength) {
+    MysqlDialect dialect;
+    EXPECT_EQ(dialect.function_name("LENGTH"), "CHAR_LENGTH");
+    EXPECT_EQ(dialect.function_name("SUBSTR"), "SUBSTRING");
+    EXPECT_EQ(dialect.function_name("UPPER"), "UPPER");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyUpdateColumnsWithConflictColumns) {
+    MysqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"id", "name"}, {"id"}, {});
+    EXPECT_EQ(sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `id` = `id`");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyUpdateColumnsFallbackToInsertColumns) {
+    MysqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"name"}, {}, {});
+    EXPECT_EQ(sql, "INSERT INTO `users` (`name`) VALUES (?) ON DUPLICATE KEY UPDATE `name` = `name`");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyInsertColumnsThrows) {
+    MysqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {}, {}, {}), std::invalid_argument);
+}
+#endif
+

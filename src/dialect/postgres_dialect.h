@@ -1,8 +1,6 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
 
-#ifdef CPPLINQ_HAS_POSTGRES
-
 namespace cpplinq {
 
 class PostgresDialect : public ISqlDialect {
@@ -17,5 +15,3 @@ public:
 };
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_POSTGRES

@@ -356,6 +356,9 @@ inline size_t execute_insert_many_batch(
     const char* driver_prefix
 ) {
     if (row_count == 0 || col_count == 0) return 0;
+    if (flat_params.size() / col_count < row_count) {
+        throw DbException("insert_many_batch: flat_params size is smaller than row_count * col_count");
+    }
 
     SQLHSTMT hstmt = SQL_NULL_HSTMT;
     SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
