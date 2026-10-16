@@ -44,7 +44,7 @@ class PreparedQuery {
 public:
     using Mapper = tuple_row_mapper_t<Entity, TupleCols>;
 
-    PreparedQuery(std::unique_ptr<IPreparedStatement> stmt,
+    PreparedQuery(std::shared_ptr<IPreparedStatement> stmt,
                   TupleCols columns,
                   std::vector<ParameterSlot> slots)
         : stmt_(std::move(stmt)),
@@ -61,6 +61,8 @@ public:
     // Execute query and return typed ChunkedList<Entity, 64>
     template <typename... Args>
     ChunkedList<Entity, 64> execute(const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedQuery: number of arguments must match number of parameter types");
         bind_and_execute(args...);
         auto reader = stmt_->execute_query();
         ChunkedList<Entity, 64> list;
@@ -75,12 +77,16 @@ public:
     // Alias for execute: to_list
     template <typename... Args>
     ChunkedList<Entity, 64> to_list(const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedQuery: number of arguments must match number of parameter types");
         return execute(args...);
     }
 
     // Return first matching entity, or std::nullopt
     template <typename... Args>
     std::optional<Entity> first(const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedQuery: number of arguments must match number of parameter types");
         bind_and_execute(args...);
         auto reader = stmt_->execute_query();
         if (reader && reader->next()) {
@@ -94,16 +100,20 @@ public:
     // Stream query results as a C++20 input range
     template <typename... Args>
     auto stream(const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedQuery: number of arguments must match number of parameter types");
         bind_and_execute(args...);
         auto reader = stmt_->execute_query();
         return EntityStream<Entity, Mapper>(
-            nullptr, std::move(reader), mapper_, ExecutionOptions{}
+            stmt_, std::move(reader), mapper_, ExecutionOptions{}
         );
     }
 
     // Stream with custom execution options
     template <typename... Args>
     auto stream_with_options(ExecutionOptions options, const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedQuery: number of arguments must match number of parameter types");
         if (options.query_timeout_seconds.has_value()) {
             stmt_->set_timeout(*options.query_timeout_seconds);
         }
@@ -113,7 +123,7 @@ public:
         bind_and_execute(args...);
         auto reader = stmt_->execute_query();
         return EntityStream<Entity, Mapper>(
-            nullptr, std::move(reader), mapper_, std::move(options)
+            stmt_, std::move(reader), mapper_, std::move(options)
         );
     }
 
@@ -122,7 +132,7 @@ public:
     const IPreparedStatement& statement() const { return *stmt_; }
 
 private:
-    std::unique_ptr<IPreparedStatement> stmt_;
+    std::shared_ptr<IPreparedStatement> stmt_;
     TupleCols columns_;
     Mapper mapper_;
     std::vector<ParameterSlot> slots_;
@@ -146,7 +156,7 @@ private:
                 if (slot.dynamic_index < dynamic_args.size()) {
                     stmt_->bind(static_cast<int>(i), dynamic_args[slot.dynamic_index]);
                 } else {
-                    stmt_->bind(static_cast<int>(i), BoundValue{std::monostate{}});
+                    throw DbException("PreparedQuery: missing argument for dynamic parameter slot");
                 }
             } else {
                 stmt_->bind(static_cast<int>(i), slot.static_value);
@@ -170,6 +180,8 @@ public:
 
     template <typename... Args>
     size_t execute(const Args&... args) {
+        static_assert(sizeof...(ParamTypes) == 0 || sizeof...(Args) == sizeof...(ParamTypes),
+                      "PreparedCommand: number of arguments must match number of parameter types");
         bind_slots(args...);
         return stmt_->execute_non_query();
     }
@@ -198,7 +210,7 @@ private:
                 if (slot.dynamic_index < dynamic_args.size()) {
                     stmt_->bind(static_cast<int>(i), dynamic_args[slot.dynamic_index]);
                 } else {
-                    stmt_->bind(static_cast<int>(i), BoundValue{std::monostate{}});
+                    throw DbException("PreparedCommand: missing argument for dynamic parameter slot");
                 }
             } else {
                 stmt_->bind(static_cast<int>(i), slot.static_value);

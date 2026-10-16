@@ -108,6 +108,9 @@ public:
     }
 
     friend auto operator<=>(const ChunkedBufferIterator& lhs, const ChunkedBufferIterator& rhs) noexcept {
+        if (auto cmp = lhs.container_ <=> rhs.container_; cmp != 0) {
+            return cmp;
+        }
         return lhs.index_ <=> rhs.index_;
     }
 
@@ -174,10 +177,10 @@ public:
             allocate_chunk();
         }
         auto* ptr = reinterpret_cast<T*>(&chunks_.back()->storage[current_chunk_count_ * sizeof(T)]);
-        ::new (static_cast<void*>(ptr)) T(std::forward<Args>(args)...);
+        auto* created = ::new (static_cast<void*>(ptr)) T(std::forward<Args>(args)...);
         ++current_chunk_count_;
         ++total_size_;
-        return *ptr;
+        return *created;
     }
 
     void push_back(T&& value) {
@@ -200,13 +203,13 @@ public:
     reference operator[](size_t index) noexcept {
         size_t chunk_idx = index / ChunkSize;
         size_t elem_idx = index % ChunkSize;
-        return *reinterpret_cast<T*>(&chunks_[chunk_idx]->storage[elem_idx * sizeof(T)]);
+        return *std::launder(reinterpret_cast<T*>(&chunks_[chunk_idx]->storage[elem_idx * sizeof(T)]));
     }
 
     const_reference operator[](size_t index) const noexcept {
         size_t chunk_idx = index / ChunkSize;
         size_t elem_idx = index % ChunkSize;
-        return *reinterpret_cast<const T*>(&chunks_[chunk_idx]->storage[elem_idx * sizeof(T)]);
+        return *std::launder(reinterpret_cast<const T*>(&chunks_[chunk_idx]->storage[elem_idx * sizeof(T)]));
     }
 
     reference at(size_t index) {
@@ -301,7 +304,8 @@ public:
         result.reserve(total_size_);
         for (size_t c = 0; c < chunks_.size(); ++c) {
             size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<const T*>(&chunks_[c]->storage[0]);
+            if (count_in_chunk == 0) continue;
+            auto* chunk_data = std::launder(reinterpret_cast<const T*>(&chunks_[c]->storage[0]));
             for (size_t i = 0; i < count_in_chunk; ++i) {
                 result.push_back(chunk_data[i]);
             }
@@ -315,7 +319,8 @@ public:
         result.reserve(total_size_);
         for (size_t c = 0; c < chunks_.size(); ++c) {
             size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
+            if (count_in_chunk == 0) continue;
+            auto* chunk_data = std::launder(reinterpret_cast<T*>(&chunks_[c]->storage[0]));
             for (size_t i = 0; i < count_in_chunk; ++i) {
                 result.emplace_back(std::move(chunk_data[i]));
             }
@@ -324,26 +329,13 @@ public:
         return result;
     }
 
-    // Conversion to contiguous std::vector (non-const lvalue)
-    std::vector<T> to_vector() & {
-        std::vector<T> result;
-        result.reserve(total_size_);
-        for (size_t c = 0; c < chunks_.size(); ++c) {
-            size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
-            for (size_t i = 0; i < count_in_chunk; ++i) {
-                result.emplace_back(std::move(chunk_data[i]));
-            }
-        }
-        return result;
-    }
-
     // Direct chunk iteration (zero copy, cache-friendly)
     template <typename Func>
     void for_each_chunk(Func&& f) {
         for (size_t c = 0; c < chunks_.size(); ++c) {
             size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
+            if (count_in_chunk == 0) continue;
+            auto* chunk_data = std::launder(reinterpret_cast<T*>(&chunks_[c]->storage[0]));
             f(chunk_data, count_in_chunk);
         }
     }
@@ -352,7 +344,8 @@ public:
     void for_each_chunk(Func&& f) const {
         for (size_t c = 0; c < chunks_.size(); ++c) {
             size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<const T*>(&chunks_[c]->storage[0]);
+            if (count_in_chunk == 0) continue;
+            auto* chunk_data = std::launder(reinterpret_cast<const T*>(&chunks_[c]->storage[0]));
             f(chunk_data, count_in_chunk);
         }
     }
@@ -360,7 +353,8 @@ public:
     void clear() noexcept {
         for (size_t c = 0; c < chunks_.size(); ++c) {
             size_t count_in_chunk = (c + 1 == chunks_.size()) ? current_chunk_count_ : ChunkSize;
-            auto* chunk_data = reinterpret_cast<T*>(&chunks_[c]->storage[0]);
+            if (count_in_chunk == 0) continue;
+            auto* chunk_data = std::launder(reinterpret_cast<T*>(&chunks_[c]->storage[0]));
             for (size_t i = 0; i < count_in_chunk; ++i) {
                 chunk_data[i].~T();
             }

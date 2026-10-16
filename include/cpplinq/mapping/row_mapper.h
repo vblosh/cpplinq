@@ -120,8 +120,8 @@ BoundValue convert_to_bound_value(const T& val) {
 template <typename Entity, typename... ColumnDefs>
 class RowMapper {
 public:
-    explicit RowMapper(const std::tuple<ColumnDefs...>& columns, int offset = 0)
-        : columns_(columns), offset_(offset) {}
+    explicit RowMapper(std::tuple<ColumnDefs...> columns, int offset = 0)
+        : columns_(std::move(columns)), offset_(offset) {}
 
     Entity map_row(IDataReader& reader) const {
         Entity entity{};
@@ -138,7 +138,7 @@ public:
     }
 
 private:
-    const std::tuple<ColumnDefs...>& columns_;
+    std::tuple<ColumnDefs...> columns_;
     int offset_ = 0;
 
     template <size_t... Is>

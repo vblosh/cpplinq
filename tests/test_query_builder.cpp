@@ -1267,6 +1267,82 @@ TEST(SqlGeneratorTest, OracleCreateTable) {
     EXPECT_TRUE(result.params.empty());
 }
 
+TEST(SqlGeneratorTest, CteGenerationWithGroupByAndHaving) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle dept("dept");
+    ColumnHandle salary("salary");
+    SubqueryExpr sub("employees", {"dept", "salary"}, nullptr, false);
+
+    CteClause cte{"dept_salaries", sub, false};
+    auto res = gen.generate_cte_select(
+        {cte},
+        "dept_salaries",
+        {"dept"},
+        std::nullopt,
+        {},
+        std::nullopt,
+        std::nullopt,
+        false,
+        {dept.ref},
+        (salary > 50000).node
+    );
+
+    EXPECT_EQ(res.sql, "WITH \"dept_salaries\" AS (SELECT \"dept\", \"salary\" FROM \"employees\") SELECT \"dept\" FROM \"dept_salaries\" GROUP BY \"dept\" HAVING (\"salary\" > ?)");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(res.params[0]), 50000);
+}
+
+TEST(SqlGeneratorTest, JoinedCountGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle user_id("users", "id");
+    ColumnHandle order_user_id("orders", "user_id");
+    ColumnHandle amount("orders", "amount");
+
+    JoinClause j1{"INNER JOIN", "orders", (user_id == order_user_id).node};
+
+    auto res = gen.generate_joined_count(
+        "users",
+        {j1},
+        (amount > 100.0).node
+    );
+
+    EXPECT_EQ(res.sql, "SELECT COUNT(*) FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") WHERE (\"orders\".\"amount\" > ?)");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(res.params[0]), 100.0);
+}
+
+TEST(SqlGeneratorTest, SetOperationCountGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle age("users", "age");
+
+    SetOpClause op{
+        SetOpType::Union,
+        "users",
+        {"id", "name", "age"},
+        (age >= 30).node,
+        false
+    };
+
+    auto res = gen.generate_set_operation_count(
+        "users",
+        {"id", "name", "age"},
+        (age <= 20).node,
+        false,
+        {op}
+    );
+
+    EXPECT_EQ(res.sql, "SELECT COUNT(*) FROM (SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE (\"users\".\"age\" <= ?) UNION SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE (\"users\".\"age\" >= ?)) \"_sub\"");
+    ASSERT_EQ(res.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(res.params[0]), 20);
+    EXPECT_EQ(std::get<int64_t>(res.params[1]), 30);
+}
+
 
 
 

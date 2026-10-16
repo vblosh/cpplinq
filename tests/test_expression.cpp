@@ -444,3 +444,19 @@ TEST(ExpressionTest, SqlFunctionsAst) {
     EXPECT_EQ((*func_coal)->function_name, "COALESCE");
     EXPECT_EQ((*func_coal)->arguments.size(), 2);
 }
+
+TEST(ExpressionTest, ExprNullptrCString) {
+    const char* null_str = nullptr;
+    Expr e(null_str);
+    auto* lit = std::get_if<Literal>(&e.node);
+    ASSERT_NE(lit, nullptr);
+    auto* val = std::get_if<std::string>(&lit->value);
+    ASSERT_NE(val, nullptr);
+    EXPECT_EQ(*val, "");
+}
+
+TEST(ExpressionTest, ColumnHandleToString) {
+    ColumnHandle col("users", "email");
+    std::string str = col;
+    EXPECT_EQ(str, "email");
+}

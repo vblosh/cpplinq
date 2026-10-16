@@ -51,6 +51,9 @@ public:
         return "SELECT LAST_INSERT_ID()";
     }
 
+    // Last insert ID query support
+    virtual bool supports_last_insert_id() const { return true; }
+
     // CREATE TABLE prefix (SQLite/PG vs MSSQL IF OBJECT_ID)
     virtual std::string create_table_prefix(std::string_view table_name) const {
         return "CREATE TABLE IF NOT EXISTS " + quote_id(table_name);
@@ -60,6 +63,9 @@ public:
     virtual std::string function_name(std::string_view func) const {
         return std::string(func);
     }
+
+    // TRUNCATE TABLE support
+    virtual bool supports_truncate() const { return true; }
 
     // Date/time functions
     virtual std::string current_timestamp_func() const { return "CURRENT_TIMESTAMP"; }
