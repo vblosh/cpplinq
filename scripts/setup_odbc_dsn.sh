@@ -50,11 +50,14 @@ elif [ -f "/usr/lib/x86_64-linux-gnu/odbc/psqlodbca.so" ]; then
 fi
 
 MSSQL_18_DRIVER=""
-if [ -f "$HOME/.local/opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18.6.so.1.1" ]; then
-    MSSQL_18_DRIVER="$HOME/.local/opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18.6.so.1.1"
-elif [ -f "/opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18.so" ]; then
-    MSSQL_18_DRIVER="/opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18.so"
-fi
+for f in \
+    "$HOME/.local/opt/microsoft/msodbcsql18/lib64"/libmsodbcsql-18*.so* \
+    /opt/microsoft/msodbcsql18/lib64/libmsodbcsql-18*.so*; do
+    if [ -f "$f" ]; then
+        MSSQL_18_DRIVER="$f"
+        break
+    fi
+done
 
 FREETDS_DRIVER=""
 if [ -f "$HOME/.local/usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so" ]; then
@@ -97,6 +100,24 @@ if [ -f "$HOME/.local/usr/lib/x86_64-linux-gnu/libodbcinst.so" ]; then
     ODBCINST_LIB="$HOME/.local/usr/lib/x86_64-linux-gnu/libodbcinst.so"
 elif [ -f "/usr/lib/x86_64-linux-gnu/libodbcinst.so" ]; then
     ODBCINST_LIB="/usr/lib/x86_64-linux-gnu/libodbcinst.so"
+fi
+
+INFORMIX_DRIVER=""
+for f in \
+    "$HOME/.local/opt/informix/lib/cli/iclit09b.so" \
+    /opt/informix/lib/cli/iclit09b.so \
+    /opt/ibm/informix/lib/cli/iclit09b.so; do
+    if [ -f "$f" ]; then
+        INFORMIX_DRIVER="$f"
+        break
+    fi
+done
+
+# Build Informix compatibility shim for unixODBC if Informix SDK is present
+if [ -n "$INFORMIX_DRIVER" ] && [ -f "${PROJECT_ROOT}/scripts/informix_compat/informix_compat.c" ] && command -v gcc >/dev/null 2>&1; then
+    COMPAT_DIR="$(dirname "$INFORMIX_DRIVER")"
+    gcc -shared -fPIC -O2 "${PROJECT_ROOT}/scripts/informix_compat/informix_compat.c" -o "${COMPAT_DIR}/libinformix_compat.so" -ldl 2>/dev/null || true
+    [ -d "$HOME/.local/lib" ] && cp -f "${COMPAT_DIR}/libinformix_compat.so" "$HOME/.local/lib/libinformix_compat.so" 2>/dev/null || true
 fi
 
 cat << EOF > "$HOME/.local/etc/odbcinst.ini"
@@ -150,9 +171,36 @@ Description = SQLite3 ODBC Driver
 Driver      = ${SQLITE_DRIVER}
 Setup       = ${ODBCINST_LIB}
 UsageCount  = 1
+
+[IBM INFORMIX ODBC DRIVER (64-bit)]
+Description = IBM INFORMIX ODBC DRIVER (64-bit)
+Driver      = ${INFORMIX_DRIVER}
+Setup       = ${INFORMIX_DRIVER}
+APILevel    = 1
+ConnectFunctions = YYY
+DriverODBCVer = 03.80
+FileUsage   = 0
+SQLLevel    = 1
+smProcessPerConnect = Y
+UsageCount  = 1
+
+[IBM INFORMIX ODBC DRIVER]
+Description = IBM INFORMIX ODBC DRIVER
+Driver      = ${INFORMIX_DRIVER}
+Setup       = ${INFORMIX_DRIVER}
+APILevel    = 1
+ConnectFunctions = YYY
+DriverODBCVer = 03.80
+FileUsage   = 0
+SQLLevel    = 1
+smProcessPerConnect = Y
+UsageCount  = 1
 EOF
 
 cat << 'EOF' > "$HOME/.local/etc/odbc.ini"
+[ODBC]
+UNICODE=UCS-2
+
 [PostgreSQL35W]
 Description = PostgreSQL Database
 Driver      = PostgreSQL Unicode
@@ -225,6 +273,20 @@ Password    = cppdb_password
 Description = SQLite3 Database
 Driver      = SQLite3
 Database    = /tmp/cppdb.sqlite
+
+[InformixDSN]
+Description = IBM Informix Database
+Driver      = IBM INFORMIX ODBC DRIVER (64-bit)
+Server      = informix
+Database    = testdb
+Host        = 127.0.0.1
+Service     = 9088
+Protocol    = onsoctcp
+Uid         = informix
+Pwd         = in4mix
+CLIENT_LOCALE = en_us.utf8
+DB_LOCALE   = en_us.utf8
+DELIMIDENT  = Y
 EOF
 
 # Also keep ~/.odbcinst.ini and ~/.odbc.ini in sync
