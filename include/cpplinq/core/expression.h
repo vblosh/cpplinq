@@ -521,7 +521,7 @@ public:
     }
 
     AssignExpr operator=(const ColumnHandle& other) const {
-        return AssignExpr{ref, Expr(other).node};
+        return AssignExpr{ref, other.ref};
     }
 
     AssignExpr operator=(const Expr& other) const {

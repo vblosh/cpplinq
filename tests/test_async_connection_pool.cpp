@@ -293,6 +293,9 @@ TEST(AsyncConnectionPoolTest, CloseCancelsQueuedAndFinishesRunningWork) {
         std::unique_lock<std::mutex> lock(close_mutex);
         close_condition.wait(lock, [&]() { return close_started; });
     }
+    while (!pool->is_closed()) {
+        std::this_thread::yield();
+    }
     release.count_down();
     closer.join();
 

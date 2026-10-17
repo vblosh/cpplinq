@@ -458,11 +458,19 @@ private:
                 }
 
                 auto state = weak_state.lock();
-                if (!state) {
-                    throw DbException("Asynchronous operation cannot acquire its connection pool");
+                if (!state || state->is_closed()) {
+                    throw OperationCancelled("Asynchronous operation was cancelled before it started");
                 }
 
-                auto conn = state->acquire(state, stop_token);
+                PooledConnection<Backend> conn;
+                try {
+                    conn = state->acquire(state, stop_token);
+                } catch (const DbException&) {
+                    if (state->is_closed()) {
+                        throw OperationCancelled("Asynchronous operation was cancelled before it started");
+                    }
+                    throw;
+                }
                 if (stop_token.has_value() && stop_token->stop_requested()) {
                     throw OperationCancelled("Asynchronous operation was cancelled before it started");
                 }
