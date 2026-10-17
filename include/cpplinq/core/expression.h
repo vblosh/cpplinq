@@ -509,10 +509,6 @@ public:
     ColumnHandle(std::string col)
         : ref(std::move(col)) {}
 
-    // Implicit conversion to Expr
-    operator Expr() const {
-        return Expr(ref);
-    }
 
     operator std::string() const {
         return ref.column_name;
