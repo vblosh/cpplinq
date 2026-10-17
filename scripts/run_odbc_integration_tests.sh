@@ -98,6 +98,16 @@ ODBC_EXTRA_LIBS=()
 for d in "$HOME/.local/opt/oracle"/instantclient_* "$HOME/.local/lib"/instantclient_* /opt/oracle/instantclient_*; do
     [ -d "$d" ] && ODBC_EXTRA_LIBS+=("$d") && break
 done
+if [ -d "$HOME/.local/opt/informix" ]; then
+    export INFORMIXDIR="$HOME/.local/opt/informix"
+    export INFORMIXSERVER="${INFORMIXSERVER:-informix}"
+    ODBC_EXTRA_LIBS+=("$INFORMIXDIR/lib" "$INFORMIXDIR/lib/cli" "$INFORMIXDIR/lib/esql")
+    case ":$PATH:" in
+        *":$INFORMIXDIR/bin:"*) ;;
+        *) export PATH="$INFORMIXDIR/bin:$PATH" ;;
+    esac
+fi
+
 if [ ${#ODBC_EXTRA_LIBS[@]} -gt 0 ]; then
     ODBC_LIB_STR="$(IFS=:; echo "${ODBC_EXTRA_LIBS[*]}")"
     case ":${LD_LIBRARY_PATH:-}:" in
@@ -105,6 +115,17 @@ if [ ${#ODBC_EXTRA_LIBS[@]} -gt 0 ]; then
         *) export LD_LIBRARY_PATH="${ODBC_LIB_STR}:${LD_LIBRARY_PATH:-}" ;;
     esac
 fi
+
+# Preload Informix ODBC compatibility shim if available
+for f in "$HOME/.local/opt/informix/lib/cli/libinformix_compat.so" "$HOME/.local/lib/libinformix_compat.so"; do
+    if [ -f "$f" ]; then
+        case ":${LD_PRELOAD:-}:" in
+            *":$f:"*) ;;
+            *) export LD_PRELOAD="${f}${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+        esac
+        break
+    fi
+done
 
 if [ -f "$HOME/.local/etc/odbcinst.ini" ]; then
     export ODBCSYSINI="${ODBCSYSINI:-$HOME/.local/etc}"
@@ -142,15 +163,9 @@ if [ "$USE_DOCKER" = true ]; then
         docker compose -f "${SCRIPT_DIR}/docker-compose.integration.yml" up -d
         sleep 5
     fi
-    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-postgres-test$"; then
-        docker exec cpplinq-postgres-test psql -U cppdb -d cppdb -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cppdb') THEN CREATE ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; ELSE ALTER ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; END IF; END \$\$;" -c "SELECT 'CREATE DATABASE cppdb OWNER cppdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'cppdb')\gexec" -c "GRANT ALL PRIVILEGES ON DATABASE cppdb TO cppdb;" 2>/dev/null || true
-    fi
-    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-mysql-test$"; then
-        docker exec cpplinq-mysql-test mysql -uroot -proot_password -e "CREATE DATABASE IF NOT EXISTS testdb; CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'testpass'; ALTER USER 'testuser'@'%' IDENTIFIED BY 'testpass'; GRANT ALL PRIVILEGES ON *.* TO 'testuser'@'%' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'cppdb'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" 2>/dev/null || true
-    fi
-    if docker ps --format '{{.Names}}' | grep -q "^cpplinq-informix-test$"; then
-        docker exec cpplinq-informix-test bash -c 'echo "CREATE DATABASE testdb WITH LOG;" | dbaccess - - 2>/dev/null || true' 2>/dev/null || true
-    fi
+    docker exec cpplinq-postgres-test psql -U cppdb -d cppdb -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'cppdb') THEN CREATE ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; ELSE ALTER ROLE cppdb WITH SUPERUSER LOGIN PASSWORD 'cppdb_password'; END IF; END \$\$;" -c "SELECT 'CREATE DATABASE cppdb OWNER cppdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'cppdb')\gexec" -c "GRANT ALL PRIVILEGES ON DATABASE cppdb TO cppdb;" 2>/dev/null || true
+    docker exec cpplinq-mysql-test mysql -uroot -proot_password -e "CREATE DATABASE IF NOT EXISTS testdb; CREATE USER IF NOT EXISTS 'testuser'@'%' IDENTIFIED BY 'testpass'; ALTER USER 'testuser'@'%' IDENTIFIED BY 'testpass'; GRANT ALL PRIVILEGES ON *.* TO 'testuser'@'%' WITH GRANT OPTION; GRANT ALL PRIVILEGES ON *.* TO 'cppdb'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" 2>/dev/null || true
+    docker exec cpplinq-informix-test bash -c 'export DB_LOCALE=en_us.utf8; export CLIENT_LOCALE=en_us.utf8; echo "CREATE DATABASE testdb WITH LOG;" | dbaccess - - 2>/dev/null || true' 2>/dev/null || true
 fi
 
 # Detect installed drivers
@@ -193,7 +208,7 @@ export CPPDB_ORACLE_ODBC="$CPPLINQ_ORACLE_ODBC"
 if [ -n "$INFORMIX_CONN" ]; then
     export CPPLINQ_INFORMIX_ODBC="$INFORMIX_CONN"
 elif [ -z "${CPPLINQ_INFORMIX_ODBC:-}" ]; then
-    export CPPLINQ_INFORMIX_ODBC="Driver={${INFORMIX_DRIVER}};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;"
+    export CPPLINQ_INFORMIX_ODBC="Driver={${INFORMIX_DRIVER}};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;DB_LOCALE=en_us.utf8;"
 fi
 export CPPDB_INFORMIX_ODBC="$CPPLINQ_INFORMIX_ODBC"
 

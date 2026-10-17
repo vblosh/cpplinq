@@ -91,7 +91,9 @@ public:
         const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
         std::optional<size_t> limit = std::nullopt,
         std::optional<size_t> offset = std::nullopt,
-        bool is_distinct = false
+        bool is_distinct = false,
+        const std::vector<expr::ExprNode>& group_by = {},
+        const std::optional<expr::ExprNode>& having = std::nullopt
     ) const;
 
     // SELECT queries
@@ -132,6 +134,13 @@ public:
         bool is_distinct = false
     ) const;
 
+    // Joined COUNT queries
+    GeneratedSql generate_joined_count(
+        std::string_view primary_table,
+        const std::vector<JoinClause>& joins,
+        const std::optional<expr::ExprNode>& where = std::nullopt
+    ) const;
+
     // Set operations (UNION, UNION ALL, INTERSECT, EXCEPT)
     GeneratedSql generate_set_operation(
         std::string_view base_table,
@@ -142,6 +151,15 @@ public:
         const std::vector<std::pair<expr::ExprNode, expr::SortDir>>& order_by = {},
         std::optional<size_t> limit = std::nullopt,
         std::optional<size_t> offset = std::nullopt
+    ) const;
+
+    // Set operation COUNT queries
+    GeneratedSql generate_set_operation_count(
+        std::string_view base_table,
+        const std::vector<std::string>& base_columns,
+        const std::optional<expr::ExprNode>& base_where,
+        bool base_distinct,
+        const std::vector<SetOpClause>& operations
     ) const;
 
     // INSERT queries
@@ -204,11 +222,14 @@ public:
     GeneratedSql generate_expression(const expr::ExprNode& node) const;
 
 private:
-    std::string visit(const expr::ExprNode& node, std::vector<BoundValue>& params) const;
+    struct Context {
+        size_t param_counter = 0;
+        std::vector<ParameterSlot> slots;
+    };
+
+    std::string visit(const expr::ExprNode& node, std::vector<BoundValue>& params, Context& ctx) const;
 
     const ISqlDialect& dialect_;
-    mutable size_t param_counter_ = 0;
-    mutable std::vector<ParameterSlot> slots_;
 };
 
 } // namespace cpplinq

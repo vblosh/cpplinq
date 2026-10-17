@@ -3,16 +3,21 @@
 #ifdef CPPLINQ_HAS_INFORMIX
 
 #include <algorithm>
+#include <cctype>
 
 namespace cpplinq {
 
 namespace {
 std::string ensure_informix_conn_params(std::string conn_str) {
     std::string upper = conn_str;
-    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     if (conn_str.find('=') == std::string::npos && !conn_str.empty()) {
         conn_str = "DSN=" + conn_str + ";";
         upper = "DSN=" + upper + ";";
+    }
+    if (!conn_str.empty() && conn_str.back() != ';') {
+        conn_str += ';';
     }
     if (upper.find("DELIMIDENT") == std::string::npos) {
         conn_str += "DELIMIDENT=Y;";

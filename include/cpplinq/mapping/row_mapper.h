@@ -28,7 +28,10 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
         return static_cast<U>(reader.get_double(col_idx));
     } else if constexpr (std::is_same_v<U, std::string>) {
         std::string_view sv = reader.get_string_view(col_idx);
-        return std::string(sv);
+        if (sv.data() != nullptr) {
+            return std::string(sv);
+        }
+        return reader.get_string(col_idx);
     } else if constexpr (std::is_same_v<U, std::string_view>) {
         return reader.get_string_view(col_idx);
     } else if constexpr (std::is_same_v<U, std::wstring>) {
@@ -39,8 +42,13 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
         return reader.get_numeric(col_idx);
     } else if constexpr (std::is_same_v<U, SqlDate>) {
         return reader.get_date(col_idx);
+    } else if constexpr (std::is_same_v<U, std::chrono::year_month_day>) {
+        SqlDate d = reader.get_date(col_idx);
+        return d.to_year_month_day();
     } else if constexpr (std::is_same_v<U, SqlTime>) {
         return reader.get_time(col_idx);
+    } else if constexpr (is_hh_mm_ss_v<U>) {
+        return reader.get_time(col_idx).template to_hh_mm_ss<typename U::precision>();
     } else if constexpr (std::is_same_v<U, SqlTimestamp>) {
         return reader.get_timestamp(col_idx);
     } else if constexpr (std::is_same_v<U, std::chrono::system_clock::time_point>) {
@@ -52,7 +60,7 @@ TargetType read_column_value(IDataReader& reader, int col_idx) {
     } else if constexpr (is_chrono_duration_v<U>) {
         return reader.get_interval(col_idx).template to_duration<U>();
     } else {
-        return U{};
+        static_assert(sizeof(TargetType) == 0, "Unsupported SQL column/parameter type");
     }
 }
 
@@ -61,7 +69,11 @@ void assign_column_value(TargetType& target, IDataReader& reader, int col_idx) {
     using U = std::remove_cvref_t<TargetType>;
     if constexpr (std::is_same_v<U, std::string>) {
         std::string_view sv = reader.get_string_view(col_idx);
-        target = sv;
+        if (sv.data() != nullptr) {
+            target = sv;
+        } else {
+            target = reader.get_string(col_idx);
+        }
     } else if constexpr (std::is_same_v<U, std::vector<uint8_t>>) {
         target = reader.get_blob(col_idx);
     } else {
@@ -100,8 +112,12 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, SqlDate>) {
         return BoundValue{val};
+    } else if constexpr (std::is_same_v<U, std::chrono::year_month_day>) {
+        return BoundValue{SqlDate{val}};
     } else if constexpr (std::is_same_v<U, SqlTime>) {
         return BoundValue{val};
+    } else if constexpr (is_hh_mm_ss_v<U>) {
+        return BoundValue{SqlTime{val}};
     } else if constexpr (std::is_same_v<U, SqlTimestamp>) {
         return BoundValue{val};
     } else if constexpr (std::is_same_v<U, std::chrono::system_clock::time_point>) {
@@ -112,16 +128,20 @@ BoundValue convert_to_bound_value(const T& val) {
         return BoundValue{SqlInterval::from_duration(val)};
     } else if constexpr (std::is_same_v<U, SqlGuid>) {
         return BoundValue{val};
-    } else {
+    } else if constexpr (std::is_same_v<U, std::monostate>) {
         return BoundValue{std::monostate{}};
+    } else if constexpr (std::is_same_v<U, BoundValue>) {
+        return val;
+    } else {
+        static_assert(sizeof(T) == 0, "Unsupported SQL column/parameter type");
     }
 }
 
 template <typename Entity, typename... ColumnDefs>
 class RowMapper {
 public:
-    explicit RowMapper(const std::tuple<ColumnDefs...>& columns, int offset = 0)
-        : columns_(columns), offset_(offset) {}
+    explicit RowMapper(std::tuple<ColumnDefs...> columns, int offset = 0)
+        : columns_(std::move(columns)), offset_(offset) {}
 
     Entity map_row(IDataReader& reader) const {
         Entity entity{};
@@ -138,7 +158,7 @@ public:
     }
 
 private:
-    const std::tuple<ColumnDefs...>& columns_;
+    std::tuple<ColumnDefs...> columns_;
     int offset_ = 0;
 
     template <size_t... Is>
@@ -160,6 +180,8 @@ private:
         if (reader.is_null(col_idx)) {
             if constexpr (is_nullable_v<FieldType>) {
                 entity.*(col.member_ptr) = std::nullopt;
+            } else {
+                entity.*(col.member_ptr) = FieldType{};
             }
             return;
         }

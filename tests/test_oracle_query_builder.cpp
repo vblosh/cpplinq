@@ -113,3 +113,90 @@ TEST(OracleQueryBuilderTest, WindowAndCteGeneration) {
     EXPECT_EQ(std::get<int64_t>(cte_res.params[0]), 18);
 }
 
+TEST(OracleQueryBuilderTest, QuoteIdAndPolymorphicDestructor) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<OracleDialect>();
+    EXPECT_EQ(dialect->quote_id("col\"name"), "\"col\"\"name\"");
+}
+
+TEST(OracleQueryBuilderTest, UpsertWithoutUpdateColumns) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice")};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {};
+
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql, "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"name\" FROM DUAL) source ON (target.\"id\" = source.\"id\") WHEN NOT MATCHED THEN INSERT (\"id\", \"name\") VALUES (source.\"id\", source.\"name\")");
+    EXPECT_EQ(result.params.size(), 2);
+}
+
+TEST(OracleQueryBuilderTest, UpsertFiltersConflictColumnsFromUpdateSet) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<std::string> insert_cols = {"id", "name", "email"};
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice"), std::string("alice@test.com")};
+    std::vector<std::string> conflict_cols = {"id"};
+    std::vector<std::string> update_cols = {"id", "name", "email"};
+
+    // "id" is present in conflict_cols, so it must be filtered out from UPDATE SET to prevent ORA-38104
+    auto result = gen.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(result.sql,
+        "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"name\", ? AS \"email\" FROM DUAL) source "
+        "ON (target.\"id\" = source.\"id\") "
+        "WHEN MATCHED THEN UPDATE SET target.\"name\" = source.\"name\", target.\"email\" = source.\"email\" "
+        "WHEN NOT MATCHED THEN INSERT (\"id\", \"name\", \"email\") VALUES (source.\"id\", source.\"name\", source.\"email\")");
+    EXPECT_EQ(result.params.size(), 3);
+
+    // Also verify directly via dialect overloads (both 4-argument and 5-argument)
+    auto dialect_sql_4 = dialect.generate_upsert("users", insert_cols, conflict_cols, update_cols);
+    EXPECT_EQ(dialect_sql_4, result.sql);
+
+    auto dialect_sql_5 = dialect.generate_upsert("users", insert_cols, values, conflict_cols, update_cols);
+    EXPECT_EQ(dialect_sql_5, result.sql);
+
+    // If update_columns only contains conflict columns, WHEN MATCHED THEN UPDATE SET is omitted entirely
+    std::vector<std::string> only_conflict_update = {"id"};
+    auto result_only_conflict = gen.generate_upsert("users", insert_cols, values, conflict_cols, only_conflict_update);
+    EXPECT_EQ(result_only_conflict.sql,
+        "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"name\", ? AS \"email\" FROM DUAL) source "
+        "ON (target.\"id\" = source.\"id\") "
+        "WHEN NOT MATCHED THEN INSERT (\"id\", \"name\", \"email\") VALUES (source.\"id\", source.\"name\", source.\"email\")");
+
+    // Multiple conflict columns filtered out
+    std::vector<std::string> comp_insert = {"id", "tenant_id", "name"};
+    std::vector<std::string> comp_conflict = {"id", "tenant_id"};
+    std::vector<std::string> comp_update = {"id", "tenant_id", "name"};
+    auto comp_result = dialect.generate_upsert("users", comp_insert, comp_conflict, comp_update);
+    EXPECT_EQ(comp_result,
+        "MERGE INTO \"users\" target USING (SELECT ? AS \"id\", ? AS \"tenant_id\", ? AS \"name\" FROM DUAL) source "
+        "ON (target.\"id\" = source.\"id\" AND target.\"tenant_id\" = source.\"tenant_id\") "
+        "WHEN MATCHED THEN UPDATE SET target.\"name\" = source.\"name\" "
+        "WHEN NOT MATCHED THEN INSERT (\"id\", \"tenant_id\", \"name\") VALUES (source.\"id\", source.\"tenant_id\", source.\"name\")");
+}
+
+TEST(OracleQueryBuilderTest, UpsertEmptyInsertOrConflictColumnsReturnsEmpty) {
+    OracleDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<BoundValue> values = {int64_t(1), std::string("Alice")};
+
+    // Empty insert_columns returns empty string
+    EXPECT_EQ(dialect.generate_upsert("users", {}, {"id"}, {"name"}), "");
+    EXPECT_EQ(dialect.generate_upsert("users", {}, values, {"id"}, {"name"}), "");
+    EXPECT_EQ(gen.generate_upsert("users", {}, values, {"id"}, {"name"}).sql, "");
+
+    // Empty conflict_columns returns empty string
+    EXPECT_EQ(dialect.generate_upsert("users", {"id", "name"}, {}, {"name"}), "");
+    EXPECT_EQ(dialect.generate_upsert("users", {"id", "name"}, values, {}, {"name"}), "");
+    EXPECT_EQ(gen.generate_upsert("users", {"id", "name"}, values, {}, {"name"}).sql, "");
+
+    // Both insert_columns and conflict_columns empty
+    EXPECT_EQ(dialect.generate_upsert("users", {}, {}, {}), "");
+    EXPECT_EQ(dialect.generate_upsert("users", {}, values, {}, {}), "");
+    EXPECT_EQ(gen.generate_upsert("users", {}, values, {}, {}).sql, "");
+}
+
+

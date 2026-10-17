@@ -1,12 +1,12 @@
 #pragma once
 #include "cpplinq/dialect/dialect.h"
 
-#ifdef CPPLINQ_HAS_POSTGRES
-
 namespace cpplinq {
 
 class PostgresDialect : public ISqlDialect {
 public:
+    ~PostgresDialect() override = default;
+
     std::string quote_id(std::string_view id) const override;
     std::string placeholder(size_t index) const override;
     std::string limit_offset(std::optional<size_t> limit,
@@ -17,5 +17,3 @@ public:
 };
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_POSTGRES

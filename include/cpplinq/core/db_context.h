@@ -120,13 +120,17 @@ public:
             }
             // Dialects without RETURNING/OUTPUT (e.g. MySQL)
             stmt->execute_non_query();
-            try {
-                auto last_id_stmt = conn_->prepare(conn_->dialect().last_insert_id_query(table.name, pk_col));
-                auto r = last_id_stmt->execute_query();
-                if (r && r->next()) {
-                    return r->get_int64(0);
+            const ISqlDialect& d = conn_->dialect();
+            if (d.supports_last_insert_id()) {
+                std::string last_id_query = d.last_insert_id_query(table.name, pk_col);
+                if (!last_id_query.empty()) {
+                    auto last_id_stmt = conn_->prepare(last_id_query);
+                    auto r = last_id_stmt->execute_query();
+                    if (r && r->next()) {
+                        return r->get_int64(0);
+                    }
                 }
-            } catch (...) {}
+            }
             return 0;
         }
         stmt->execute_non_query();
@@ -223,16 +227,23 @@ public:
             if (chunk_size == 0) chunk_size = 1000;
         }
 
+        size_t pk_count = 0;
         std::string pk_col;
         std::apply([&](const auto&... cols) {
             auto find_pk = [&](const auto& col) {
-                if (col.is_primary_key && pk_col.empty()) pk_col = std::string(col.name);
+                if (col.is_primary_key) {
+                    ++pk_count;
+                    if (pk_col.empty()) pk_col = std::string(col.name);
+                }
             };
             (find_pk(cols), ...);
         }, table.columns);
 
-        if (pk_col.empty()) {
+        if (pk_count == 0) {
             throw DbException("delete_many requires a primary key column");
+        }
+        if (pk_count > 1) {
+            throw DbException("delete_many does not support composite primary keys");
         }
 
         const ISqlDialect& d = conn_->dialect();
@@ -250,7 +261,11 @@ public:
 
                 for (size_t i = 0; i < count; ++i) {
                     const auto& val = ids[offset + i];
-                    if constexpr (std::is_integral_v<PkType>) {
+                    if constexpr (std::is_same_v<PkType, bool>) {
+                        flat.emplace_back(val);
+                    } else if constexpr (std::is_unsigned_v<PkType>) {
+                        flat.emplace_back(static_cast<uint64_t>(val));
+                    } else if constexpr (std::is_integral_v<PkType>) {
                         flat.emplace_back(static_cast<int64_t>(val));
                     } else if constexpr (std::is_floating_point_v<PkType>) {
                         flat.emplace_back(static_cast<double>(val));
@@ -281,7 +296,11 @@ public:
             auto stmt = conn_->prepare(sql);
             for (size_t i = 0; i < count; ++i) {
                 const auto& val = ids[offset + i];
-                if constexpr (std::is_integral_v<PkType>) {
+                if constexpr (std::is_same_v<PkType, bool>) {
+                    stmt->bind(static_cast<int>(i), BoundValue{val});
+                } else if constexpr (std::is_unsigned_v<PkType>) {
+                    stmt->bind(static_cast<int>(i), BoundValue{static_cast<uint64_t>(val)});
+                } else if constexpr (std::is_integral_v<PkType>) {
                     stmt->bind(static_cast<int>(i), BoundValue{static_cast<int64_t>(val)});
                 } else if constexpr (std::is_floating_point_v<PkType>) {
                     stmt->bind(static_cast<int>(i), BoundValue{static_cast<double>(val)});
@@ -308,17 +327,17 @@ public:
             if (chunk_size == 0) chunk_size = 1000;
         }
 
-        std::string pk_col;
+        std::vector<std::string> pk_cols;
         std::vector<std::string> update_cols;
         std::apply([&](const auto&... cols) {
             auto scan = [&](const auto& col) {
-                if (col.is_primary_key) pk_col = std::string(col.name);
+                if (col.is_primary_key) pk_cols.emplace_back(col.name);
                 else update_cols.emplace_back(col.name);
             };
             (scan(cols), ...);
         }, table.columns);
 
-        if (pk_col.empty()) {
+        if (pk_cols.empty()) {
             throw DbException("update_many requires a primary key column");
         }
 
@@ -328,10 +347,14 @@ public:
             if (i > 0) sql += ", ";
             sql += d.quote_id(update_cols[i]) + " = " + d.placeholder(i);
         }
-        sql += " WHERE " + d.quote_id(pk_col) + " = " + d.placeholder(update_cols.size());
+        sql += " WHERE ";
+        for (size_t i = 0; i < pk_cols.size(); ++i) {
+            if (i > 0) sql += " AND ";
+            sql += d.quote_id(pk_cols[i]) + " = " + d.placeholder(update_cols.size() + i);
+        }
 
         if (conn_->capabilities().array_batch_insert) {
-            const size_t ncols = update_cols.size() + 1;
+            const size_t ncols = update_cols.size() + pk_cols.size();
             size_t total_affected = 0;
 
             Transaction txn(*conn_);
@@ -342,18 +365,28 @@ public:
 
                 for (size_t r = 0; r < count; ++r) {
                     const auto& e = entities[offset + r];
-                    BoundValue pk_val;
+                    std::vector<BoundValue> update_vals;
+                    update_vals.reserve(update_cols.size());
+                    std::vector<BoundValue> pk_vals;
+                    pk_vals.reserve(pk_cols.size());
+
                     std::apply([&](const auto&... cols) {
                         auto push = [&](const auto& col) {
                             if (!col.is_primary_key) {
-                                flat.push_back(field_to_bound_value(e, col.member_ptr));
+                                update_vals.push_back(field_to_bound_value(e, col.member_ptr));
                             } else {
-                                pk_val = field_to_bound_value(e, col.member_ptr);
+                                pk_vals.push_back(field_to_bound_value(e, col.member_ptr));
                             }
                         };
                         (push(cols), ...);
                     }, table.columns);
-                    flat.push_back(pk_val);
+
+                    for (auto& val : update_vals) {
+                        flat.push_back(std::move(val));
+                    }
+                    for (auto& val : pk_vals) {
+                        flat.push_back(std::move(val));
+                    }
                 }
                 total_affected += conn_->insert_many_batch(sql, flat, ncols, count);
             }
@@ -368,18 +401,21 @@ public:
         for (const auto& e : entities) {
             stmt->reset();
             int idx = 0;
-            BoundValue pk_val;
+            std::vector<BoundValue> pk_vals;
+            pk_vals.reserve(pk_cols.size());
             std::apply([&](const auto&... cols) {
                 auto bind = [&](const auto& col) {
                     if (!col.is_primary_key) {
                         stmt->bind(idx++, field_to_bound_value(e, col.member_ptr));
                     } else {
-                        pk_val = field_to_bound_value(e, col.member_ptr);
+                        pk_vals.push_back(field_to_bound_value(e, col.member_ptr));
                     }
                 };
                 (bind(cols), ...);
             }, table.columns);
-            stmt->bind(idx, pk_val);
+            for (const auto& pk_val : pk_vals) {
+                stmt->bind(idx++, pk_val);
+            }
             total += stmt->execute_non_query();
         }
         txn.commit();
@@ -460,13 +496,13 @@ public:
         return total;
     }
 
-    // Truncate table (TRUNCATE TABLE with DELETE FROM fallback)
+    // Truncate table
     template <typename Entity, typename... Cols>
     void truncate(const TableDef<Entity, Cols...>& table) {
         const ISqlDialect& d = conn_->dialect();
-        try {
+        if (d.supports_truncate()) {
             conn_->execute("TRUNCATE TABLE " + d.quote_id(table.name));
-        } catch (...) {
+        } else {
             conn_->execute("DELETE FROM " + d.quote_id(table.name));
         }
     }

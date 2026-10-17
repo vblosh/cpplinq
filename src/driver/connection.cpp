@@ -39,9 +39,13 @@ size_t IConnection::insert_many_batch(
     size_t row_count
 ) {
     if (row_count == 0 || col_count == 0) return 0;
+    if (flat_params.size() / col_count < row_count) {
+        throw DbException("insert_many_batch: flat_params size is smaller than row_count * col_count");
+    }
+    auto stmt = prepare(sql);
     size_t total = 0;
     for (size_t r = 0; r < row_count; ++r) {
-        auto stmt = prepare(sql);
+        if (r > 0) stmt->reset();
         for (size_t c = 0; c < col_count; ++c) {
             stmt->bind(static_cast<int>(c), flat_params[r * col_count + c]);
         }

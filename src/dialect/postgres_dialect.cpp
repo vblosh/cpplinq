@@ -1,11 +1,20 @@
 #include "dialect/postgres_dialect.h"
-
-#ifdef CPPLINQ_HAS_POSTGRES
+#include <string>
+#include <string_view>
 
 namespace cpplinq {
 
 std::string PostgresDialect::quote_id(std::string_view id) const {
-    return "\"" + std::string(id) + "\"";
+    std::string quoted = "\"";
+    for (char c : id) {
+        if (c == '"') {
+            quoted += "\"\"";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "\"";
+    return quoted;
 }
 
 std::string PostgresDialect::placeholder(size_t /*index*/) const {
@@ -49,9 +58,7 @@ std::string PostgresDialect::auto_increment_type() const {
 }
 
 std::string PostgresDialect::returning_clause(std::string_view column) const {
-    return " RETURNING \"" + std::string(column) + "\"";
+    return " RETURNING " + quote_id(column);
 }
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_POSTGRES

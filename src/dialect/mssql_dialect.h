@@ -9,6 +9,8 @@ public:
 
     std::string quote_id(std::string_view id) const override;
     std::string placeholder(size_t index) const override;
+    // Note: SQL Server requires FETCH NEXT <n> ROWS ONLY to have <n> >= 1 (Error 10744).
+    // Specifying limit == 0 throws std::invalid_argument.
     std::string limit_offset(std::optional<size_t> limit,
                              std::optional<size_t> offset) const override;
     std::string type_name(SqlType type) const override;

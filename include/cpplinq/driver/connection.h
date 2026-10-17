@@ -168,7 +168,12 @@ public:
     explicit Transaction(IConnection& conn) : conn_(conn), committed_(false) {
         conn_.begin_transaction();
     }
-    void commit() { conn_.commit(); committed_ = true; }
+    void commit() {
+        if (!committed_) {
+            conn_.commit();
+            committed_ = true;
+        }
+    }
     ~Transaction() { if (!committed_) try { conn_.rollback(); } catch(...) {} }
 
     Transaction(const Transaction&) = delete;

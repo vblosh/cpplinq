@@ -34,6 +34,7 @@ template <typename T>
 struct sql_type_of;
 
 // Signed integer mappings
+template <> struct sql_type_of<char>               { static constexpr SqlType value = SqlType::Integer; };
 template <> struct sql_type_of<signed char>        { static constexpr SqlType value = SqlType::Integer; };
 template <> struct sql_type_of<short>              { static constexpr SqlType value = SqlType::Integer; };
 template <> struct sql_type_of<int>                { static constexpr SqlType value = SqlType::Integer; };
@@ -62,7 +63,10 @@ template <> struct sql_type_of<std::vector<uint8_t>> { static constexpr SqlType 
 
 // Date / Time mappings
 template <> struct sql_type_of<SqlDate>      { static constexpr SqlType value = SqlType::Date; };
+template <> struct sql_type_of<std::chrono::year_month_day> { static constexpr SqlType value = SqlType::Date; };
 template <> struct sql_type_of<SqlTime>      { static constexpr SqlType value = SqlType::Time; };
+template <typename Duration>
+struct sql_type_of<std::chrono::hh_mm_ss<Duration>> { static constexpr SqlType value = SqlType::Time; };
 template <> struct sql_type_of<SqlTimestamp> { static constexpr SqlType value = SqlType::Timestamp; };
 template <> struct sql_type_of<std::chrono::system_clock::time_point> { static constexpr SqlType value = SqlType::Timestamp; };
 

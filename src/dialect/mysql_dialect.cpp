@@ -1,6 +1,5 @@
 #include "dialect/mysql_dialect.h"
-
-#ifdef CPPLINQ_HAS_MYSQL
+#include <stdexcept>
 
 namespace cpplinq {
 
@@ -71,6 +70,7 @@ std::string MysqlDialect::create_table_prefix(std::string_view table_name) const
 }
 
 std::string MysqlDialect::function_name(std::string_view func) const {
+    if (func == "LENGTH") return "CHAR_LENGTH";
     if (func == "SUBSTR") return "SUBSTRING";
     return std::string(func);
 }
@@ -97,9 +97,12 @@ std::string MysqlDialect::date_add_days_func(std::string_view expr_sql, std::str
 std::string MysqlDialect::generate_upsert(
     std::string_view table_name,
     const std::vector<std::string>& insert_columns,
-    const std::vector<std::string>& /*conflict_columns*/,
+    const std::vector<std::string>& conflict_columns,
     const std::vector<std::string>& update_columns
 ) const {
+    if (insert_columns.empty()) {
+        throw std::invalid_argument("insert_columns cannot be empty for upsert");
+    }
     std::string sql = "INSERT INTO " + quote_id(table_name) + " (";
     for (size_t i = 0; i < insert_columns.size(); ++i) {
         if (i > 0) sql += ", ";
@@ -111,13 +114,17 @@ std::string MysqlDialect::generate_upsert(
         sql += placeholder(i);
     }
     sql += ") ON DUPLICATE KEY UPDATE ";
-    for (size_t i = 0; i < update_columns.size(); ++i) {
-        if (i > 0) sql += ", ";
-        sql += quote_id(update_columns[i]) + " = VALUES(" + quote_id(update_columns[i]) + ")";
+    if (!update_columns.empty()) {
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += quote_id(update_columns[i]) + " = VALUES(" + quote_id(update_columns[i]) + ")";
+        }
+    } else if (!conflict_columns.empty()) {
+        sql += quote_id(conflict_columns[0]) + " = " + quote_id(conflict_columns[0]);
+    } else {
+        sql += quote_id(insert_columns[0]) + " = " + quote_id(insert_columns[0]);
     }
     return sql;
 }
 
 } // namespace cpplinq
-
-#endif // CPPLINQ_HAS_MYSQL

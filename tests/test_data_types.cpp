@@ -200,15 +200,15 @@ TEST(DataTypesTest, SqlDateComprehensive) {
 TEST(DataTypesTest, SqlTimeComprehensive) {
     SqlTime t0;
     EXPECT_EQ(t0.to_string(false), "00:00:00");
-    EXPECT_EQ(t0.to_string(true), "00:00:00.000000");
+    EXPECT_EQ(t0.to_string(true), "00:00:00.000000000");
 
     SqlTime t_no_frac(15, 30, 45);
     EXPECT_EQ(t_no_frac.to_string(false), "15:30:45");
-    EXPECT_EQ(t_no_frac.to_string(true), "15:30:45.000000");
+    EXPECT_EQ(t_no_frac.to_string(true), "15:30:45.000000000");
 
     SqlTime t1(15, 30, 45, 123456000);
-    EXPECT_EQ(t1.to_string(false), "15:30:45.123456");
-    EXPECT_EQ(t1.to_string(true), "15:30:45.123456");
+    EXPECT_EQ(t1.to_string(false), "15:30:45.123456000");
+    EXPECT_EQ(t1.to_string(true), "15:30:45.123456000");
 
     SqlTime parsed_no_frac = SqlTime::from_string("08:15:30");
     EXPECT_EQ(parsed_no_frac.hour, 8);
@@ -235,11 +235,11 @@ TEST(DataTypesTest, SqlTimestampComprehensive) {
 
     SqlTimestamp ts_no_frac(2026, 8, 21, 15, 45, 30);
     EXPECT_EQ(ts_no_frac.to_string(false), "2026-08-21 15:45:30");
-    EXPECT_EQ(ts_no_frac.to_string(true), "2026-08-21 15:45:30.000000");
+    EXPECT_EQ(ts_no_frac.to_string(true), "2026-08-21 15:45:30.000000000");
 
     SqlTimestamp ts(2026, 8, 21, 15, 45, 30, 500000000);
-    EXPECT_EQ(ts.to_string(false), "2026-08-21 15:45:30.500000");
-    EXPECT_EQ(ts.to_string(true), "2026-08-21 15:45:30.500000");
+    EXPECT_EQ(ts.to_string(false), "2026-08-21 15:45:30.500000000");
+    EXPECT_EQ(ts.to_string(true), "2026-08-21 15:45:30.500000000");
 
     SqlTimestamp parsed_iso = SqlTimestamp::from_string("2026-08-21T15:45:30.123456789");
     EXPECT_EQ(parsed_iso.year, 2026);
@@ -287,7 +287,7 @@ TEST(DataTypesTest, SqlIntervalComprehensive) {
     EXPECT_EQ(iv_ds.minutes, 30);
     EXPECT_EQ(iv_ds.seconds, 25);
     EXPECT_EQ(iv_ds.fraction, 500000000);
-    EXPECT_EQ(iv_ds.to_string(), "10 04:30:25.500000");
+    EXPECT_EQ(iv_ds.to_string(), "10 04:30:25.500000000");
 
     auto iv_ds_neg = SqlInterval::from_day_second(1, 2, 3, 4, 0, true);
     EXPECT_EQ(iv_ds_neg.to_string(), "-1 02:03:04");

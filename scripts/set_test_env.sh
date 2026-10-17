@@ -32,6 +32,15 @@ fi
 for d in "$HOME/.local/opt/oracle"/instantclient_* "$HOME/.local/lib"/instantclient_* /opt/oracle/instantclient_*; do
     [ -d "$d" ] && ODBC_LIB_DIRS+=("$d") && break
 done
+if [ -d "$HOME/.local/opt/informix" ]; then
+    export INFORMIXDIR="$HOME/.local/opt/informix"
+    export INFORMIXSERVER="${INFORMIXSERVER:-informix}"
+    ODBC_LIB_DIRS+=("$INFORMIXDIR/lib" "$INFORMIXDIR/lib/cli" "$INFORMIXDIR/lib/esql")
+    case ":$PATH:" in
+        *":$INFORMIXDIR/bin:"*) ;;
+        *) export PATH="$INFORMIXDIR/bin:$PATH" ;;
+    esac
+fi
 
 if [ ${#ODBC_LIB_DIRS[@]} -gt 0 ]; then
     ODBC_LIB_PATH="$(IFS=:; echo "${ODBC_LIB_DIRS[*]}")"
@@ -40,6 +49,17 @@ if [ ${#ODBC_LIB_DIRS[@]} -gt 0 ]; then
         *) export LD_LIBRARY_PATH="${ODBC_LIB_PATH}:${LD_LIBRARY_PATH:-}" ;;
     esac
 fi
+
+# Preload Informix ODBC compatibility shim if available
+for f in "$HOME/.local/opt/informix/lib/cli/libinformix_compat.so" "$HOME/.local/lib/libinformix_compat.so"; do
+    if [ -f "$f" ]; then
+        case ":${LD_PRELOAD:-}:" in
+            *":$f:"*) ;;
+            *) export LD_PRELOAD="${f}${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+        esac
+        break
+    fi
+done
 
 if [ -f "$HOME/.local/etc/odbcinst.ini" ]; then
     export ODBCSYSINI="$HOME/.local/etc"
@@ -91,7 +111,7 @@ fi
 export CPPDB_ORACLE_ODBC="$CPPLINQ_ORACLE_ODBC"
 
 if [ -z "${CPPLINQ_INFORMIX_ODBC:-}" ]; then
-    export CPPLINQ_INFORMIX_ODBC="Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;"
+    export CPPLINQ_INFORMIX_ODBC="Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=127.0.0.1;Service=9088;Uid=informix;Pwd=in4mix;DELIMIDENT=Y;CLIENT_LOCALE=en_us.utf8;DB_LOCALE=en_us.utf8;"
 fi
 export CPPDB_INFORMIX_ODBC="$CPPLINQ_INFORMIX_ODBC"
 

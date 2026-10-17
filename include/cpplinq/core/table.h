@@ -22,7 +22,7 @@ struct TableDef {
     constexpr const auto& get_column() const { return std::get<I>(columns); }
 
     // operator[] for string-based column lookup (returns a ColumnHandle for expressions)
-    expr::ColumnHandle operator[](const char* col_name) const {
+    expr::ColumnHandle operator[](std::string_view col_name) const {
         return expr::ColumnHandle(std::string(name), std::string(col_name));
     }
 
@@ -39,7 +39,7 @@ struct TableDef {
 
 // Factory
 template <typename Entity, typename... Columns>
-constexpr auto table(const char* name, Columns... cols) {
+constexpr auto table(std::string_view name, Columns... cols) {
     return TableDef<Entity, Columns...>{name, std::make_tuple(cols...)};
 }
 

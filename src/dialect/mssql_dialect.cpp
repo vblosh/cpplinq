@@ -1,4 +1,5 @@
 #include "dialect/mssql_dialect.h"
+#include <stdexcept>
 
 namespace cpplinq {
 
@@ -21,6 +22,9 @@ std::string MssqlDialect::placeholder(size_t /*index*/) const {
 
 std::string MssqlDialect::limit_offset(std::optional<size_t> limit,
                                        std::optional<size_t> offset) const {
+    if (limit.has_value() && *limit == 0) {
+        throw std::invalid_argument("MssqlDialect: FETCH NEXT row count must be greater than zero");
+    }
     std::string result;
     if (offset.has_value() && limit.has_value()) {
         result = " OFFSET " + std::to_string(*offset) + " ROWS FETCH NEXT " + std::to_string(*limit) + " ROWS ONLY";
@@ -65,7 +69,16 @@ std::string MssqlDialect::output_clause(std::string_view column) const {
 }
 
 std::string MssqlDialect::create_table_prefix(std::string_view table_name) const {
-    return "IF OBJECT_ID(N'" + std::string(table_name) + "', N'U') IS NULL CREATE TABLE " + quote_id(table_name);
+    std::string escaped;
+    escaped.reserve(table_name.size());
+    for (char c : table_name) {
+        if (c == '\'') {
+            escaped += "''";
+        } else {
+            escaped += c;
+        }
+    }
+    return "IF OBJECT_ID(N'" + escaped + "', N'U') IS NULL CREATE TABLE " + quote_id(table_name);
 }
 
 std::string MssqlDialect::function_name(std::string_view func) const {
@@ -80,6 +93,12 @@ std::string MssqlDialect::generate_upsert(
     const std::vector<std::string>& conflict_columns,
     const std::vector<std::string>& update_columns
 ) const {
+    if (insert_columns.empty()) {
+        throw std::invalid_argument("insert_columns cannot be empty for upsert");
+    }
+    if (conflict_columns.empty()) {
+        throw std::invalid_argument("conflict_columns cannot be empty for MSSQL upsert");
+    }
     std::string sql = "MERGE INTO " + quote_id(table_name) + " WITH (HOLDLOCK) AS [target] USING (VALUES (";
     for (size_t i = 0; i < insert_columns.size(); ++i) {
         if (i > 0) sql += ", ";
@@ -95,10 +114,13 @@ std::string MssqlDialect::generate_upsert(
         if (i > 0) sql += " AND ";
         sql += "[target]." + quote_id(conflict_columns[i]) + " = [source]." + quote_id(conflict_columns[i]);
     }
-    sql += ") WHEN MATCHED THEN UPDATE SET ";
-    for (size_t i = 0; i < update_columns.size(); ++i) {
-        if (i > 0) sql += ", ";
-        sql += "[target]." + quote_id(update_columns[i]) + " = [source]." + quote_id(update_columns[i]);
+    sql += ")";
+    if (!update_columns.empty()) {
+        sql += " WHEN MATCHED THEN UPDATE SET ";
+        for (size_t i = 0; i < update_columns.size(); ++i) {
+            if (i > 0) sql += ", ";
+            sql += "[target]." + quote_id(update_columns[i]) + " = [source]." + quote_id(update_columns[i]);
+        }
     }
     sql += " WHEN NOT MATCHED THEN INSERT (";
     for (size_t i = 0; i < insert_columns.size(); ++i) {

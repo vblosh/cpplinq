@@ -15,7 +15,7 @@ if(CPPLINQ_ENABLE_MSSQL OR CPPLINQ_ENABLE_MYSQL OR CPPLINQ_ENABLE_INFORMIX OR CP
     list(APPEND TEST_TARGETS test_odbc_utils)
 endif()
 if(CPPLINQ_ENABLE_SQLITE)
-    list(APPEND TEST_TARGETS test_sqlite_integration test_connection_pool test_streaming)
+    list(APPEND TEST_TARGETS test_sqlite_integration test_connection_pool test_async_connection_pool test_streaming)
 endif()
 if(CPPLINQ_ENABLE_POSTGRES)
     list(APPEND TEST_TARGETS test_postgres_query_builder test_postgres_integration)

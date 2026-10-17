@@ -85,3 +85,8 @@ Nodes support:
 
 ### 1.6 Thread-Safe Connection Pool
 - **`ConnectionPool<Backend>`**: Manages a thread-safe pool of live database connections with RAII leasing (`PooledConnection`), acquisition timeouts, idle recycling, and connection health checks.
+
+### 1.7 Pool-Scoped Asynchronous Dispatch
+Asynchronous work is layered above the existing blocking driver interfaces. `ConnectionPool<Backend>::submit()` places a callback on a bounded, lazily started worker executor. Each worker acquires one exclusive `PooledConnection`, constructs a local `DbContext`, and runs the callback using the unchanged synchronous query, batch, and transaction APIs.
+
+The callback result is delivered through `std::future<T>`. A lease remains valid only for the duration of the callback, so connection-bound objects and lazy streams must not be returned from it. Queued work can be rejected when the queue is full or cancelled with a stop token; callbacks that have started are allowed to finish. This design supports all current blocking drivers without adding backend-specific asynchronous interfaces.

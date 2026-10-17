@@ -337,7 +337,7 @@ public:
     Expr(uint64_t val) : node(Literal{SqlValue(val)}) {}
     Expr(double val) : node(Literal{SqlValue(val)}) {}
     Expr(float val) : node(Literal{SqlValue(static_cast<double>(val))}) {}
-    Expr(const char* val) : node(Literal{SqlValue(std::string(val))}) {}
+    Expr(const char* val) : node(Literal{SqlValue(std::string(val ? val : ""))}) {}
     Expr(std::string val) : node(Literal{SqlValue(std::move(val))}) {}
     Expr(std::string_view val) : node(Literal{SqlValue(std::string(val))}) {}
     Expr(const wchar_t* val) : node(Literal{SqlValue(std::wstring(val ? val : L""))}) {}
@@ -508,6 +508,10 @@ public:
     // Implicit conversion to Expr
     operator Expr() const {
         return Expr(ref);
+    }
+
+    operator std::string() const {
+        return ref.column_name;
     }
 
     // Template operator= for UPDATE SET clauses

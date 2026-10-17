@@ -40,7 +40,7 @@ inline std::string get_odbc_error(SQLSMALLINT handle_type, SQLHANDLE handle) {
 
     SQLSMALLINT i = 1;
     SQLRETURN rc;
-    while (SQL_SUCCEEDED(rc = SQLGetDiagRec(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length))) {
+    while (SQL_SUCCEEDED(rc = SQLGetDiagRecA(handle_type, handle, i++, sqlstate, &native_error, message, sizeof(message), &text_length))) {
         if (!full_msg.empty()) full_msg += "; ";
         full_msg += "[" + std::string(reinterpret_cast<char*>(sqlstate)) + "] (native=" + std::to_string(native_error) + ") " + std::string(reinterpret_cast<char*>(message));
     }
@@ -89,9 +89,6 @@ inline std::vector<SQLWCHAR> wstring_to_sqlwchar(std::wstring_view wstr) {
     result.reserve(wstr.size() + 1);
     for (wchar_t wc : wstr) {
         uint32_t cp = static_cast<uint32_t>(wc);
-        if (cp == 0x03A9) {
-            cp = 'O';
-        }
         if (cp < 0x10000) {
             result.push_back(static_cast<SQLWCHAR>(cp));
         } else {
@@ -143,6 +140,8 @@ inline std::string numeric_struct_to_string(const SQL_NUMERIC_STRUCT& ns) {
         }
         size_t dot_pos = digits.size() - static_cast<size_t>(ns.scale);
         digits.insert(dot_pos, ".");
+    } else if (ns.scale < 0) {
+        digits.append(static_cast<size_t>(-static_cast<int>(ns.scale)), '0');
     }
     if (ns.sign == 0) {
         digits.insert(digits.begin(), '-');
@@ -171,8 +170,9 @@ inline SQL_NUMERIC_STRUCT string_to_numeric_struct(std::string_view str, uint8_t
     int8_t scale = 0;
     std::string digits;
     if (dot != std::string::npos) {
-        digits = s.substr(0, dot) + s.substr(dot + 1);
-        scale = static_cast<int8_t>(s.size() - dot - 1);
+        size_t raw_scale = s.size() - dot - 1;
+        scale = static_cast<int8_t>(std::min<size_t>(raw_scale, 38));
+        digits = s.substr(0, dot) + s.substr(dot + 1, static_cast<size_t>(scale));
     } else {
         digits = s;
         scale = 0;
@@ -190,7 +190,10 @@ inline SQL_NUMERIC_STRUCT string_to_numeric_struct(std::string_view str, uint8_t
     }
 
     ns.scale = scale;
-    ns.precision = default_prec > 0 ? default_prec : static_cast<uint8_t>(std::max<size_t>(1, digits.size()));
+    size_t non_zero = digits.find_first_not_of('0');
+    size_t sig_digits = (non_zero == std::string::npos) ? 1 : (digits.size() - non_zero);
+    size_t calc_prec = std::max<size_t>({size_t(1), static_cast<size_t>(std::max<int8_t>(0, scale)), sig_digits});
+    ns.precision = default_prec > 0 ? default_prec : static_cast<uint8_t>(std::min<size_t>(calc_prec, 38));
 
     for (char c : digits) {
         if (c >= '0' && c <= '9') {
@@ -359,6 +362,9 @@ inline size_t execute_insert_many_batch(
     const char* driver_prefix
 ) {
     if (row_count == 0 || col_count == 0) return 0;
+    if (flat_params.size() / col_count < row_count) {
+        throw DbException("insert_many_batch: flat_params size is smaller than row_count * col_count");
+    }
 
     SQLHSTMT hstmt = SQL_NULL_HSTMT;
     SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
@@ -442,7 +448,11 @@ inline size_t execute_insert_many_batch(
                     max_len = std::max(max_len, v.size() + 1);
                 } else if constexpr (std::is_same_v<T, std::wstring>) {
                     ct = SQL_C_WCHAR; st = SQL_WVARCHAR;
-                    max_len = std::max(max_len, v.size() + 1);
+                    size_t wlen = 1; // null-terminator
+                    for (wchar_t wc : v) {
+                        wlen += (static_cast<uint32_t>(wc) >= 0x10000) ? 2 : 1;
+                    }
+                    max_len = std::max(max_len, wlen);
                 } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                     ct = SQL_C_BINARY; st = SQL_VARBINARY;
                     max_len = std::max(max_len, v.size() > 0 ? v.size() : 1);
@@ -668,6 +678,9 @@ inline size_t execute_insert_many_batch(
 
     SQLLEN affected = -1;
     SQLRowCount(hstmt, &affected);
+    if (affected == 0) {
+        return 0;
+    }
     return (affected >= static_cast<SQLLEN>(row_count)) ? static_cast<size_t>(affected) : row_count;
 }
 

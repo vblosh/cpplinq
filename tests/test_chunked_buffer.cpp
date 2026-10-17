@@ -235,7 +235,7 @@ TEST(ChunkedBufferTest, MoveOnlyTypes) {
     }
     EXPECT_EQ(buffer.size(), 10u);
 
-    auto vec = buffer.to_vector();
+    auto vec = std::move(buffer).to_vector();
     ASSERT_EQ(vec.size(), 10u);
     for (int i = 0; i < 10; ++i) {
         ASSERT_NE(vec[i], nullptr);
@@ -308,4 +308,69 @@ TEST(ChunkedBufferTest, RvalueToVectorClearsBuffer) {
     EXPECT_EQ(vec[1], "world");
     EXPECT_EQ(buffer.size(), 0u);
     EXPECT_TRUE(buffer.empty());
+}
+
+TEST(ChunkedBufferTest, IteratorComparisonDifferentContainers) {
+    ChunkedBuffer<int, 4> buf1;
+    ChunkedBuffer<int, 4> buf2;
+    buf1.push_back(1);
+    buf2.push_back(1);
+
+    auto it1 = buf1.begin();
+    auto it2 = buf2.begin();
+
+    EXPECT_NE(it1, it2);
+    EXPECT_FALSE(it1 == it2);
+    EXPECT_TRUE(it1 != it2);
+    // Comparison across different containers compares container pointers
+    if (&buf1 < &buf2) {
+        EXPECT_TRUE(it1 < it2);
+        EXPECT_FALSE(it1 > it2);
+    } else {
+        EXPECT_TRUE(it1 > it2);
+        EXPECT_FALSE(it1 < it2);
+    }
+}
+
+TEST(ChunkedBufferTest, EmplaceBackReturnsReference) {
+    ChunkedBuffer<std::string, 4> buffer;
+    auto& ref1 = buffer.emplace_back("first");
+    EXPECT_EQ(ref1, "first");
+    ref1 = "modified_first";
+    EXPECT_EQ(buffer[0], "modified_first");
+
+    auto& ref2 = buffer.emplace_back("second");
+    EXPECT_EQ(ref2, "second");
+    EXPECT_EQ(buffer.size(), 2u);
+}
+
+namespace {
+struct ThrowingType {
+    static inline int live_instances = 0;
+    static inline bool should_throw = false;
+
+    ThrowingType() {
+        if (should_throw) throw std::runtime_error("Constructor threw");
+        ++live_instances;
+    }
+    ~ThrowingType() {
+        --live_instances;
+    }
+};
+} // namespace
+
+TEST(ChunkedBufferTest, EmptyChunkAfterConstructorThrowDoesNotLaunder) {
+    ThrowingType::live_instances = 0;
+    ThrowingType::should_throw = false;
+
+    ChunkedBuffer<ThrowingType, 2> buffer;
+    buffer.emplace_back();
+    buffer.emplace_back();
+    ThrowingType::should_throw = true;
+    EXPECT_THROW(buffer.emplace_back(), std::runtime_error);
+
+    EXPECT_EQ(buffer.size(), 2u);
+    EXPECT_NO_THROW(buffer.clear());
+    EXPECT_EQ(buffer.size(), 0u);
+    EXPECT_EQ(ThrowingType::live_instances, 0);
 }

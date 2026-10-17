@@ -34,6 +34,14 @@ inline std::vector<std::string> get_tuple_column_names(const std::tuple<ColumnDe
     return names;
 }
 
+namespace detail {
+struct LimitGuard {
+    std::optional<size_t>& target;
+    std::optional<size_t> saved;
+    ~LimitGuard() { target = saved; }
+};
+} // namespace detail
+
 template <JoinType JType, typename E1, typename E2, typename Tuple1, typename Tuple2>
 class JoinedQueryBuilder {
 public:
@@ -160,6 +168,7 @@ public:
     }
 
     std::optional<ResultType> first() {
+        detail::LimitGuard guard{limit_, limit_};
         limit_ = 1;
         auto results = to_list();
         if (results.empty()) return std::nullopt;
@@ -167,8 +176,32 @@ public:
     }
 
     size_t count() {
-        auto list = to_list();
-        return list.size();
+        SqlGenerator gen(conn_.dialect());
+        JoinClause jc{
+            JType == JoinType::Inner ? "INNER JOIN" : "LEFT JOIN",
+            joined_table_,
+            on_cond_
+        };
+        auto result = gen.generate_joined_count(
+            primary_table_,
+            {jc},
+            where_clause_
+        );
+        std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
+        if (result.params.empty()) {
+            reader = conn_.execute_query_direct(result.sql);
+        } else {
+            stmt = conn_.prepare(result.sql);
+            for (size_t i = 0; i < result.params.size(); ++i) {
+                stmt->bind(static_cast<int>(i), result.params[i]);
+            }
+            reader = stmt->execute_query();
+        }
+        if (reader && reader->next()) {
+            return static_cast<size_t>(reader->get_int64(0));
+        }
+        return 0;
     }
 
     template <typename OtherEntity, typename... OtherCols>
@@ -393,6 +426,7 @@ public:
     }
 
     std::optional<ResultType> first() {
+        detail::LimitGuard guard{limit_, limit_};
         limit_ = 1;
         auto results = to_list();
         if (results.empty()) return std::nullopt;
@@ -400,8 +434,39 @@ public:
     }
 
     size_t count() {
-        auto list = to_list();
-        return list.size();
+        SqlGenerator gen(conn_.dialect());
+        std::vector<JoinClause> jcs = {
+            JoinClause{
+                JType1 == JoinType::Inner ? "INNER JOIN" : "LEFT JOIN",
+                joined_table2_,
+                on_cond2_
+            },
+            JoinClause{
+                JType2 == JoinType::Inner ? "INNER JOIN" : "LEFT JOIN",
+                joined_table3_,
+                on_cond3_
+            }
+        };
+        auto result = gen.generate_joined_count(
+            primary_table_,
+            jcs,
+            where_clause_
+        );
+        std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
+        if (result.params.empty()) {
+            reader = conn_.execute_query_direct(result.sql);
+        } else {
+            stmt = conn_.prepare(result.sql);
+            for (size_t i = 0; i < result.params.size(); ++i) {
+                stmt->bind(static_cast<int>(i), result.params[i]);
+            }
+            reader = stmt->execute_query();
+        }
+        if (reader && reader->next()) {
+            return static_cast<size_t>(reader->get_int64(0));
+        }
+        return 0;
     }
 
 private:
@@ -555,6 +620,7 @@ public:
     }
 
     std::optional<Entity> first() {
+        detail::LimitGuard guard{limit_, limit_};
         limit_ = 1;
         auto results = to_list();
         if (results.empty()) return std::nullopt;
@@ -562,8 +628,26 @@ public:
     }
 
     size_t count() {
-        auto list = to_list();
-        return list.size();
+        SqlGenerator gen(conn_.dialect());
+        auto base_cols = get_tuple_column_names(columns_);
+        auto result = gen.generate_set_operation_count(
+            base_table_, base_cols, base_where_, base_distinct_, ops_
+        );
+        std::unique_ptr<IPreparedStatement> stmt;
+        std::unique_ptr<IDataReader> reader;
+        if (result.params.empty()) {
+            reader = conn_.execute_query_direct(result.sql);
+        } else {
+            stmt = conn_.prepare(result.sql);
+            for (size_t i = 0; i < result.params.size(); ++i) {
+                stmt->bind(static_cast<int>(i), result.params[i]);
+            }
+            reader = stmt->execute_query();
+        }
+        if (reader && reader->next()) {
+            return static_cast<size_t>(reader->get_int64(0));
+        }
+        return 0;
     }
 
 private:
@@ -582,8 +666,8 @@ template <typename Entity, typename... ColumnDefs>
 class QueryBuilder {
 public:
     QueryBuilder(IConnection& conn, std::string table_name,
-                 const std::tuple<ColumnDefs...>& columns)
-        : conn_(conn), table_name_(std::move(table_name)), columns_(columns) {}
+                 std::tuple<ColumnDefs...> columns)
+        : conn_(conn), table_name_(std::move(table_name)), columns_(std::move(columns)) {}
 
     QueryBuilder& distinct() {
         is_distinct_ = true;
@@ -591,7 +675,15 @@ public:
     }
 
     QueryBuilder& where(expr::Expr condition) {
-        where_clause_ = std::move(condition.node);
+        if (where_clause_.has_value()) {
+            where_clause_ = expr::Expr(std::make_shared<expr::LogicExpr>(
+                std::move(*where_clause_),
+                expr::LogicOp::And,
+                std::move(condition.node)
+            )).node;
+        } else {
+            where_clause_ = std::move(condition.node);
+        }
         return *this;
     }
 
@@ -798,7 +890,8 @@ public:
         GeneratedSql result;
         if (!ctes_.empty()) {
             result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
-                                             order_clauses_, limit_, offset_, is_distinct_);
+                                             order_clauses_, limit_, offset_, is_distinct_,
+                                             group_by_clauses_, having_clause_);
         } else {
             result = gen.generate_select(table_name_, col_names, where_clause_,
                                          order_clauses_, limit_, offset_, is_distinct_,
@@ -831,7 +924,8 @@ public:
         GeneratedSql result;
         if (!ctes_.empty()) {
             result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
-                                             order_clauses_, limit_, offset_, is_distinct_);
+                                             order_clauses_, limit_, offset_, is_distinct_,
+                                             group_by_clauses_, having_clause_);
         } else {
             result = gen.generate_select(table_name_, col_names, where_clause_,
                                          order_clauses_, limit_, offset_, is_distinct_,
@@ -860,6 +954,7 @@ public:
 
     // Terminal: first result
     std::optional<Entity> first() {
+        detail::LimitGuard guard{limit_, limit_};
         limit_ = 1;
         auto results = to_list();
         if (results.empty()) return std::nullopt;
@@ -890,6 +985,9 @@ public:
         std::string col_name;
         if (auto* ref = std::get_if<expr::ColumnRef>(&column.node)) {
             col_name = ref->column_name;
+        }
+        if (col_name.empty()) {
+            throw DbException("Column name cannot be empty for count_distinct");
         }
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_count(table_name_, where_clause_, true, col_name);
@@ -980,7 +1078,8 @@ public:
         GeneratedSql result;
         if (!ctes_.empty()) {
             result = gen.generate_cte_select(ctes_, table_name_, col_names, where_clause_,
-                                             order_clauses_, limit_, offset_, is_distinct_);
+                                             order_clauses_, limit_, offset_, is_distinct_,
+                                             group_by_clauses_, having_clause_);
         } else {
             result = gen.generate_select(table_name_, col_names, where_clause_,
                                          order_clauses_, limit_, offset_, is_distinct_,
@@ -1028,7 +1127,7 @@ public:
 private:
     IConnection& conn_;
     std::string table_name_;
-    const std::tuple<ColumnDefs...>& columns_;
+    std::tuple<ColumnDefs...> columns_;
     std::optional<expr::ExprNode> where_clause_;
     std::vector<std::pair<expr::ExprNode, expr::SortDir>> order_clauses_;
     std::optional<size_t> limit_;
@@ -1049,6 +1148,9 @@ private:
         std::string col_name;
         if (auto* ref = std::get_if<expr::ColumnRef>(&column.node)) {
             col_name = ref->column_name;
+        }
+        if (col_name.empty()) {
+            throw DbException(std::string("Column name cannot be empty for ") + func_name);
         }
         SqlGenerator gen(conn_.dialect());
         auto result = gen.generate_aggregate(func_name, table_name_, col_name, where_clause_);

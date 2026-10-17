@@ -45,7 +45,7 @@ struct ColumnDef {
 
 // Column factory function with variadic constraint tags
 template <typename Entity, typename FieldType, typename... Constraints>
-constexpr auto column(const char* name, FieldType Entity::* ptr, Constraints...) {
+constexpr auto column(std::string_view name, FieldType Entity::* ptr, Constraints...) {
     ColumnDef<Entity, FieldType> col{name, ptr};
     auto apply = [&col](auto constraint) {
         using C = decltype(constraint);

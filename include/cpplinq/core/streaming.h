@@ -90,18 +90,14 @@ struct RowRecord {
 class RowStream {
 public:
     RowStream(
-        std::unique_ptr<IPreparedStatement> stmt,
+        std::shared_ptr<IPreparedStatement> stmt,
         std::unique_ptr<IDataReader> reader,
         ExecutionOptions options = {}
     ) : stmt_(std::move(stmt))
       , reader_(std::move(reader))
       , options_(std::move(options))
     {
-        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
-            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
-                try { stmt->cancel(); } catch (...) {}
-            });
-        }
+        init_stop_callback();
     }
 
     RowStream(const RowStream&) = delete;
@@ -112,15 +108,14 @@ public:
         , reader_(std::move(other.reader_))
         , options_(std::move(other.options_))
     {
-        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
-            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
-                try { stmt->cancel(); } catch (...) {}
-            });
-        }
+        other.stop_cb_.reset();
+        init_stop_callback();
     }
     RowStream& operator=(RowStream&& other) noexcept = delete;
 
-    ~RowStream() = default;
+    ~RowStream() {
+        stop_cb_.reset();
+    }
 
     class Sentinel {};
 
@@ -141,6 +136,11 @@ public:
         {
             advance();
         }
+
+        Iterator(const Iterator&) = delete;
+        Iterator& operator=(const Iterator&) = delete;
+        Iterator(Iterator&&) noexcept = default;
+        Iterator& operator=(Iterator&&) noexcept = default;
 
         reference operator*() const {
             return current_row_;
@@ -219,7 +219,15 @@ public:
     }
 
 private:
-    std::unique_ptr<IPreparedStatement> stmt_;
+    void init_stop_callback() {
+        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
+            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_]() {
+                try { stmt->cancel(); } catch (...) {}
+            });
+        }
+    }
+
+    std::shared_ptr<IPreparedStatement> stmt_;
     std::unique_ptr<IDataReader> reader_;
     ExecutionOptions options_;
     std::optional<std::stop_callback<std::function<void()>>> stop_cb_;
@@ -230,7 +238,7 @@ template <typename Entity, typename Mapper>
 class EntityStream {
 public:
     EntityStream(
-        std::unique_ptr<IPreparedStatement> stmt,
+        std::shared_ptr<IPreparedStatement> stmt,
         std::unique_ptr<IDataReader> reader,
         Mapper mapper,
         ExecutionOptions options = {}
@@ -239,11 +247,7 @@ public:
       , mapper_(std::move(mapper))
       , options_(std::move(options))
     {
-        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
-            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
-                try { stmt->cancel(); } catch (...) {}
-            });
-        }
+        init_stop_callback();
     }
 
     EntityStream(const EntityStream&) = delete;
@@ -255,15 +259,15 @@ public:
         , mapper_(std::move(other.mapper_))
         , options_(std::move(other.options_))
     {
-        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
-            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_.get()]() {
-                try { stmt->cancel(); } catch (...) {}
-            });
-        }
+        other.stop_cb_.reset();
+        init_stop_callback();
     }
-    EntityStream& operator=(EntityStream&& other) noexcept = delete;
 
-    ~EntityStream() = default;
+    EntityStream& operator=(EntityStream&&) noexcept = delete;
+
+    ~EntityStream() {
+        stop_cb_.reset();
+    }
 
     class Sentinel {};
 
@@ -285,12 +289,17 @@ public:
             advance();
         }
 
+        Iterator(const Iterator&) = delete;
+        Iterator& operator=(const Iterator&) = delete;
+        Iterator(Iterator&&) noexcept = default;
+        Iterator& operator=(Iterator&&) noexcept = default;
+
         reference operator*() const {
-            return current_entity_;
+            return *current_entity_;
         }
 
         pointer operator->() const {
-            return &current_entity_;
+            return &(*current_entity_);
         }
 
         Iterator& operator++() {
@@ -321,16 +330,19 @@ public:
         void advance() {
             if (is_end_ || !stream_ || !stream_->reader_) {
                 is_end_ = true;
+                current_entity_.reset();
                 return;
             }
 
             if (stream_->options_.stop_token.has_value() && stream_->options_.stop_token->stop_requested()) {
                 is_end_ = true;
+                current_entity_.reset();
                 throw OperationCancelled("Streaming cancelled by stop_token");
             }
 
             if (!stream_->reader_->next()) {
                 is_end_ = true;
+                current_entity_.reset();
                 return;
             }
 
@@ -339,7 +351,7 @@ public:
 
         EntityStream* stream_ = nullptr;
         bool is_end_ = true;
-        Entity current_entity_{};
+        std::optional<Entity> current_entity_;
     };
 
     Iterator begin() {
@@ -351,7 +363,15 @@ public:
     }
 
 private:
-    std::unique_ptr<IPreparedStatement> stmt_;
+    void init_stop_callback() {
+        if (options_.stop_token.has_value() && options_.stop_token->stop_possible() && stmt_) {
+            stop_cb_.emplace(*options_.stop_token, [stmt = stmt_]() {
+                try { stmt->cancel(); } catch (...) {}
+            });
+        }
+    }
+
+    std::shared_ptr<IPreparedStatement> stmt_;
     std::unique_ptr<IDataReader> reader_;
     Mapper mapper_;
     ExecutionOptions options_;

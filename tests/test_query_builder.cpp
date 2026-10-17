@@ -1,6 +1,24 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include "cpplinq/core/sql_generator.h"
 #include "cpplinq/core/expression.h"
+#include "cpplinq/core/table.h"
+#include "cpplinq/core/column.h"
+#ifdef CPPLINQ_HAS_POSTGRES
+#include "dialect/postgres_dialect.h"
+#endif
+#ifdef CPPLINQ_HAS_MSSQL
+#include "dialect/mssql_dialect.h"
+#endif
+#ifdef CPPLINQ_HAS_MYSQL
+#include "dialect/mysql_dialect.h"
+#endif
+#ifdef CPPLINQ_HAS_SQLITE
+#include "dialect/sqlite_dialect.h"
+#endif
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
+#include "driver/odbc_utils.h"
+#endif
 
 using namespace cpplinq;
 using namespace cpplinq::expr;
@@ -947,6 +965,17 @@ TEST(SqlGeneratorTest, UpsertSqlite) {
     ASSERT_EQ(result.params.size(), 3);
 }
 
+TEST(SqlGeneratorTest, UpsertEmptyUpdateColumnsEmitsDoNothing) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<BoundValue> values = {int64_t{1}, std::string{"Alice"}};
+    auto result = gen.generate_upsert("users", {"id", "name"}, values, {"id", "name"}, {});
+
+    EXPECT_EQ(result.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) ON CONFLICT (\"id\", \"name\") DO NOTHING");
+    ASSERT_EQ(result.params.size(), 2);
+}
+
 TEST(SqlGeneratorTest, UpsertMssql) {
     MockMssqlDialect dialect;
     SqlGenerator gen(dialect);
@@ -1267,6 +1296,319 @@ TEST(SqlGeneratorTest, OracleCreateTable) {
     EXPECT_TRUE(result.params.empty());
 }
 
+TEST(SqlGeneratorTest, CteGenerationWithGroupByAndHaving) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
 
+    ColumnHandle dept("dept");
+    ColumnHandle salary("salary");
+    SubqueryExpr sub("employees", {"dept", "salary"}, nullptr, false);
 
+    CteClause cte{"dept_salaries", sub, false};
+    auto res = gen.generate_cte_select(
+        {cte},
+        "dept_salaries",
+        {"dept"},
+        std::nullopt,
+        {},
+        std::nullopt,
+        std::nullopt,
+        false,
+        {dept.ref},
+        (salary > 50000).node
+    );
+
+    EXPECT_EQ(res.sql, "WITH \"dept_salaries\" AS (SELECT \"dept\", \"salary\" FROM \"employees\") SELECT \"dept\" FROM \"dept_salaries\" GROUP BY \"dept\" HAVING (\"salary\" > ?)");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_EQ(std::get<int64_t>(res.params[0]), 50000);
+}
+
+TEST(SqlGeneratorTest, JoinedCountGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle user_id("users", "id");
+    ColumnHandle order_user_id("orders", "user_id");
+    ColumnHandle amount("orders", "amount");
+
+    JoinClause j1{"INNER JOIN", "orders", (user_id == order_user_id).node};
+
+    auto res = gen.generate_joined_count(
+        "users",
+        {j1},
+        (amount > 100.0).node
+    );
+
+    EXPECT_EQ(res.sql, "SELECT COUNT(*) FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") WHERE (\"orders\".\"amount\" > ?)");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(res.params[0]), 100.0);
+}
+
+TEST(SqlGeneratorTest, SetOperationCountGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle age("users", "age");
+
+    SetOpClause op{
+        SetOpType::Union,
+        "users",
+        {"id", "name", "age"},
+        (age >= 30).node,
+        false
+    };
+
+    auto res = gen.generate_set_operation_count(
+        "users",
+        {"id", "name", "age"},
+        (age <= 20).node,
+        false,
+        {op}
+    );
+
+    EXPECT_EQ(res.sql, "SELECT COUNT(*) FROM (SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE (\"users\".\"age\" <= ?) UNION SELECT \"id\", \"name\", \"age\" FROM \"users\" WHERE (\"users\".\"age\" >= ?)) \"_sub\"");
+    ASSERT_EQ(res.params.size(), 2);
+    EXPECT_EQ(std::get<int64_t>(res.params[0]), 20);
+    EXPECT_EQ(std::get<int64_t>(res.params[1]), 30);
+}
+
+TEST(ReviewFixesTest, InsertEmptyColumnsDefaultValues) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_insert("users", {}, {});
+    EXPECT_EQ(res.sql, "INSERT INTO \"users\" DEFAULT VALUES");
+}
+
+TEST(ReviewFixesTest, SetOperationEmptyColumnsEmitsStar) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    SetOpClause op{
+        SetOpType::Union,
+        "other_users",
+        {},
+        std::nullopt,
+        false
+    };
+
+    auto res = gen.generate_set_operation("users", {}, std::nullopt, false, {op});
+    EXPECT_EQ(res.sql, "SELECT * FROM \"users\" UNION SELECT * FROM \"other_users\"");
+}
+
+TEST(ReviewFixesTest, CreateTableAutoIncWithAdditionalPk) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    std::vector<ColumnInfo> cols = {
+        {"id", SqlType::Integer, true, true, true, false},
+        {"tenant_id", SqlType::Integer, false, false, true, false},
+        {"name", SqlType::Text, false, false, false, false}
+    };
+
+    auto res = gen.generate_create_table("users", cols);
+    // Should NOT have duplicate PRIMARY KEY
+    EXPECT_EQ(res.sql, "CREATE TABLE IF NOT EXISTS \"users\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"tenant_id\" INTEGER NOT NULL, \"name\" TEXT)");
+}
+
+TEST(ReviewFixesTest, AggregateUsesDialectFunctionName) {
+    class CustomDialect : public MockSqliteDialect {
+    public:
+        std::string function_name(std::string_view name) const override {
+            if (name == "COUNT") return "CUSTOM_COUNT";
+            return std::string(name);
+        }
+    };
+
+    CustomDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_aggregate("COUNT", "users", "*", std::nullopt);
+    EXPECT_EQ(res.sql, "SELECT CUSTOM_COUNT(*) FROM \"users\"");
+}
+
+TEST(ReviewFixesTest, TableAndColumnAcceptStringView) {
+    struct TestItem {
+        int id;
+        std::string val;
+    };
+
+    std::string_view col_name_sv = "id";
+    std::string_view tbl_name_sv = "items";
+
+    auto c1 = column(col_name_sv, &TestItem::id, primary_key);
+    auto c2 = column(std::string_view("val"), &TestItem::val);
+    auto t = table<TestItem>(tbl_name_sv, c1, c2);
+
+    auto handle = t[col_name_sv];
+    EXPECT_EQ(handle.ref.table_name, "items");
+    EXPECT_EQ(handle.ref.column_name, "id");
+}
+
+TEST(ReviewFixesTest, InsertEmptyColumnsWithReturningMssqlOutput) {
+    MockMssqlDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_insert("users", {}, {}, "id");
+    EXPECT_EQ(res.sql, "INSERT INTO [users] OUTPUT INSERTED.[id] DEFAULT VALUES");
+}
+
+TEST(ReviewFixesTest, InsertEmptyColumnsWithReturningSqliteReturning) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    auto res = gen.generate_insert("users", {}, {}, "id");
+    EXPECT_EQ(res.sql, "INSERT INTO \"users\" DEFAULT VALUES RETURNING \"id\"");
+}
+
+#ifdef CPPLINQ_HAS_POSTGRES
+TEST(ReviewFixesTest, PostgresQuoteIdAndReturningEscapesDoubleQuotes) {
+    PostgresDialect dialect;
+    EXPECT_EQ(dialect.quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect.returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+
+TEST(ReviewFixesTest, PostgresPolymorphicDestructorAndQuoteId) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<PostgresDialect>();
+    EXPECT_EQ(dialect->quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect->returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+#endif
+
+#ifdef CPPLINQ_HAS_MSSQL
+TEST(ReviewFixesTest, MssqlCreateTablePrefixEscapesSingleQuotes) {
+    MssqlDialect dialect;
+    EXPECT_EQ(dialect.create_table_prefix("user'table"), "IF OBJECT_ID(N'user''table', N'U') IS NULL CREATE TABLE [user'table]");
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyUpdateColumns) {
+    MssqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"id", "name"}, {"id"}, {});
+    EXPECT_EQ(sql, "MERGE INTO [users] WITH (HOLDLOCK) AS [target] USING (VALUES (?, ?)) AS [source] ([id], [name]) ON ([target].[id] = [source].[id]) WHEN NOT MATCHED THEN INSERT ([id], [name]) VALUES ([source].[id], [source].[name]);");
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyInsertColumnsThrows) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {}, {"id"}, {"name"}), std::invalid_argument);
+}
+
+TEST(ReviewFixesTest, MssqlUpsertEmptyConflictColumnsThrows) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {"id", "name"}, {}, {"name"}), std::invalid_argument);
+}
+
+TEST(ReviewFixesTest, MssqlLimitZeroThrowsInvalidArgument) {
+    MssqlDialect dialect;
+    EXPECT_THROW(dialect.limit_offset(0, std::nullopt), std::invalid_argument);
+    EXPECT_THROW(dialect.limit_offset(0, 10), std::invalid_argument);
+}
+#endif
+
+#ifdef CPPLINQ_HAS_MYSQL
+TEST(ReviewFixesTest, MysqlFunctionNameLengthToCharLength) {
+    MysqlDialect dialect;
+    EXPECT_EQ(dialect.function_name("LENGTH"), "CHAR_LENGTH");
+    EXPECT_EQ(dialect.function_name("SUBSTR"), "SUBSTRING");
+    EXPECT_EQ(dialect.function_name("UPPER"), "UPPER");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyUpdateColumnsWithConflictColumns) {
+    MysqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"id", "name"}, {"id"}, {});
+    EXPECT_EQ(sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `id` = `id`");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyUpdateColumnsFallbackToInsertColumns) {
+    MysqlDialect dialect;
+    auto sql = dialect.generate_upsert("users", {"name"}, {}, {});
+    EXPECT_EQ(sql, "INSERT INTO `users` (`name`) VALUES (?) ON DUPLICATE KEY UPDATE `name` = `name`");
+}
+
+TEST(ReviewFixesTest, MysqlUpsertEmptyInsertColumnsThrows) {
+    MysqlDialect dialect;
+    EXPECT_THROW(dialect.generate_upsert("users", {}, {}, {}), std::invalid_argument);
+}
+#endif
+
+#ifdef CPPLINQ_HAS_SQLITE
+TEST(ReviewFixesTest, SqliteQuoteIdAndReturningEscapesDoubleQuotes) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.quote_id("user\"name"), "\"user\"\"name\"");
+    EXPECT_EQ(dialect.returning_clause("user\"name"), " RETURNING \"user\"\"name\"");
+}
+
+TEST(ReviewFixesTest, SqliteLimitOffsetWithoutLimitEmitsLimitMinusOne) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.limit_offset(10, 5), " LIMIT 10 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(10, std::nullopt), " LIMIT 10");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, 5), " LIMIT -1 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, std::nullopt), "");
+}
+
+TEST(ReviewFixesTest, SqliteExtractPartFuncSupportsTimeParts) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.extract_part_func("YEAR", "ts"), "CAST(strftime('%Y', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("MONTH", "ts"), "CAST(strftime('%m', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("DAY", "ts"), "CAST(strftime('%d', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("HOUR", "ts"), "CAST(strftime('%H', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("MINUTE", "ts"), "CAST(strftime('%M', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("SECOND", "ts"), "CAST(strftime('%S', ts) AS INTEGER)");
+    EXPECT_EQ(dialect.extract_part_func("OTHER", "ts"), "strftime('OTHER', ts)");
+}
+
+TEST(ReviewFixesTest, SqliteDateAddDaysRemovesPlusPrefix) {
+    SqliteDialect dialect;
+    EXPECT_EQ(dialect.date_add_days_func("ts", "-7"), "date(ts, (-7) || ' days')");
+    EXPECT_EQ(dialect.date_add_days_func("ts", "7"), "date(ts, (7) || ' days')");
+}
+
+TEST(ReviewFixesTest, SqlitePolymorphicDestructor) {
+    std::unique_ptr<ISqlDialect> dialect = std::make_unique<SqliteDialect>();
+    EXPECT_EQ(dialect->placeholder(0), "?");
+}
+#endif
+
+#if defined(CPPLINQ_HAS_MSSQL) || defined(CPPLINQ_HAS_MYSQL) || defined(CPPLINQ_HAS_POSTGRES) || defined(CPPLINQ_HAS_INFORMIX) || defined(CPPLINQ_HAS_ORACLE)
+TEST(ReviewFixesTest, OdbcUtilsNegativeScaleAppendsZeros) {
+    using namespace cpplinq::detail::odbc;
+    SQL_NUMERIC_STRUCT ns{};
+    ns.sign = 1;
+    ns.precision = 5;
+    ns.scale = -3;
+    ns.val[0] = 42;
+    std::string s = numeric_struct_to_string(ns);
+    EXPECT_EQ(s, "42000");
+
+    ns.sign = 0;
+    EXPECT_EQ(numeric_struct_to_string(ns), "-42000");
+}
+
+TEST(ReviewFixesTest, OdbcUtilsStringToNumericLeadingZeroPrecisionAndScaleClamping) {
+    using namespace cpplinq::detail::odbc;
+    auto ns = string_to_numeric_struct("00012.34");
+    EXPECT_EQ(ns.scale, 2);
+    EXPECT_EQ(ns.precision, 4);
+    EXPECT_EQ(numeric_struct_to_string(ns), "12.34");
+
+    auto ns_zero = string_to_numeric_struct("000");
+    EXPECT_EQ(ns_zero.scale, 0);
+    EXPECT_EQ(ns_zero.precision, 1);
+    EXPECT_EQ(numeric_struct_to_string(ns_zero), "0");
+
+    auto ns_small = string_to_numeric_struct("0.05");
+    EXPECT_EQ(ns_small.scale, 2);
+    EXPECT_EQ(ns_small.precision, 2);
+    EXPECT_EQ(numeric_struct_to_string(ns_small), "0.05");
+
+    std::string large_scale = "1." + std::string(50, '9');
+    auto ns_clamp = string_to_numeric_struct(large_scale);
+    EXPECT_EQ(ns_clamp.scale, 38);
+    EXPECT_EQ(ns_clamp.precision, 38);
+    EXPECT_EQ(numeric_struct_to_string(ns_clamp), "1." + std::string(38, '9'));
+
+    auto ns_default_scale = string_to_numeric_struct(large_scale, 0, 2);
+    EXPECT_EQ(ns_default_scale.scale, 2);
+    EXPECT_EQ(numeric_struct_to_string(ns_default_scale), "1.99");
+}
+#endif
 

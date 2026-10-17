@@ -124,7 +124,7 @@ private:
 
 class OdbcPreparedStatement : public IPreparedStatement {
 public:
-    OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql);
+    OdbcPreparedStatement(SQLHDBC hdbc, std::string_view sql, std::string driver_name = "");
     ~OdbcPreparedStatement() override;
 
     void bind(int index, const BoundValue& value) override;
@@ -152,6 +152,7 @@ private:
     std::shared_ptr<detail::odbc::StmtHolder> stmt_holder_;
     SQLHSTMT hstmt_ = SQL_NULL_HSTMT;
     std::string sql_;
+    std::string driver_name_;
     std::vector<BoundValue> params_;
     std::vector<ParamStorage> storage_;
     std::optional<std::stop_token> stop_token_;
