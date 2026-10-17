@@ -319,6 +319,8 @@ struct AssignExpr {
         : column(std::move(col)), value(std::move(val)) {}
 };
 
+class ColumnHandle;
+
 // Expression wrapper class
 class Expr {
 public:
@@ -327,6 +329,8 @@ public:
     Expr() : node(Literal{SqlValue{std::monostate{}}}) {}
     Expr(ExprNode n) : node(std::move(n)) {}
     Expr(ColumnRef ref) : node(std::move(ref)) {}
+    Expr(const ColumnHandle& handle);
+    Expr(ColumnHandle&& handle);
     Expr(Literal lit) : node(std::move(lit)) {}
     Expr(ParamPlaceholder param) : node(std::move(param)) {}
 
@@ -636,6 +640,9 @@ public:
         return Expr(ref).desc();
     }
 };
+
+inline Expr::Expr(const ColumnHandle& handle) : node(handle.ref) {}
+inline Expr::Expr(ColumnHandle&& handle) : node(std::move(handle.ref)) {}
 
 // Comparison operators (==, !=, <, <=, >, >=)
 inline Expr operator==(const Expr& lhs, const Expr& rhs) {
