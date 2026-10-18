@@ -1100,6 +1100,21 @@ TEST(SqlGeneratorTest, CteGeneration) {
     EXPECT_EQ(std::get<double>(res.params[0]), 100.0);
 }
 
+TEST(SqlGeneratorTest, ScalarSubqueryGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle amount("orders", "amount");
+    SubqueryExpr sub("orders", {"amount"}, nullptr, false);
+
+    // SubqueryExpr is not implicitly convertible to Expr; wrap it explicitly.
+    Expr max_amount(std::make_shared<expr::SubqueryExpr>(sub));
+    auto res = gen.generate_expression((amount >= max_amount).node);
+
+    EXPECT_EQ(res.sql, "(\"orders\".\"amount\" >= (SELECT \"amount\" FROM \"orders\"))");
+    EXPECT_TRUE(res.params.empty());
+}
+
 TEST(SqlGeneratorTest, MultiTableJoinGeneration) {
     MockSqliteDialect dialect;
     SqlGenerator gen(dialect);

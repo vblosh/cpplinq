@@ -39,7 +39,7 @@ Without a pool, under high concurrency (e.g., hundreds of concurrent API request
 ### Core Components
 
 1. **`ConnectionPool<Backend>`**:
-   The central thread-safe manager maintaining active and idle connection queues, controlling minimum/maximum capacity, and handling thread synchronization.
+   The central thread-safe manager maintains active and idle connection queues, enforces maximum capacity, creates the configured initial minimum, and handles thread synchronization.
 2. **`PooledConnection<Backend>`**:
    An RAII smart handle wrapping an active `IConnection`. When the object goes out of scope, its destructor automatically returns the physical connection to the idle pool.
 3. **`PoolConfig`**:
@@ -51,7 +51,7 @@ Without a pool, under high concurrency (e.g., hundreds of concurrent API request
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `min_connections` | `size_t` | `1` | Number of idle connections created and kept alive immediately upon pool initialization. |
+| `min_connections` | `size_t` | `1` | Number of idle connections created during pool initialization. The pool does not replenish this minimum after connections are discarded. |
 | `max_connections` | `size_t` | `10` | Hard upper bound on total open connections (active + idle). |
 | `acquire_timeout` | `std::chrono::milliseconds` | `5000ms` (5s) | Maximum duration a thread will wait for an available connection before throwing a `DbException`. |
 | `async_worker_count` | `size_t` | `0` | Number of asynchronous workers. `0` uses `max_connections`; values above it are clamped. Workers start lazily on the first async submission. |
@@ -78,12 +78,12 @@ Without a pool, under high concurrency (e.g., hundreds of concurrent API request
 Even if an exception is thrown inside the block, C++ stack unwinding guarantees that the connection is cleanly returned to the pool without leaking.
 
 ### 4.2 Dynamic Sizing & Thread Synchronization
-- **Idle Reuse**: If an idle connection is available in `idle_connections_`, `acquire()` returns it immediately with sub-microsecond latency.
+- **Idle Reuse**: If an idle connection is available in `idle_connections_`, `acquire()` returns it immediately without opening a new connection.
 - **Dynamic Expansion**: If all idle connections are leased but `total_connections_ < max_connections`, a new connection is spawned on-demand.
 - **Wait with Condition Variable**: If all `max_connections` are currently active, acquiring threads safely sleep on `std::condition_variable` until another thread releases a connection or the timeout expires.
 
-### 4.3 Health Check & Auto-Recovery
-Before returning a connection to a caller, the pool validates `conn->is_open()`. If a connection was dropped due to a server restart or network interruption, it is discarded and replaced with a healthy instance automatically.
+### 4.3 Health Check on Return
+The pool validates `conn->is_open()` when a connection is returned through `PooledConnection`. A connection that is closed on return is discarded and removed from the total count; it is not replaced immediately. `acquire()` pops an idle connection without re-validating it, and there is no ping, idle reaper, or minimum-size replenishment. A connection that dies while idle can therefore be leased to a caller, and new connections are created only on demand while the total remains below `max_connections`.
 
 ### 4.4 Asynchronous Submission
 `ConnectionPool<Backend>::submit()` runs a complete callback on a bounded worker executor. The worker acquires one exclusive connection lease, creates a local `DbContext`, invokes the callback, and returns the lease through RAII when the callback finishes. See [`asynchronous_operations.md`](asynchronous_operations.md) for the complete contract and examples.
@@ -122,12 +122,14 @@ inline const auto users_table = table<User>(
 int main() {
     // 1. Configure pool
     PoolConfig config;
-    config.min_connections = 2;               // Keep 2 pre-warmed idle connections
+    config.min_connections = 2;               // Create 2 idle connections at startup
     config.max_connections = 8;               // Scale up to 8 concurrent connections
     config.acquire_timeout = std::chrono::seconds(3); // 3-second timeout
 
-    // 2. Instantiate the pool (works with sqlite, postgres, mssql, mysql)
-    auto pool = ConnectionPool<mysql>::create("MySQLtestdb", config);
+    // 2. Instantiate the pool (works with sqlite, postgres, mssql, mysql, oracle, informix)
+    auto pool = ConnectionPool<mysql>::create(
+        "host=127.0.0.1;port=3306;database=cppdb;user=cppdb;password=cppdb_password",
+        config);
 
     // 3. Initialize schema using a leased connection
     {
@@ -166,7 +168,7 @@ int main() {
     // 6. Inspect pool metrics
     std::cout << "Active: " << pool->active_count() 
               << ", Idle: " << pool->idle_count() 
-              << ", Total: " << pool->total_count() << "\n";
+              << ", Total: " << pool->size() << "\n";
 
     return 0;
 }

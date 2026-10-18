@@ -15,27 +15,29 @@
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
 │             QueryBuilder & SetOp / Joined Builder           │
-│   .where(...) .order_by(...) .join(...).on(...) .with_cte() │
+│   .where(...) .order_by(...) .with_cte()                    │
+│   .join(...).on(...)  (joined builders have no with_cte)    │
 └──────────────────────────────┬──────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
 │                       SqlGenerator                          │
 │               Translates AST to Parameterized SQL           │
-└────────┬──────────────┬──────────────┬──────────────┬───────┘
-         │              │              │              │
-    ┌────▼────┐    ┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐
-    │ SQLite  │    │PostgreSQL│   │  MSSQL   │   │  MySQL / │
-    │ Dialect │    │ Dialect  │   │ Dialect  │   │ MariaDB  │
-    └────┬────┘    └────┬─────┘   └────┬─────┘   └────┬─────┘
-         │              │              │              │
-┌────────▼──────────────▼──────────────▼──────────────▼───────┐
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
+│ SQLite · PostgreSQL · MSSQL · MySQL/MariaDB · Oracle ·      │
+│ Informix                                                     │
+│                    Dialect Layer                             │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
 │                       Driver Layer                          │
 │          IConnection / IPreparedStatement / IDataReader     │
 └──────────────────────────────┬──────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
 │                       RowMapper                             │
-│     Direct struct materialization via compile-time reflection│
+│          Positional field mapping via member pointers        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,17 +46,17 @@
 ## 1. Core Layers
 
 ### 1.1 Compile-Time Schema Mapping
-- **`ColumnDef<Entity, FieldType>`**: Holds member pointers (`&User::id`) and constraint tags (`primary_key`, `auto_increment`, `not_null`, `unique_col`).
-- **`TableDef<Entity, ColumnDefs...>`**: Encapsulates table name and a compile-time `std::tuple` of columns. Provides column indexing via string (`table["col_name"]`).
+- **`ColumnDef<Entity, FieldType>`**: Holds a member pointer (`&User::id`) and four boolean flags (`is_primary_key`, `is_auto_increment`, `is_not_null`, `is_unique`) set by the `primary_key`, `auto_increment`, `not_null`, and `unique_col` factory tags.
+- **`TableDef<Entity, ColumnDefs...>`**: Encapsulates a non-owning table name and a compile-time `std::tuple` of columns; column names are also non-owning `std::string_view`s. `table["col_name"]` builds a `ColumnHandle` from the supplied strings; it performs no schema lookup or validation of the name.
 - **`SqlType` & Type Traits**: Maps C++ fundamental types and `std::optional<T>` to database types with zero runtime overhead.
 
 ### 1.2 Expression Tree AST Engine
-Instead of building SQL strings directly, C++ operators (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) instantiate lightweight, immutable AST nodes (`ExprNode`).
-Nodes support:
+Instead of building SQL strings directly, C++ operators (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) build an `ExprNode` variant. The tree is treated as immutable by convention but is not enforced: `Expr::node` is public and assignable, and composite nodes hold mutable `std::shared_ptr` targets.
+Nodes include:
 - Column references (`ColumnRef`)
-- Literal constants (`SqlValue` / `BoundValue`)
+- Literals (`Literal`, holding a `SqlValue`) and prepared-statement placeholders (`ParamPlaceholder`)
 - Binary comparisons and logical gates (`BinaryExpr`, `LogicExpr`)
-- Unary predicates (`IsNullExpr`, `IsNotNullExpr`, `NotExpr`)
+- Unary predicates (`UnaryExpr` with `UnaryOp::Not`, `IsNull`, or `IsNotNull`)
 - Pattern matching (`LikeExpr`)
 - Range testing (`BetweenExpr`)
 - Set inclusion (`InListExpr`, `InSubqueryExpr`)
@@ -65,14 +67,14 @@ Nodes support:
 
 ### 1.3 Dialect Abstraction & SQL Generator
 - **`ISqlDialect`**: Encapsulates database-specific syntax differences:
-  - Identifier quoting (`"table"` for SQLite/Postgres vs `[table]` for MSSQL vs `` `table` `` for MySQL)
-  - Parameter placeholders (`?` vs `$1` vs `@p1`)
-  - Auto-increment identity generation (`AUTOINCREMENT`, `SERIAL`, `IDENTITY(1,1)`, `AUTO_INCREMENT`)
-  - Primary key retrieval (`last_insert_rowid()`, `RETURNING id`, `OUTPUT INSERTED.id`, `LAST_INSERT_ID()`)
-  - Pagination (`LIMIT...OFFSET` vs `OFFSET...FETCH NEXT`)
-  - Upsert syntax (`INSERT ON CONFLICT DO UPDATE` vs `MERGE INTO` vs `ON DUPLICATE KEY UPDATE`)
-  - Date & time functions (`strftime`, `EXTRACT`, `DATEADD`, `DATE_ADD`)
-- **`SqlGenerator`**: Walks the expression AST using `std::visit` and produces parameterized SQL queries with separate bound value vectors, preventing SQL injection vulnerabilities.
+  - Identifier quoting (`"table"` for SQLite, PostgreSQL, Oracle, and Informix; `[table]` for MSSQL; and `` `table` `` for MySQL)
+  - Parameter placeholders: every dialect generator emits `?`. The PostgreSQL driver rewrites `?` to `$n` for prepared statements; no dialect emits `@p1`.
+  - Auto-increment identity generation (`INTEGER PRIMARY KEY AUTOINCREMENT`, `BIGSERIAL PRIMARY KEY`, `INT IDENTITY(1,1) PRIMARY KEY`, `INT AUTO_INCREMENT PRIMARY KEY`, Oracle `GENERATED BY DEFAULT ON NULL AS IDENTITY`, and Informix `SERIAL PRIMARY KEY`)
+  - Primary key retrieval (`RETURNING` for SQLite and PostgreSQL, `OUTPUT INSERTED` for MSSQL, `LAST_INSERT_ID()` for MySQL, `NVL(MAX(pk), 0)` for Oracle, and `DBINFO('sqlca.sqlerrd1')` for Informix; SQLite falls back to `last_insert_rowid()` when `RETURNING` is unavailable)
+  - Pagination (`LIMIT...OFFSET`, `OFFSET...FETCH NEXT`, and Informix `SKIP n FIRST m`)
+  - Upsert syntax (`INSERT ... ON CONFLICT DO UPDATE`, `MERGE INTO` for MSSQL and Oracle, and `ON DUPLICATE KEY UPDATE`)
+  - Date & time functions (`strftime`, `EXTRACT`, `DATEADD`, `DATE_ADD`, and dialect-specific current-date/timestamp expressions)
+- **`SqlGenerator`**: Walks the expression AST using `std::visit` and produces SQL with separate bound values. Parameter values are protected by binding; identifiers are quoted, but `JoinClause::join_type` is concatenated verbatim, so generator inputs must come from trusted API construction.
 
 ### 1.4 Database Driver Abstraction
 - **`IConnection`**: Abstract connection interface managing transactions and statement preparation.
@@ -80,13 +82,13 @@ Nodes support:
 - **`IDataReader`**: Cursor-based result reader providing type-safe column extraction (`get_string`, `get_int64`, `get_double`, `is_null`, etc.).
 
 ### 1.5 Row Mapper
-- **`RowMapper<Entity, ColumnDefs...>`**: Uses C++20 template meta-programming and `std::index_sequence` to unpack cursor columns directly into user struct fields by member pointer without runtime overhead, allocations, or dynamic dispatch.
-- **Tuple & Optional Mapping**: Automatically unpacks `std::pair<E1, E2>`, `std::pair<E1, std::optional<E2>>`, and `std::tuple<E1, E2, E3>` for multi-table and left outer joins.
+- **`RowMapper<Entity, ColumnDefs...>`**: Uses C++20 template meta-programming and `std::index_sequence` to assign cursor columns to user struct fields by member pointer. Mapping is positional, calls virtual `IDataReader` accessors per column, and copies string and blob values into the entity (a `std::string_view` field instead borrows the driver's buffer).
+- **Tuple & Optional Mapping**: Join builders, not `RowMapper`, assemble `std::pair<E1, E2>`, `std::pair<E1, std::optional<E2>>`, and `std::tuple<E1, E2, E3>` results; left-joined entities are wrapped in `std::optional`.
 
 ### 1.6 Thread-Safe Connection Pool
-- **`ConnectionPool<Backend>`**: Manages a thread-safe pool of live database connections with RAII leasing (`PooledConnection`), acquisition timeouts, idle recycling, and connection health checks.
+- **`ConnectionPool<Backend>`**: Manages a thread-safe pool with RAII leasing (`PooledConnection`) and acquisition timeouts. Released connections are checked with `is_open()` and discarded if closed, but idle connections are not revalidated when acquired, and `min_connections` is filled only during initialization. There is no background reaper or minimum-size replenishment.
 
 ### 1.7 Pool-Scoped Asynchronous Dispatch
 Asynchronous work is layered above the existing blocking driver interfaces. `ConnectionPool<Backend>::submit()` places a callback on a bounded, lazily started worker executor. Each worker acquires one exclusive `PooledConnection`, constructs a local `DbContext`, and runs the callback using the unchanged synchronous query, batch, and transaction APIs.
 
-The callback result is delivered through `std::future<T>`. A lease remains valid only for the duration of the callback, so connection-bound objects and lazy streams must not be returned from it. Queued work can be rejected when the queue is full or cancelled with a stop token; callbacks that have started are allowed to finish. This design supports all current blocking drivers without adding backend-specific asynchronous interfaces.
+The callback result is delivered through `std::future<T>`. A lease remains valid only for the duration of the callback, so connection-bound objects and lazy streams must not be returned from it. Queued work is rejected when the bounded queue is full. A stop token is checked when a worker dequeues a job and again immediately before the callback is invoked; a queued job is not removed early, and callbacks that have started are allowed to finish. This design supports all current blocking drivers without adding backend-specific asynchronous interfaces.

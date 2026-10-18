@@ -131,9 +131,9 @@ auto distinct_users = db.from(users_table)
 
 | Method | Return Type | Description |
 |---|---|---|
-| `.to_list()` | `ChunkedList<Entity, 64>` | Executes query and returns all matching entities zero-copy |
-| `.stream()` | `EntityStream<Entity>` | Returns lazy C++20 input range for zero-heap streaming |
-| `.first()` | `std::optional<Entity>` | Executes query with `LIMIT 1` and returns the first entity, or `std::nullopt` |
+| `.to_list()` | `ChunkedList<Entity, 64>` | Executes query and returns all matching entities; entities are constructed in place, with string/blob values copied |
+| `.stream()` | `EntityStream<Entity, RowMapper<Entity, ColumnDefs...>>` | Returns a move-only, single-pass lazy stream over mapped entities; one optional entity is held at a time |
+| `.first()` | `std::optional<Entity>` | Applies a row limit of 1 and returns the first entity, or `std::nullopt` |
 | `.count()` | `size_t` | Executes `SELECT COUNT(*)` |
 | `.count_distinct(col)` | `size_t` | Executes `SELECT COUNT(DISTINCT col)` |
 | `.sum(col)` | `std::optional<double>` | Executes `SELECT SUM(col)` |
@@ -145,6 +145,8 @@ auto distinct_users = db.from(users_table)
 | `.prepare<Params...>()` | `PreparedQuery<Entity, ...>` | Compiles query once to a reusable prepared statement |
 | `.prepare_update({...})` | `PreparedCommand<Params...>` | Compiles UPDATE statement once for reuse with parameters |
 | `.prepare_remove()` | `PreparedCommand<Params...>` | Compiles DELETE statement once for reuse with parameters |
+
+`stream()` supports range-based `for`, but it is not a `std::ranges::input_range` and cannot be composed with `std::views`.
 
 ---
 

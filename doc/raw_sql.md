@@ -128,7 +128,7 @@ while (reader->next()) {
 | `uint64_t` | `stmt->bind(col, uint64_t(val))` | `reader->get_uint64(col)` | 64-bit unsigned integer |
 | `double` / `float` | `stmt->bind(col, double(val))` | `reader->get_double(col)` | IEEE floating point |
 | `std::string` | `stmt->bind(col, std::string(val))` | `reader->get_string(col)` | UTF-8 encoded string |
-| `std::string_view` | `stmt->bind(col, std::string(val))` | `reader->get_string_view(col)` | String view |
+| `std::string_view` | `stmt->bind(col, std::string(val))` | `reader->get_string_view(col)` | Borrowed view; valid only until the next row/fetch or reader finalization |
 | `std::wstring` | `stmt->bind(col, std::wstring(val))` | `reader->get_wstring(col)` | UTF-16 Unicode string |
 | `bool` | `stmt->bind(col, bool(val))` | `reader->get_bool(col)` | Boolean flag |
 | `std::vector<uint8_t>` | `stmt->bind(col, blob_bytes)` | `reader->get_blob(col)` | Binary large object (BLOB) |
@@ -142,9 +142,9 @@ while (reader->next()) {
 
 ---
 
-## 5. Lazy C++20 Range Streaming (`conn->stream`)
+## 5. Lazy Streaming (`conn->stream`)
 
-For large result sets, [`conn->stream()`](../include/cpplinq/driver/connection.h) returns a single-pass C++20 input range ([`RowStream`](../include/cpplinq/core/streaming.h)) over [`RowRecord`](../include/cpplinq/core/streaming.h):
+For large result sets, [`conn->stream()`](../include/cpplinq/driver/connection.h) returns a move-only, single-pass range ([`RowStream`](../include/cpplinq/core/streaming.h)) over [`RowRecord`](../include/cpplinq/core/streaming.h). It supports range-based `for`; it does not satisfy `std::ranges::input_range` and cannot be composed with `std::views`:
 
 ```cpp
 #include <cpplinq/core/streaming.h>
@@ -164,6 +164,8 @@ for (const RowRecord& row : conn->stream("SELECT id, name, age FROM users WHERE 
 - `row.column_count()` — Returns the number of columns in the row.
 - `row.is_null(col)` — Checks if the column value is `NULL`.
 - `row.get_int64(col)` / `row.get_double(col)` / `row.get_string(col)` / `row.get_bool(col)` / `row.get_blob(col)` — Safe type casting with fallback defaults.
+
+`get_string_view(col)` returns a non-owning view into driver storage. It remains valid only while the reader owns the current row, typically until the next `next()` call or until the statement/reader is finalized. Use `get_string(col)` when the value must outlive the current row.
 
 ---
 

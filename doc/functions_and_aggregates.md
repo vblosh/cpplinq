@@ -1,6 +1,6 @@
 # SQL Functions, Aggregates & Window Functions
 
-`cpplinq` provides cross-dialect support for standard SQL scalar functions, date/time operations, aggregate expressions with `GROUP BY` and `HAVING`, and window functions.
+`cpplinq` provides cross-dialect support for standard SQL scalar functions, date/time operations, aggregate queries (`COUNT`, `SUM`, `AVG`, `MIN`, and `MAX`), `GROUP BY` and `HAVING` clauses, and window functions.
 
 ---
 
@@ -26,13 +26,12 @@ round_val(orders_table["amount"]) == 150.0
 
 ## 2. Date & Time Functions
 
-`cpplinq` abstracts date extraction, arithmetic, and current timestamps across SQLite (`strftime`, `datetime`), PostgreSQL (`EXTRACT`, `interval`), and Microsoft SQL Server (`YEAR`, `MONTH`, `DAY`, `DATEADD`, `GETDATE`):
+`cpplinq` abstracts year/month/day extraction, day addition, and current date/timestamp expressions across the supported dialects. SQLite uses `strftime` for extraction and `date(...)` for day addition; the latter returns a date and drops any time component. PostgreSQL uses `EXTRACT` with an `interval`, MSSQL uses `YEAR`/`MONTH`/`DAY` and `DATEADD`, MySQL uses `YEAR`/`MONTH`/`DAY` and `DATE_ADD`, Oracle uses `TO_TIMESTAMP`-based expressions, and Informix uses `YEAR`/`MONTH`/`DAY` with `UNITS DAY`. The expression API exposes only year, month, and day extraction (via `.year()`, `.month()`, `.day()`, `extract_year`, `extract_month`, or `extract_day`).
 
 ```cpp
 // Current timestamp / date:
-now()
-current_date()
-current_timestamp()
+current_timestamp_val()
+current_date_val()
 
 // Date extraction (Year, Month, Day):
 auto aug_events = db.from(events_table)
@@ -46,9 +45,11 @@ auto day_events = db.from(events_table)
 
 // Date arithmetic:
 auto upcoming = db.from(events_table)
-                  .where(events_table["created_at"].add_days(7) >= now())
+                  .where(events_table["created_at"].add_days(7) >= current_timestamp_val())
                   .to_list();
 ```
+
+`current_timestamp_val()` and `current_date_val()` return `expr::Expr` values. There are no `now()`, `current_date()`, or `current_timestamp()` aliases.
 
 ---
 
@@ -66,10 +67,14 @@ auto total_budget     = db.from(employees_table).sum(employees_table["salary"]);
 ```
 
 ### 3.2 GROUP BY & HAVING
+
+`group_by()` and `having()` are available, but the expression API has no aggregate function builder. `ColumnHandle` has no `avg()`, and the aggregate terminals (`count()`, `avg()`, `sum()`, `min_val()`, and `max_val()`) execute separate queries and cannot be used in `having()`. Aggregate `HAVING` predicates therefore require constructing the expression AST manually or using raw SQL.
+
+`to_list()` always projects every mapped column. In the example below that includes the non-grouped `salary` and `id` columns, which strict dialects such as PostgreSQL reject. Use raw SQL to select only grouped or aggregate columns when an aggregate projection is required.
+
 ```cpp
 auto dept_groups = db.from(employees_table)
                      .group_by(employees_table["department"])
-                     .having(employees_table["salary"].avg() > 75000.0)
                      .order_by(employees_table["department"])
                      .to_list();
 ```

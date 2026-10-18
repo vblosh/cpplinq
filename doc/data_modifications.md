@@ -7,14 +7,18 @@
 ## 1. Inserting Data
 
 ### 1.1 Single Insert
-`insert()` returns the auto-increment primary key ID (using SQLite `last_insert_rowid()`, PostgreSQL `RETURNING id`, or MSSQL `OUTPUT INSERTED.id`):
+
+`insert()` returns the auto-increment primary key ID. SQLite and PostgreSQL use a `RETURNING` clause, SQL Server uses `OUTPUT INSERTED.<pk>`, and MySQL, Oracle, and Informix use a dialect-specific last-insert-ID query (Oracle uses `MAX(<pk>)` and Informix uses `DBINFO('sqlca.sqlerrd1')`):
 
 ```cpp
 int64_t new_id = db.insert(users_table, User{0, "Alice", "alice@example.com", 30});
 ```
 
 ### 1.2 Batch Insert (`insert_many`)
-Inserts a collection of entities inside an automatic transaction using driver-accelerated ODBC array bindings where supported:
+
+Inserts a collection of entities inside an automatic transaction. When the driver reports array-batch support, rows are sent through its array binding API in chunks of the requested size. Otherwise, `insert_many` falls back to a single reused prepared INSERT executed row by row in one transaction; `chunk_size` is ignored on that fallback path.
+
+`insert_many` accepts the entities by `const` reference and does not write generated IDs back into the vector. Auto-increment fields remain at their input values (the example below leaves them at `0`), so query the inserted rows or assign known primary keys before calling `update_many`.
 
 ```cpp
 std::vector<User> batch = {
@@ -23,7 +27,7 @@ std::vector<User> batch = {
     {0, "Dave",  "dave@example.com",  32}
 };
 
-// Insert in chunks of 50
+// Insert in chunks of 50 when array batching is supported
 db.insert_many(users_table, batch, 50);
 ```
 
@@ -32,17 +36,23 @@ db.insert_many(users_table, batch, 50);
 ## 2. Bulk & Batch Operations
 
 ### 2.1 Batch Update by Primary Key (`update_many`)
-Updates an array of entities matching their primary keys with chunking:
+
+Updates an array of entities by matching their primary-key fields. Array-capable drivers batch the updates in chunks of the requested size; the row-by-row fallback ignores `chunk_size` and reuses one prepared UPDATE for each entity inside a single transaction. The entities must contain the IDs to match, because `insert_many` does not populate them:
 
 ```cpp
-for (auto& u : batch) {
-    u.age += 1;
-}
-size_t updated_count = db.update_many(users_table, batch, 50);
+std::vector<User> updates = {
+    {1, "Bob",   "bob@example.com",   26},
+    {2, "Carol", "carol@example.com", 29},
+    {3, "Dave",  "dave@example.com",  33}
+};
+
+// The IDs must already identify existing rows.
+size_t updated_count = db.update_many(users_table, updates, 50);
 ```
 
 ### 2.2 Batch Delete by Primary Keys (`delete_many`)
-Deletes matching entities given a vector of primary keys in chunks:
+
+Deletes rows by primary key in chunks. It supports exactly one primary-key column: `delete_many` throws `DbException` when the table has no primary key or when the key is composite.
 
 ```cpp
 std::vector<int> user_ids = {1, 2, 3, 4, 5};
@@ -50,6 +60,7 @@ size_t deleted_count = db.delete_many(users_table, user_ids, 50);
 ```
 
 ### 2.3 Batch Upsert (`upsert_many`)
+
 Atomically upserts a batch of entities in a transaction:
 
 ```cpp
@@ -61,6 +72,7 @@ db.upsert_many(accounts_table, upsert_batch);
 ```
 
 ### 2.4 Fast Table Truncate (`truncate`)
+
 Clears all table rows quickly using `TRUNCATE TABLE` (with transparent `DELETE FROM` fallback):
 
 ```cpp
@@ -72,10 +84,15 @@ db.truncate(users_table);
 ## 3. Cross-Dialect UPSERT (`INSERT ON CONFLICT / MERGE`)
 
 Performs an atomic insert-or-update operation across databases:
+
 - **SQLite**: `INSERT INTO ... ON CONFLICT (cols) DO UPDATE SET ...`
 - **PostgreSQL**: `INSERT INTO ... ON CONFLICT (cols) DO UPDATE SET ...`
 - **Microsoft SQL Server**: `MERGE INTO ... USING (VALUES ...) ON ... WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...`
 - **MySQL / MariaDB**: `INSERT INTO ... VALUES (...) ON DUPLICATE KEY UPDATE ...`
+- **Oracle**: `MERGE INTO ... USING (SELECT ... FROM DUAL) ... WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...`
+- **Informix**: `MERGE INTO ... USING (SELECT ... FROM "informix".systables WHERE tabid = 1) ... WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...`
+
+`conflict_columns` defaults to the column marked `primary_key`. If the table has none and no explicit list is supplied, SQL Server throws `std::invalid_argument` and Oracle returns an empty statement; the other `ON CONFLICT`/`MERGE` dialects generate invalid SQL. Pass the conflict columns explicitly for tables without a primary key.
 
 ```cpp
 User user{1, "Alice Updated", "alice.new@example.com", 31};
@@ -94,6 +111,7 @@ db.upsert(
 ## 4. Updating & Removing via Query
 
 ### 4.1 Updating Data
+
 Execute parameterized `UPDATE` statements on matching rows:
 
 ```cpp
@@ -106,6 +124,7 @@ size_t updated = db.from(users_table)
 ```
 
 ### 4.2 Deleting Data
+
 Execute parameterized `DELETE` statements on matching rows:
 
 ```cpp
@@ -137,25 +156,30 @@ size_t deleted = db.from(users_table)
 
 ## 6. Thread-Safe Connection Pool
 
-`ConnectionPool<Backend>` provides robust connection leasing and recycling for multi-threaded applications:
+`ConnectionPool<Backend>` provides connection leasing and recycling for multi-threaded applications. `ConnectionPool<Backend>::create(...)` is the public factory and returns a `std::shared_ptr<ConnectionPool<Backend>>`; the constructor is private, so all pool operations go through the pointer:
 
 ```cpp
-#include <cpplinq/pool/connection_pool.h>
+#include <cpplinq/driver/connection_pool.h>
 
-// Create a connection pool with min=2, max=10 connections, and a 5-second acquisition timeout
-ConnectionPool<sqlite> pool(":memory:", 2, 10, std::chrono::seconds(5));
+PoolConfig config;
+config.min_connections = 2;
+config.max_connections = 10;
+config.acquire_timeout = std::chrono::seconds(5);
+
+auto pool = ConnectionPool<sqlite>::create("app.db", config);
 
 // In a worker thread:
 {
     // Lease connection with RAII guard:
-    auto conn = pool.acquire();
+    auto conn = pool->acquire();
 
     DbContext<sqlite> db(*conn);
+    db.ensure_table(users_table);
     auto users = db.from(users_table).to_list();
 
     // conn is automatically returned to the pool when it goes out of scope!
 }
 
 // Pool Metrics:
-std::cout << "Active: " << pool.active_count() << ", Idle: " << pool.idle_count() << "\n";
+std::cout << "Active: " << pool->active_count() << ", Idle: " << pool->idle_count() << "\n";
 ```

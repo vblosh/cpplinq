@@ -1,6 +1,8 @@
 # Database Dialects, Drivers & CI Configuration
 
-`cpplinq` provides uniform cross-database abstractions across SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, and IBM Informix.
+`cpplinq` provides cross-database abstractions across SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, and IBM Informix.
+
+Backends are selected at build time with the `CPPLINQ_ENABLE_*` CMake options, which all default to `ON`. PostgreSQL links against libpq, MySQL / MariaDB links against libmariadb or libmysqlclient, and MSSQL, Oracle, and Informix use ODBC. Turning a backend off removes its driver and connection-factory specialization from the library; `cpplinq::connect<Backend>` only links when that backend is enabled.
 
 ---
 
@@ -9,7 +11,8 @@
 ### 1.1 SQLite
 - **Backend Tag**: `cpplinq::sqlite`
 - **Connection String**: File path (e.g. `"app.db"`) or in-memory (`":memory:"`).
-- **Features**: Embedded WAL mode, thread-safe access, automatic schema generation (`AUTOINCREMENT`).
+- **Features**: WAL mode is requested on open, and automatic schema generation (`AUTOINCREMENT`). WAL has no effect on `:memory:`.
+- **Concurrency**: `SqliteConnection` does not add a mutex and does not request `SQLITE_OPEN_FULLMUTEX`. Thread safety of one connection therefore depends on how SQLite was compiled; serialize access yourself or use `ConnectionPool`, which serializes pool operations.
 
 ```cpp
 auto db = cpplinq::connect<cpplinq::sqlite>("test.db");
@@ -17,26 +20,28 @@ auto db = cpplinq::connect<cpplinq::sqlite>("test.db");
 
 ### 1.2 PostgreSQL
 - **Backend Tag**: `cpplinq::postgres`
-- **Connection String**: ODBC DSN (e.g. `"PostgreSQL35W"` or standard connection strings).
-- **Features**: Dollar-sign parameter binding (`$1`, `$2`), `RETURNING id`, `INTERVAL` date arithmetic, `EXTRACT` functions.
+- **Connection String**: Native libpq connection string: a `postgresql://` / `postgres://` URI or `key=value` parameters such as `host`, `port`, `dbname`, `user`, `password`, and `sslmode`. An ODBC-style `key=value;` string is also parsed for `Server`, `Port`, `Database`, `Uid`, `Pwd`, and `SSLMode`; unknown keys such as `Driver` are ignored. A bare DSN (for example `"PostgreSQL35W"`) is not resolved: the driver falls back to `CPPLINQ_POSTGRES_LIBPQ`, then to localhost defaults. The `(ODBC)` text in the `CPPLINQ_ENABLE_POSTGRES` CMake option label is stale.
+- **Features**: The SQL builder emits `?` placeholders; the native prepared-statement driver rewrites them to `$1`, `$2`, and so on. Direct `execute()` and `execute_query_direct()` calls send their SQL unchanged. Also supports `RETURNING id`, `INTERVAL` date arithmetic, and `EXTRACT` functions.
 
 ```cpp
-auto db = cpplinq::connect<cpplinq::postgres>("Driver={PostgreSQL Unicode};Server=localhost;Port=5432;Database=cppdb;Uid=cppdb;Pwd=password;");
+auto db = cpplinq::connect<cpplinq::postgres>(
+    "host=localhost port=5432 dbname=cppdb user=cppdb password=secret");
 ```
 
 ### 1.3 MySQL / MariaDB
 - **Backend Tag**: `cpplinq::mysql` (or alias `cpplinq::mariadb`)
-- **Connection String**: ODBC connection string or DSN (e.g. `"MySQLDSN"` or `"Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Port=3306;Database=cppdb;Uid=root;Pwd=secret;"`).
+- **Connection String**: Native libmariadb / libmysqlclient connection string: `key=value;` parameters such as `host`, `port`, `database`, `user`, and `password`, or a `mysql://` / `mariadb://` URI. A bare DSN (for example `"MySQLDSN"`) is ignored; the driver falls back to `CPPLINQ_MYSQL_CLIENT`, then to `127.0.0.1:3306`, user `cppdb`. `Driver=` is ignored. `CPPLINQ_MYSQL_ODBC` is read only as a fallback environment value and is parsed with the same native syntax.
 - **Features**: Backtick identifier quoting (`` `table`.`column` ``), `ON DUPLICATE KEY UPDATE` upsert syntax, `LAST_INSERT_ID()` auto-increment retrieval, `DATE_ADD` with `INTERVAL`.
 
 ```cpp
-auto db = cpplinq::connect<cpplinq::mysql>("MySQLDSN");
+auto db = cpplinq::connect<cpplinq::mysql>(
+    "mysql://cppdb:secret@localhost:3306/cppdb");
 ```
 
 ### 1.4 Microsoft SQL Server
 - **Backend Tag**: `cpplinq::mssql` (or alias `cpplinq::sqlserver`)
 - **Connection String**: ODBC connection string or DSN (e.g. `"MSSQLLocalDB"` or `"Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;Trusted_Connection=yes;"`).
-- **Features**: Bracket identifier quoting (`[table].[column]`), `OUTPUT INSERTED.id` primary key retrieval, `OFFSET...FETCH NEXT` pagination, `MERGE INTO` UPSERT syntax.
+- **Features**: Bracket identifier quoting (`[table].[column]`), `OUTPUT INSERTED.id` primary key retrieval, `OFFSET...FETCH NEXT` pagination, `MERGE INTO` UPSERT syntax. `limit(0)` is rejected with `std::invalid_argument` because SQL Server requires a positive `FETCH NEXT` row count.
 
 ```cpp
 auto db = cpplinq::connect<cpplinq::mssql>("MSSQLLocalDB");
@@ -46,6 +51,7 @@ auto db = cpplinq::connect<cpplinq::mssql>("MSSQLLocalDB");
 - **Backend Tag**: `cpplinq::oracle`
 - **Connection String**: ODBC connection string or DSN (e.g. `"OracleDSN"` or `"Driver={Oracle in OraDB23Home1};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"`).
 - **Features**: Double-quote identifier quoting (`"table"."column"`), `NUMBER GENERATED BY DEFAULT ON NULL AS IDENTITY PRIMARY KEY` column definition, ANSI `OFFSET...FETCH NEXT...ROWS ONLY` pagination, `MERGE INTO ... USING (SELECT ... FROM DUAL)` upsert syntax, `NUMTODSINTERVAL` date arithmetic, `EXTRACT` date functions.
+- **Date-helper limitation**: `EXTRACT` and day addition wrap the expression in `TO_TIMESTAMP(SUBSTR(expr, 1, 19), 'YYYY-MM-DD HH24:MI:SS')`, so they assume the value is timestamp text in that format.
 
 ```cpp
 auto db = cpplinq::connect<cpplinq::oracle>("OracleDSN");
@@ -62,25 +68,28 @@ auto db = cpplinq::connect<cpplinq::informix>("InformixDSN");
 
 ---
 
-## 2. Environment Variables & Fallback Discovery for Integration Tests
+## 2. Environment Variables for Integration Tests
 
-The integration test suites automatically discover connections via environment variables with fallback candidates:
+The integration test suites do not discover databases automatically. Each suite reads the variables below, and skips with `[SKIPPED] <reason>` when none are set ([integration_test_suite.h:130](/home/slava/projects/cpplinq/tests/integration_test_suite.h:130)). The helper scripts set defaults and, on Linux, `scripts/setup_odbc_dsn.sh` creates the DSNs referenced by those defaults. Some scripts also choose from local fallback names, but that discovery happens in the scripts, not in the tests.
 
-| Environment Variable | Target Database | Default Fallbacks Checked | Example Values |
+| Environment Variable | Target Database | Test behavior | Example Values |
 |---|---|---|---|
-| `CPPLINQ_SQLITE_ODBC` / `CPPDB_SQLITE_ODBC` | SQLite | `SQLite3`, `/tmp/cppdb.sqlite` | `"SQLite3"` or `"Driver={SQLite3};Database=/tmp/cppdb.sqlite;"` |
-| `CPPLINQ_POSTGRES_ODBC` / `CPPDB_POSTGRES_ODBC` | PostgreSQL | `PostgreSQL35W`, `PostgreSQL Unicode`, localhost:5432 | `"PostgreSQL35W"` or `"Driver={PostgreSQL Unicode};Server=localhost;Database=cppdb;Uid=postgres;Pwd=secret;"` |
-| `CPPLINQ_MYSQL_ODBC` / `CPPDB_MYSQL_ODBC` | MySQL / MariaDB | `MySQLtestdb`, `MySQLDSN`, localhost:3306 | `"MySQLtestdb"` or `"Driver={MySQL ODBC 8.0 Unicode Driver};Server=localhost;Database=cppdb;Uid=root;Pwd=secret;"` |
-| `CPPLINQ_MSSQL_ODBC` / `CPPDB_MSSQL_ODBC` | Microsoft SQL Server | `(localdb)\MSSQLLocalDB`, `MSQLLocalDB`, `MSSQLLocalDB` | `"MSSQLLocalDB"` or `"Driver={ODBC Driver 18 for SQL Server};Server=(localdb)\MSSQLLocalDB;Database=master;Trusted_Connection=yes;"` |
-| `CPPLINQ_ORACLE_ODBC` / `CPPDB_ORACLE_ODBC` | Oracle Database | `OracleDSN`, `Oracle in OraDB23Home1`, 127.0.0.1:1521 | `"OracleDSN"` or `"Driver={Oracle in OraDB23Home1};Dbq=127.0.0.1:1521/FREEPDB1;Uid=cppdb;Pwd=cppdb_password;"` |
-| `CPPLINQ_INFORMIX_ODBC` / `CPPDB_INFORMIX_ODBC` | IBM Informix | `InformixDSN`, `informix_odbc`, localhost:9088 | `"InformixDSN"` or `"Driver={IBM INFORMIX ODBC DRIVER (64-bit)};Server=informix;Database=testdb;Host=localhost;Service=9088;Uid=informix;Pwd=in4mix;"` |
+| `CPPLINQ_POSTGRES_LIBPQ` (preferred), `CPPLINQ_POSTGRES_ODBC` | PostgreSQL | Uses libpq value first; uses ODBC value only if libpq is unset. Skips if both are unset. | `"host=localhost port=5432 dbname=cppdb user=cppdb password=secret"` |
+| `CPPLINQ_MYSQL_CLIENT` (preferred), `CPPLINQ_MYSQL_ODBC` | MySQL / MariaDB | Uses the client value first; both are parsed as native connection strings. Skips if both are unset. | `"mysql://cppdb:secret@localhost:3306/cppdb"` |
+| `CPPLINQ_MSSQL_ODBC` | Microsoft SQL Server | Required; skips when unset. | `"Driver={ODBC Driver 18 for SQL Server};Server=(localdb)\MSSQLLocalDB;Database=master;Trusted_Connection=yes;"` |
+| `CPPLINQ_ORACLE_ODBC`, `CPPDB_ORACLE_ODBC` | Oracle Database | `CPPLINQ_ORACLE_ODBC` is preferred; `CPPDB_ORACLE_ODBC` is the alias. | `"OracleDSN"` or a full ODBC connection string |
+| `CPPLINQ_INFORMIX_ODBC`, `CPPDB_INFORMIX_ODBC` | IBM Informix | `CPPLINQ_INFORMIX_ODBC` is preferred; `CPPDB_INFORMIX_ODBC` is the alias. | `"InformixDSN"` or a full ODBC connection string |
+| none | SQLite | The integration suite always uses `:memory:` and ignores `CPPLINQ_SQLITE_ODBC` / `CPPDB_SQLITE_ODBC`, including the value set in CI. | n/a |
 
-If neither the environment variable nor any local fallback connection can be reached, the test suite outputs `[SKIPPED] <reason>` and calls `GTEST_SKIP()`.
+The `CPPDB_*` aliases are read only by the Oracle and Informix integration suites. PostgreSQL, MySQL, and MSSQL do not read `CPPDB_*` aliases.
 
 ---
 
 ## 3. GitHub Actions CI Configuration
 
-The GitHub Actions workflow runs testing across Linux and Windows with sanitizers (ASan & UBSan) and live database containers:
+The workflow has two jobs:
 
-```
+- **Linux matrix**: a Clang Release build and a GCC Debug build with AddressSanitizer, UndefinedBehaviorSanitizer, and LeakSanitizer. Both use PostgreSQL 16, MySQL 8.0, and SQL Server 2022 service containers. The configure command passes SQLite, PostgreSQL, MSSQL, and MySQL; Oracle and Informix remain enabled by their `ON` defaults.
+- **Windows**: an MSVC Release build that starts SQL Server LocalDB and runs without sanitizers or database containers. The configure command passes SQLite, MSSQL, and MySQL; PostgreSQL, Oracle, and Informix remain enabled by their `ON` defaults.
+
+Neither job provides Oracle or Informix database services, so those integration suites skip unless connection variables point to externally provisioned databases. The Linux job installs the ODBC drivers and client libraries used by its three live-database backends, including `msodbcsql18`, `libpq-dev`, and `libmariadb-dev`.

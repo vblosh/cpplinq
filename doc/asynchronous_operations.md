@@ -1,6 +1,6 @@
 # Asynchronous Operations
 
-`cpplinq` provides pool-scoped asynchronous submission for applications that need to keep their calling thread responsive while using the existing blocking SQLite and ODBC drivers. `ConnectionPool<Backend>::submit()` returns a standard `std::future` and runs the complete callback on a bounded worker executor.
+`cpplinq` provides pool-scoped asynchronous submission for applications that need to keep their calling thread responsive while reusing the existing blocking driver APIs. The pool and executor are backend-generic and work with SQLite, native PostgreSQL (libpq), native MySQL/MariaDB, and the ODBC-backed SQL Server, Oracle, and Informix drivers. `ConnectionPool<Backend>::submit()` returns a standard `std::future` and runs the complete callback on a bounded worker executor.
 
 ## 1. Basic Usage
 
@@ -66,7 +66,7 @@ Submission never waits for queue capacity. When the queue is full, `submit()` re
 
 ## 5. Queued Cancellation
 
-Pass a `std::stop_token` to cancel work before its callback starts:
+Pass a `std::stop_token` to request cancellation before a queued callback starts. The token is checked before connection acquisition and again immediately before callback invocation. This is a best-effort race: if a worker has already passed both checks, the callback runs to completion and `get()` returns its normal result.
 
 ```cpp
 std::stop_source stop_source;
@@ -79,11 +79,11 @@ stop_source.request_stop();
 try {
     future.get();
 } catch (const OperationCancelled&) {
-    // The callback was not invoked.
+    // A cancellation check observed the token before the callback was invoked.
 }
 ```
 
-Cancellation is checked before connection acquisition and immediately before callback invocation. A callback that has already started is allowed to finish. Existing `ExecutionOptions` and stream-level cancellation can still be used inside a callback when the operation itself needs driver cancellation.
+Cancellation is checked before connection acquisition and immediately before callback invocation, so `OperationCancelled` is produced only when one of those checks observes the token. Cancellation after the final check does not stop a callback that has already started. Existing `ExecutionOptions` and stream-level cancellation can still be used inside a callback when the operation itself needs driver cancellation.
 
 ## 6. Lifetime and Transactions
 
@@ -102,6 +102,8 @@ Do not return `DbContext`, `QueryBuilder`, `PreparedQuery`, `PreparedCommand`, `
 
 ## 7. Shutdown
 
-`pool->close()` stops accepting submissions, cancels queued jobs with `OperationCancelled`, waits for already-running callbacks to finish, and closes idle connections. A callback that calls `close()` on its own pool is supported; the worker does not attempt to join itself. Outstanding futures remain the source of their callback result or shutdown exception.
+`pool->close()` stops accepting submissions, cancels queued jobs with `OperationCancelled`, and closes idle connections. When called from another thread, it joins the workers, so it waits for already-running callbacks to finish. When called from inside a callback on that same pool, the current worker is detached instead of joined; `close()` returns without waiting for that callback. A callback that calls `close()` on its own pool is therefore supported, but it cannot wait for itself to finish. Outstanding futures remain the source of their callback result or shutdown exception.
+
+Do not call `submit()` from a running callback while another thread is closing the same pool. `close()` holds the submission mutex while joining workers, so that sequence can deadlock.
 
 The existing synchronous APIs on `DbContext`, `QueryBuilder`, and `PooledConnection` are unchanged. Native driver asynchronous interfaces and asynchronous streaming are outside this layer; current blocking drivers execute on pool workers.

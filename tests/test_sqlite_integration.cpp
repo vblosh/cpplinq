@@ -343,5 +343,138 @@ TEST(SqliteReviewFixesTest, OffsetWithoutLimitExecutesValidSql) {
     EXPECT_FALSE(reader->next());
 }
 
+namespace {
+
+// Build a TableDef whose name matches a CTE, reusing the entity and columns.
+template <typename Entity, typename... Cols>
+auto renamed_table(std::string_view name, const TableDef<Entity, Cols...>& src) {
+    return std::apply(
+        [name](auto... cols) { return table<Entity>(name, cols...); },
+        src.columns);
+}
+
+} // namespace
+
+TEST(SqliteReviewFixesTest, FluentCteQueryExecutes) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "Alice", {}, 30});
+    db.insert(users_table, User{0, "Bob", {}, 17});
+    db.insert(users_table, User{0, "Cara", {}, 42});
+
+    auto adults = db.from(users_table).where(users_table["age"] >= 18);
+    auto adult_users = renamed_table("adult_users", users_table);
+
+    auto result = db.from(adult_users)
+                    .with_cte("adult_users", adults)
+                    .order_by(adult_users["age"])
+                    .to_list();
+
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[0].name, "Alice");
+    EXPECT_EQ(result[1].name, "Cara");
+}
+
+TEST(SqliteReviewFixesTest, FluentCteDropsSourceLimitAndOrder) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    for (int i = 1; i <= 5; ++i) {
+        db.insert(users_table, User{0, "User" + std::to_string(i), {}, 20 + i});
+    }
+
+    // LIMIT 1 on the CTE source is not preserved by SubqueryExpr, so the CTE
+    // materializes all five rows.
+    auto limited = db.from(users_table)
+                     .order_by_desc(users_table["age"])
+                     .limit(1);
+
+    auto all_users = std::apply(
+        [](auto... cols) { return table<User>("all_users", cols...); },
+        users_table.columns);
+
+    auto result = db.from(all_users)
+                    .with_cte("all_users", limited)
+                    .to_list();
+
+    EXPECT_EQ(result.size(), 5u);
+}
+
+TEST(SqliteReviewFixesTest, FluentMultipleCtesBindParametersInOrder) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.ensure_table(orders_table);
+    int alice = static_cast<int>(db.insert(users_table, User{0, "Alice", {}, 30}));
+    int bob = static_cast<int>(db.insert(users_table, User{0, "Bob", {}, 40}));
+    db.insert(orders_table, Order{0, alice, 150.0});
+    db.insert(orders_table, Order{0, bob, 50.0});
+
+    auto q1 = db.from(users_table).where(users_table["age"] >= 35);       // CTE param 1
+    auto q2 = db.from(orders_table).where(orders_table["amount"] >= 100); // CTE param 2
+
+    auto rich_users = std::apply(
+        [](auto... cols) { return table<User>("rich_users", cols...); },
+        users_table.columns);
+
+    auto result = db.from(rich_users)
+                    .with_cte("rich_users", q1)
+                    .with_cte("big_orders", q2)
+                    .where(rich_users["age"] >= 35) // outer param 3
+                    .to_list();
+
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].name, "Bob");
+}
+
+TEST(SqliteReviewFixesTest, ExistsSubqueryExecutes) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.ensure_table(orders_table);
+    int alice = static_cast<int>(db.insert(users_table, User{0, "Alice", {}, 30}));
+    db.insert(users_table, User{0, "Bob", {}, 40});
+    db.insert(orders_table, Order{0, alice, 150.0});
+
+    auto any_order = db.from(orders_table)
+                       .where(orders_table["user_id"] == users_table["id"]);
+
+    auto buyers = db.from(users_table)
+                    .where(exists(any_order.as_subquery()))
+                    .to_list();
+    ASSERT_EQ(buyers.size(), 1u);
+    EXPECT_EQ(buyers[0].name, "Alice");
+
+    auto non_buyers = db.from(users_table)
+                         .where(not_exists(any_order.as_subquery()))
+                         .to_list();
+    ASSERT_EQ(non_buyers.size(), 1u);
+    EXPECT_EQ(non_buyers[0].name, "Bob");
+}
+
+TEST(SqliteReviewFixesTest, SetOperationsExecute) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "Alice", {}, 25});
+    db.insert(users_table, User{0, "Bob", {}, 35});
+    db.insert(users_table, User{0, "Cara", {}, 42});
+    db.insert(users_table, User{0, "Dan", {}, 19});
+
+    auto young = db.from(users_table).where(users_table["age"] < 30);
+    auto older = db.from(users_table).where(users_table["age"] >= 40);
+
+    auto combined = young.union_all(older).order_by(users_table["age"]).to_list();
+    ASSERT_EQ(combined.size(), 3u);
+    EXPECT_EQ(combined[0].name, "Dan");
+    EXPECT_EQ(combined[1].name, "Alice");
+    EXPECT_EQ(combined[2].name, "Cara");
+
+    auto everyone = db.from(users_table).where(users_table["age"] >= 18);
+    auto common = young.intersect(everyone).to_list();
+    EXPECT_EQ(common.size(), 2u);
+
+    auto diff = everyone.except_from(young).order_by(users_table["age"]).to_list();
+    ASSERT_EQ(diff.size(), 2u);
+    EXPECT_EQ(diff[0].name, "Bob");
+    EXPECT_EQ(diff[1].name, "Cara");
+}
+
 
 
