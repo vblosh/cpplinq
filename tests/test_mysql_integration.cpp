@@ -357,6 +357,42 @@ TEST(MysqlDirectTest, PreparedStatementFeatures) {
 }
 
 TEST(MysqlDirectTest, ConnectionParamsAndClosedErrors) {
+    // Closed connection throwing DbException
+    {
+        auto conn = make_connection<mysql>("host=127.0.0.1");
+        EXPECT_FALSE(conn->is_open());
+        EXPECT_THROW(conn->prepare("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute_query_direct("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute_non_query_direct("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->begin_transaction(), DbException);
+        EXPECT_THROW(conn->commit(), DbException);
+        EXPECT_THROW(conn->rollback(), DbException);
+        EXPECT_THROW(conn->insert_many_batch("INSERT INTO t VALUES (?)", {int64_t{1}}, 1, 1), DbException);
+    }
+
+    // Invalid connection throwing DbException
+    {
+        auto conn = make_connection<mysql>("host=127.0.0.1;port=19999;user=invalid;password=invalid;timeout=1;");
+        EXPECT_THROW(conn->open(), DbException);
+    }
+
+    // URI format without password
+    {
+        std::string uri2 = "mysql://cppdb@127.0.0.1:3306/cppdb";
+        auto conn = make_connection<mysql>(uri2);
+    }
+
+    // Key-value format with socket parameter
+    {
+        std::string kv_sock = "host=127.0.0.1;port=3306;db=cppdb;user=cppdb;password=cppdb_password;socket=/tmp/mysql.sock;";
+        auto conn = make_connection<mysql>(kv_sock);
+    }
+
+    if (!MysqlParams::is_enabled()) {
+        GTEST_SKIP() << MysqlParams::skip_reason();
+    }
+
     // Empty connection string (falls back to env)
     {
         auto conn = make_connection<mysql>("");
@@ -382,12 +418,6 @@ TEST(MysqlDirectTest, ConnectionParamsAndClosedErrors) {
         EXPECT_TRUE(conn->is_open());
     }
 
-    // URI format without password
-    {
-        std::string uri2 = "mysql://cppdb@127.0.0.1:3306/cppdb";
-        auto conn = make_connection<mysql>(uri2);
-    }
-
     // Key-value format with curly braces and variations
     {
         std::string kv = "host=127.0.0.1;port=3306;db=cppdb;user=cppdb;password={cppdb_password};charset=utf8mb4;";
@@ -396,37 +426,11 @@ TEST(MysqlDirectTest, ConnectionParamsAndClosedErrors) {
         EXPECT_TRUE(conn->is_open());
     }
 
-    // Key-value format with socket parameter
-    {
-        std::string kv_sock = "host=127.0.0.1;port=3306;db=cppdb;user=cppdb;password=cppdb_password;socket=/tmp/mysql.sock;";
-        auto conn = make_connection<mysql>(kv_sock);
-    }
-
     // Single DSN word
     {
         auto conn = make_connection<mysql>("MySQLDSN");
         EXPECT_NO_THROW(conn->open());
         EXPECT_TRUE(conn->is_open());
-    }
-
-    // Invalid connection throwing DbException
-    {
-        auto conn = make_connection<mysql>("host=127.0.0.1;port=19999;user=invalid;password=invalid;timeout=1;");
-        EXPECT_THROW(conn->open(), DbException);
-    }
-
-    // Closed connection throwing DbException
-    {
-        auto conn = make_connection<mysql>("host=127.0.0.1");
-        EXPECT_FALSE(conn->is_open());
-        EXPECT_THROW(conn->prepare("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute_query_direct("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute_non_query_direct("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->begin_transaction(), DbException);
-        EXPECT_THROW(conn->commit(), DbException);
-        EXPECT_THROW(conn->rollback(), DbException);
-        EXPECT_THROW(conn->insert_many_batch("INSERT INTO t VALUES (?)", {int64_t{1}}, 1, 1), DbException);
     }
 }
 

@@ -355,6 +355,27 @@ TEST(PostgresIntegrationTest, PreparedStatementFeatures) {
 }
 
 TEST(PostgresIntegrationTest, ConnectionStringAndClosedErrors) {
+    // Closed connection throwing DbException
+    {
+        auto conn = make_connection<postgres>("host=localhost");
+        EXPECT_FALSE(conn->is_open());
+        EXPECT_THROW(conn->prepare("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute_query_direct("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->execute_non_query_direct("SELECT 1;"), DbException);
+        EXPECT_THROW(conn->insert_many_batch("INSERT INTO t VALUES (?)", {int64_t{1}}, 1, 1), DbException);
+    }
+
+    // Invalid connection throwing DbException
+    {
+        auto conn = make_connection<postgres>("host=127.0.0.1 port=19999 dbname=invalid user=invalid connect_timeout=1");
+        EXPECT_THROW(conn->open(), DbException);
+    }
+
+    if (!PostgresParams::is_enabled()) {
+        GTEST_SKIP() << PostgresParams::skip_reason();
+    }
+
     // Empty connection string (falls back to env or default)
     {
         auto conn = make_connection<postgres>("");
@@ -396,23 +417,6 @@ TEST(PostgresIntegrationTest, ConnectionStringAndClosedErrors) {
         auto conn2 = make_connection<postgres>("postgres://cppdb:cppdb_password@localhost:5432/cppdb");
         EXPECT_NO_THROW(conn2->open());
         EXPECT_TRUE(conn2->is_open());
-    }
-
-    // Invalid connection throwing DbException
-    {
-        auto conn = make_connection<postgres>("host=127.0.0.1 port=19999 dbname=invalid user=invalid connect_timeout=1");
-        EXPECT_THROW(conn->open(), DbException);
-    }
-
-    // Closed connection throwing DbException
-    {
-        auto conn = make_connection<postgres>("host=localhost");
-        EXPECT_FALSE(conn->is_open());
-        EXPECT_THROW(conn->prepare("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute_query_direct("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->execute_non_query_direct("SELECT 1;"), DbException);
-        EXPECT_THROW(conn->insert_many_batch("INSERT INTO t VALUES (?)", {int64_t{1}}, 1, 1), DbException);
     }
 }
 
