@@ -735,13 +735,13 @@ size_t MysqlConnection::execute_non_query_direct(std::string_view sql) {
         std::string err = mysql_error(conn_);
         throw DbException("MySQL direct non-query failed: " + err);
     }
+    my_ulonglong affected = mysql_affected_rows(conn_);
     MYSQL_RES* res = mysql_store_result(conn_);
     if (res) mysql_free_result(res);
     while (mysql_next_result(conn_) == 0) {
         MYSQL_RES* next_res = mysql_store_result(conn_);
         if (next_res) mysql_free_result(next_res);
     }
-    my_ulonglong affected = mysql_affected_rows(conn_);
     return affected == static_cast<my_ulonglong>(-1) ? 0 : static_cast<size_t>(affected);
 }
 

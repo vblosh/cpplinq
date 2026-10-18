@@ -775,5 +775,369 @@ TEST(SqliteReviewFixesTest, SetOperationsExecute) {
     EXPECT_EQ(diff[1].name, "Cara");
 }
 
+TEST(SqliteIntegrationCoverageTest, DeleteManyEdgeCasesAndValidation) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+
+    // On table without primary key -> verify throws DbException("delete_many requires a primary key column")
+    db.ensure_table(duplicate_tags_table);
+    try {
+        db.delete_many(duplicate_tags_table, std::vector<int>{1});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "delete_many requires a primary key column");
+    }
+
+    // On table with composite primary key -> verify throws DbException("delete_many does not support composite primary keys")
+    db.ensure_table(user_roles_table);
+    try {
+        db.delete_many(user_roles_table, std::vector<int>{1});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "delete_many does not support composite primary keys");
+    }
+
+    // On empty vector of IDs -> returns 0
+    EXPECT_EQ(db.delete_many(users_table, std::vector<int>{}), 0u);
+
+    // On vector of IDs with chunking (e.g. chunk_size = 2, 5 IDs deleted)
+    db.ensure_table(users_table);
+    std::vector<int> ids;
+    for (int i = 0; i < 5; ++i) {
+        ids.push_back(static_cast<int>(db.insert(users_table, User{0, "ChunkUser" + std::to_string(i), {}, 20 + i})));
+    }
+    EXPECT_EQ(db.from(users_table).count(), 5u);
+
+    size_t deleted = db.delete_many(users_table, ids, 2);
+    EXPECT_EQ(deleted, 5u);
+    EXPECT_EQ(db.from(users_table).count(), 0u);
+
+    // Delete many fallback with other PK types: string, unsigned, double, bool
+    db.ensure_table(natural_key_users_table);
+    db.insert(natural_key_users_table, NaturalKeyUser{"user_a", "a@test.com", 1});
+    db.insert(natural_key_users_table, NaturalKeyUser{"user_b", "b@test.com", 2});
+    size_t del_str = db.delete_many(natural_key_users_table, std::vector<std::string>{"user_a", "user_b"}, 1);
+    EXPECT_EQ(del_str, 2u);
+
+    EXPECT_EQ(db.delete_many(users_table, std::vector<unsigned int>{99u, 100u}, 1), 0u);
+    EXPECT_EQ(db.delete_many(users_table, std::vector<double>{99.0, 100.0}, 1), 0u);
+    EXPECT_EQ(db.delete_many(users_table, std::vector<bool>{true}, 1), 0u);
+}
+
+TEST(SqliteIntegrationCoverageTest, UpdateManyEdgeCasesAndChunking) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+
+    // On table without primary key -> verify throws DbException("update_many requires a primary key column")
+    db.ensure_table(duplicate_tags_table);
+    try {
+        db.update_many(duplicate_tags_table, std::vector<DuplicateTag>{{1, "val"}});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "update_many requires a primary key column");
+    }
+
+    // On empty vector of entities -> returns 0
+    EXPECT_EQ(db.update_many(users_table, std::vector<User>{}), 0u);
+
+    // On multiple entities with custom chunk_size
+    db.ensure_table(users_table);
+    std::vector<User> batch;
+    for (int i = 0; i < 4; ++i) {
+        int id = static_cast<int>(db.insert(users_table, User{0, "Orig" + std::to_string(i), {}, 20 + i}));
+        batch.push_back(User{id, "Updated" + std::to_string(i), "up@test.com", 30 + i});
+    }
+
+    size_t updated = db.update_many(users_table, batch, 2);
+    EXPECT_EQ(updated, 4u);
+
+    auto list = db.from(users_table).order_by(users_table["id"]).to_list();
+    ASSERT_EQ(list.size(), 4u);
+    EXPECT_EQ(list[0].name, "Updated0");
+    EXPECT_EQ(list[3].name, "Updated3");
+}
+
+TEST(SqliteIntegrationCoverageTest, InsertManyEdgeCasesAndChunking) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+
+    // On empty vector of entities -> returns 0
+    db.insert_many(users_table, std::vector<User>{});
+    db.insert_many(users_table, std::vector<User>{}, 2);
+    EXPECT_EQ(db.from(users_table).count(), 0u);
+
+    // On entities with custom chunk_size
+    std::vector<User> batch;
+    for (int i = 0; i < 5; ++i) {
+        batch.push_back(User{0, "Batch" + std::to_string(i), {}, 20 + i});
+    }
+    db.insert_many(users_table, batch, 2);
+    EXPECT_EQ(db.from(users_table).count(), 5u);
+}
+
+TEST(SqliteIntegrationCoverageTest, InsertNaturalPrimaryKey) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(natural_key_users_table);
+
+    // Insert on table without auto-increment column (natural primary key)
+    int64_t id = db.insert(natural_key_users_table, NaturalKeyUser{"nat_alice", "alice@example.com", 100});
+    EXPECT_EQ(id, 0);
+
+    auto user = db.from(natural_key_users_table)
+                  .where(natural_key_users_table["username"] == "nat_alice")
+                  .first();
+    ASSERT_TRUE(user.has_value());
+    EXPECT_EQ(user->email, "alice@example.com");
+    EXPECT_EQ(user->points, 100);
+}
+
+TEST(SqliteIntegrationCoverageTest, StreamWithExecutionOptions) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "StreamUser1", {}, 20});
+    db.insert(users_table, User{0, "StreamUser2", {}, 21});
+
+    std::stop_source ss;
+    ExecutionOptions opts{
+        .query_timeout_seconds = 5,
+        .stop_token = ss.get_token()
+    };
+
+    size_t count = 0;
+    for (const auto& u : db.from(users_table).stream(opts)) {
+        (void)u;
+        ++count;
+    }
+    EXPECT_EQ(count, 2u);
+
+    // Stream directly through IConnection
+    auto row_stream = db.connection().stream("SELECT * FROM test_users", {}, opts);
+    size_t row_count = 0;
+    for (auto it = row_stream.begin(); it != row_stream.end(); ++it) {
+        ++row_count;
+    }
+    EXPECT_EQ(row_count, 2u);
+}
+
+TEST(SqliteIntegrationCoverageTest, SqliteDialectEdgeCases) {
+    SqliteDialect dialect;
+
+    // Dialect type_name for various types
+    EXPECT_EQ(dialect.type_name(SqlType::Integer), "INTEGER");
+    EXPECT_EQ(dialect.type_name(SqlType::BigInt), "INTEGER");
+    EXPECT_EQ(dialect.type_name(SqlType::UnsignedBigInt), "INTEGER");
+    EXPECT_EQ(dialect.type_name(SqlType::Real), "REAL");
+    EXPECT_EQ(dialect.type_name(SqlType::Decimal), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Text), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::WString), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Blob), "BLOB");
+    EXPECT_EQ(dialect.type_name(SqlType::Boolean), "INTEGER");
+    EXPECT_EQ(dialect.type_name(SqlType::Date), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Time), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Timestamp), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Interval), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Guid), "TEXT");
+    EXPECT_EQ(dialect.type_name(static_cast<SqlType>(999)), "TEXT");
+
+    // last_insert_id_query
+    EXPECT_EQ(dialect.last_insert_id_query(), "SELECT last_insert_rowid()");
+    EXPECT_EQ(dialect.last_insert_id_query("my_tbl", "my_col"), "SELECT last_insert_rowid()");
+
+    // limit_offset variants
+    EXPECT_EQ(dialect.limit_offset(10, std::nullopt), " LIMIT 10");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, 5), " LIMIT -1 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(10, 5), " LIMIT 10 OFFSET 5");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, std::nullopt), "");
+}
+
+namespace {
+
+class ArrayBatchSqliteConnection final : public IConnection {
+public:
+    explicit ArrayBatchSqliteConnection(IConnection& inner) : inner_(inner) {}
+    void open() override { inner_.open(); }
+    void close() override { inner_.close(); }
+    bool is_open() const override { return inner_.is_open(); }
+    std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override { return inner_.prepare(sql); }
+    void execute(std::string_view sql) override { inner_.execute(sql); }
+    std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql) override { return inner_.execute_query_direct(sql); }
+    size_t execute_non_query_direct(std::string_view sql) override { return inner_.execute_non_query_direct(sql); }
+    void begin_transaction() override { inner_.begin_transaction(); }
+    void commit() override { inner_.commit(); }
+    void rollback() override { inner_.rollback(); }
+    const ISqlDialect& dialect() const override { return inner_.dialect(); }
+    DriverInfo info() const override { return inner_.info(); }
+    DriverCapabilities capabilities() const override {
+        auto caps = inner_.capabilities();
+        caps.array_batch_insert = true;
+        return caps;
+    }
+private:
+    IConnection& inner_;
+};
+
+class MockNoReturningDialect : public SqliteDialect {
+public:
+    std::string returning_clause(std::string_view) const override { return ""; }
+    std::string output_clause(std::string_view) const override { return ""; }
+    bool supports_last_insert_id() const override { return true; }
+    std::string last_insert_id_query(std::string_view, std::string_view) const override {
+        return "SELECT last_insert_rowid()";
+    }
+    bool supports_truncate() const override { return true; }
+};
+
+class MockNoReturningConnection final : public IConnection {
+public:
+    explicit MockNoReturningConnection(IConnection& inner) : inner_(inner) {}
+    void open() override { inner_.open(); }
+    void close() override { inner_.close(); }
+    bool is_open() const override { return inner_.is_open(); }
+    std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override { return inner_.prepare(sql); }
+    void execute(std::string_view sql) override {
+        if (sql.find("TRUNCATE TABLE") != std::string_view::npos) {
+            inner_.execute("DELETE FROM " + std::string(sql.substr(15)));
+        } else {
+            inner_.execute(sql);
+        }
+    }
+    std::unique_ptr<IDataReader> execute_query_direct(std::string_view sql) override { return inner_.execute_query_direct(sql); }
+    size_t execute_non_query_direct(std::string_view sql) override { return inner_.execute_non_query_direct(sql); }
+    void begin_transaction() override { inner_.begin_transaction(); }
+    void commit() override { inner_.commit(); }
+    void rollback() override { inner_.rollback(); }
+    const ISqlDialect& dialect() const override { return dialect_; }
+    DriverInfo info() const override { return inner_.info(); }
+    DriverCapabilities capabilities() const override { return inner_.capabilities(); }
+private:
+    IConnection& inner_;
+    MockNoReturningDialect dialect_;
+};
+
+} // namespace
+
+TEST(SqliteIntegrationCoverageTest, DbContextConstructorsAndArrayBatchPaths) {
+    auto db_factory = cpplinq::connect<cpplinq::sqlite>(":memory:");
+    db_factory.ensure_table(users_table);
+
+    // Constructor with pointer
+    DbContext<cpplinq::sqlite> db_ptr(&db_factory.connection());
+    EXPECT_EQ(db_ptr.from(users_table).count(), 0u);
+
+    // Constructor with reference
+    DbContext<cpplinq::sqlite> db_ref(db_factory.connection());
+    EXPECT_EQ(db_ref.from(users_table).count(), 0u);
+
+    // upsert_many on empty vector
+    EXPECT_EQ(db_ref.upsert_many(users_table, std::vector<User>{}), 0u);
+
+    // Array batch insert paths (lines 166-184, 256-281, 360-394 of db_context.h)
+    ArrayBatchSqliteConnection array_conn(db_factory.connection());
+    DbContext<cpplinq::sqlite> db_batch(array_conn);
+
+    std::vector<User> batch = {
+        User{0, "ArrayUser1", "a1@test.com", 25},
+        User{0, "ArrayUser2", "a2@test.com", 26},
+        User{0, "ArrayUser3", "a3@test.com", 27}
+    };
+    db_batch.insert_many(users_table, batch, 2);
+    EXPECT_EQ(db_batch.from(users_table).count(), 3u);
+
+    auto inserted_list = db_batch.from(users_table).order_by(users_table["id"]).to_list();
+    ASSERT_EQ(inserted_list.size(), 3u);
+    std::vector<User> inserted(inserted_list.begin(), inserted_list.end());
+    inserted[0].name = "UpdatedArray1";
+    inserted[1].name = "UpdatedArray2";
+    inserted[2].name = "UpdatedArray3";
+
+    size_t updated = db_batch.update_many(users_table, inserted, 2);
+    EXPECT_EQ(updated, 3u);
+
+    // delete_many via array batch
+    size_t deleted_single = db_batch.delete_many(users_table, std::vector<int>{inserted[0].id}, 1);
+    EXPECT_EQ(deleted_single, 1u);
+
+    size_t deleted_rest = db_batch.delete_many(users_table, std::vector<int>{inserted[1].id, inserted[2].id}, 2);
+    EXPECT_EQ(deleted_rest, 2u);
+    EXPECT_EQ(db_batch.from(users_table).count(), 0u);
+
+    // delete_many via array batch with natural key string
+    db_batch.ensure_table(natural_key_users_table);
+    db_batch.insert(natural_key_users_table, NaturalKeyUser{"nat1", "n1@test.com", 1});
+    db_batch.insert(natural_key_users_table, NaturalKeyUser{"nat2", "n2@test.com", 2});
+    size_t del_str = db_batch.delete_many(natural_key_users_table, std::vector<std::string>{"nat1", "nat2"}, 1);
+    EXPECT_EQ(del_str, 2u);
+
+    // delete_many via array batch with uint, double, bool types
+    db_batch.delete_many(users_table, std::vector<uint64_t>{10, 20}, 1);
+    db_batch.delete_many(users_table, std::vector<double>{10.5, 20.5}, 1);
+    db_batch.delete_many(users_table, std::vector<bool>{true, false}, 1);
+}
+
+TEST(SqliteIntegrationCoverageTest, InsertWithLastInsertIdAndTruncate) {
+    DbContext<cpplinq::sqlite> raw_db(":memory:");
+    raw_db.ensure_table(users_table);
+
+    MockNoReturningConnection mock_conn(raw_db.connection());
+    DbContext<cpplinq::sqlite> db(mock_conn);
+
+    int64_t id1 = db.insert(users_table, User{0, "NoRet1", {}, 30});
+    EXPECT_GT(id1, 0);
+
+    int64_t id2 = db.insert(users_table, User{0, "NoRet2", {}, 31});
+    EXPECT_GT(id2, id1);
+
+    EXPECT_EQ(db.from(users_table).count(), 2u);
+
+    // Truncate via supports_truncate = true (line 504 of db_context.h)
+    db.truncate(users_table);
+    EXPECT_EQ(db.from(users_table).count(), 0u);
+}
+
+TEST(SqliteIntegrationCoverageTest, SqliteDriverDirectMethodsCoverage) {
+    auto conn = make_connection<cpplinq::sqlite>(":memory:");
+    conn->open();
+
+    // Base IConnection::execute_non_query_direct fallback
+    size_t direct_res = conn->IConnection::execute_non_query_direct("CREATE TABLE direct_t(x INT, b BLOB, f REAL);");
+    EXPECT_EQ(direct_res, 0u);
+
+    // Driver info
+    auto info = conn->info();
+    EXPECT_EQ(info.driver_name, "SQLite");
+    EXPECT_EQ(info.dbms_name, "SQLite");
+
+    // Float and blob in get_value, and empty blob
+    conn->execute("INSERT INTO direct_t VALUES (1, X'010203', 3.14), (2, X'', 2.71);");
+    auto reader = conn->execute_query_direct("SELECT f, b FROM direct_t ORDER BY x ASC;");
+    ASSERT_TRUE(reader->next());
+    auto val_f = reader->get_value(0);
+    EXPECT_TRUE(std::holds_alternative<double>(val_f));
+    EXPECT_NEAR(std::get<double>(val_f), 3.14, 0.001);
+
+    auto val_b = reader->get_value(1);
+    EXPECT_TRUE(std::holds_alternative<std::vector<uint8_t>>(val_b));
+    EXPECT_EQ(std::get<std::vector<uint8_t>>(val_b).size(), 3u);
+
+    ASSERT_TRUE(reader->next());
+    auto empty_blob = reader->get_blob(1);
+    EXPECT_TRUE(empty_blob.empty());
+
+    // Bind error on out-of-bounds parameter index
+    auto stmt = conn->prepare("SELECT ?;");
+    EXPECT_THROW(stmt->bind(999, 42), DbException);
+
+    // Prepare syntax error
+    EXPECT_THROW(conn->prepare("SYNTAX ERROR BOGUS;"), DbException);
+
+    // Execute syntax error
+    EXPECT_THROW(conn->execute("SYNTAX ERROR BOGUS;"), DbException);
+
+    // Closed connection checks
+    conn->close();
+    EXPECT_FALSE(conn->is_open());
+    EXPECT_THROW(conn->prepare("SELECT 1;"), DbException);
+    EXPECT_THROW(conn->execute("SELECT 1;"), DbException);
+    EXPECT_THROW(conn->execute_query_direct("SELECT 1;"), DbException);
+}
+
 
 

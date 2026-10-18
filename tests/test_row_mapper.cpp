@@ -222,6 +222,20 @@ TEST(RowMapperTest, MapSingleRowAllPrimitives) {
     EXPECT_EQ(p.age, 30);
     EXPECT_DOUBLE_EQ(p.score, 98.5);
     EXPECT_TRUE(p.is_active);
+
+    EXPECT_FALSE(mapper.is_all_null(reader));
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 42);
+
+    MockDataReader null_reader({{std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}}});
+    ASSERT_TRUE(null_reader.next());
+    EXPECT_TRUE(mapper.is_all_null(null_reader));
+    Person null_p = mapper.map_row(null_reader);
+    EXPECT_EQ(null_p.id, 0);
+    EXPECT_EQ(null_p.name, "");
+    mapper.map_row(null_reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 0);
 }
 
 TEST(RowMapperTest, MapMultipleRows) {
@@ -366,6 +380,21 @@ TEST(RowMapperTest, MapWithOffset) {
     EXPECT_EQ(p.age, 28);
     EXPECT_DOUBLE_EQ(p.score, 91.0);
     EXPECT_TRUE(p.is_active);
+
+    EXPECT_FALSE(mapper.is_all_null(reader));
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 10);
+
+    MockDataReader null_offset_reader({
+        { int64_t{999}, std::string{"dummy"}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{} }
+    });
+    ASSERT_TRUE(null_offset_reader.next());
+    EXPECT_TRUE(mapper.is_all_null(null_offset_reader));
+    Person null_p = mapper.map_row(null_offset_reader);
+    EXPECT_EQ(null_p.id, 0);
+    mapper.map_row(null_offset_reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 0);
 }
 
 // ============================================================================
@@ -387,6 +416,15 @@ TEST(RowMapperTest, IsAllNullTrueWhenAllColumnsNull) {
 
     ASSERT_TRUE(reader.next());
     EXPECT_TRUE(mapper.is_all_null(reader));
+
+    Person p = mapper.map_row(reader);
+    EXPECT_EQ(p.id, 0);
+    EXPECT_EQ(p.name, "");
+    EXPECT_EQ(p.age, 0);
+
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 0);
 }
 
 TEST(RowMapperTest, IsAllNullFalseWhenAnyColumnNotNull) {
@@ -404,6 +442,15 @@ TEST(RowMapperTest, IsAllNullFalseWhenAnyColumnNotNull) {
 
     ASSERT_TRUE(reader.next());
     EXPECT_FALSE(mapper.is_all_null(reader));
+
+    Person p = mapper.map_row(reader);
+    EXPECT_EQ(p.id, 0);
+    EXPECT_EQ(p.name, "Alice");
+    EXPECT_EQ(p.age, 0);
+
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.name, "Alice");
 }
 
 TEST(RowMapperTest, IsAllNullWithOffset) {
@@ -422,6 +469,14 @@ TEST(RowMapperTest, IsAllNullWithOffset) {
 
     ASSERT_TRUE(reader.next());
     EXPECT_TRUE(mapper.is_all_null(reader));
+
+    Person p = mapper.map_row(reader);
+    EXPECT_EQ(p.id, 0);
+    EXPECT_EQ(p.name, "");
+
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 0);
 }
 
 TEST(RowMapperTest, IsAllNullWithOffsetFalseWhenProjectedColumnsHaveValues) {
@@ -438,6 +493,15 @@ TEST(RowMapperTest, IsAllNullWithOffsetFalseWhenProjectedColumnsHaveValues) {
 
     ASSERT_TRUE(reader.next());
     EXPECT_FALSE(mapper.is_all_null(reader));
+
+    Person p = mapper.map_row(reader);
+    EXPECT_EQ(p.id, 7);
+    EXPECT_EQ(p.name, "Joined");
+
+    Person in_place_p;
+    mapper.map_row(reader, in_place_p);
+    EXPECT_EQ(in_place_p.id, 7);
+    EXPECT_EQ(in_place_p.name, "Joined");
 }
 
 // ============================================================================
@@ -463,6 +527,22 @@ TEST(RowMapperTest, MapBlobField) {
 
     EXPECT_EQ(rec.id, 1);
     EXPECT_EQ(rec.data, test_bytes);
+
+    EXPECT_FALSE(mapper.is_all_null(reader));
+    BlobRecord in_place_b;
+    mapper.map_row(reader, in_place_b);
+    EXPECT_EQ(in_place_b.id, 1);
+    EXPECT_EQ(in_place_b.data, test_bytes);
+
+    MockDataReader null_reader({{std::monostate{}, std::monostate{}}});
+    ASSERT_TRUE(null_reader.next());
+    EXPECT_TRUE(mapper.is_all_null(null_reader));
+    BlobRecord null_rec = mapper.map_row(null_reader);
+    EXPECT_EQ(null_rec.id, 0);
+    EXPECT_TRUE(null_rec.data.empty());
+    mapper.map_row(null_reader, in_place_b);
+    EXPECT_EQ(in_place_b.id, 0);
+    EXPECT_TRUE(in_place_b.data.empty());
 }
 
 // ============================================================================
@@ -517,6 +597,28 @@ TEST(RowMapperTest, MapAdvancedTypes) {
     EXPECT_EQ(rec.chrono_duration.count(), 86400 + 7200 + 1800 + 15);
     EXPECT_EQ(rec.guid_val.to_string(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
     EXPECT_EQ(rec.wide_text, L"Unicode \u30c6\u30b9\u30c8");
+
+    EXPECT_FALSE(mapper.is_all_null(reader));
+    AdvancedTypesRecord in_place_rec;
+    mapper.map_row(reader, in_place_rec);
+    EXPECT_EQ(in_place_rec.unsigned_id, 18446744073709551615ULL);
+
+    MockDataReader null_reader({
+        {
+            std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{},
+            std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}
+        }
+    });
+    ASSERT_TRUE(null_reader.next());
+    EXPECT_TRUE(mapper.is_all_null(null_reader));
+    AdvancedTypesRecord null_rec = mapper.map_row(null_reader);
+    EXPECT_EQ(null_rec.unsigned_id, 0u);
+    EXPECT_EQ(null_rec.decimal_amount.to_string(), "0");
+    EXPECT_EQ(null_rec.wide_text, L"");
+
+    mapper.map_row(null_reader, in_place_rec);
+    EXPECT_EQ(in_place_rec.unsigned_id, 0u);
+    EXPECT_EQ(in_place_rec.wide_text, L"");
 }
 
 // ============================================================================
@@ -688,11 +790,23 @@ TEST(RowMapperTest, InPlaceMapRowResetsNonOptionalOnNull) {
     EXPECT_EQ(entity.id, 42);
     EXPECT_EQ(entity.name, "initial_name");
 
+    EXPECT_FALSE(mapper.is_all_null(reader1));
+
+    SimpleEntity val_mapped = mapper.map_row(reader1);
+    EXPECT_EQ(val_mapped.id, 42);
+    EXPECT_EQ(val_mapped.name, "initial_name");
+
     // Row 2: columns are NULL
     MockDataReader reader2({
         {std::monostate{}, std::monostate{}}
     });
     reader2.next();
+
+    EXPECT_TRUE(mapper.is_all_null(reader2));
+
+    SimpleEntity null_mapped = mapper.map_row(reader2);
+    EXPECT_EQ(null_mapped.id, 0);
+    EXPECT_EQ(null_mapped.name, "");
 
     // Map in-place into the same entity: should NOT retain previous row's values
     mapper.map_row(reader2, entity);
@@ -715,6 +829,7 @@ TEST(RowMapperTest, InPlaceMapRowResetsOptionalFieldsOnNull) {
     });
     populated.next();
 
+    EXPECT_FALSE(mapper.is_all_null(populated));
     NullableRecord entity;
     mapper.map_row(populated, entity);
     ASSERT_TRUE(entity.nickname.has_value());
@@ -722,12 +837,20 @@ TEST(RowMapperTest, InPlaceMapRowResetsOptionalFieldsOnNull) {
     ASSERT_TRUE(entity.rating.has_value());
     ASSERT_TRUE(entity.verified.has_value());
 
+    NullableRecord val_rec = mapper.map_row(populated);
+    EXPECT_EQ(val_rec.id, 9);
+    EXPECT_EQ(*val_rec.nickname, "before");
+
     MockDataReader all_null({
         { std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{} }
     });
     all_null.next();
 
     EXPECT_TRUE(mapper.is_all_null(all_null));
+    NullableRecord null_rec = mapper.map_row(all_null);
+    EXPECT_EQ(null_rec.id, 0);
+    EXPECT_FALSE(null_rec.nickname.has_value());
+
     mapper.map_row(all_null, entity);
 
     EXPECT_EQ(entity.id, 0);
@@ -867,3 +990,600 @@ TEST(DataTypesTest, SqlIntervalSubsecondsAndYearToMonth) {
     auto months_dur = iv_ym.to_duration<std::chrono::months>();
     EXPECT_EQ(months_dur.count(), 30);
 }
+
+TEST(RowMapperTest, ConvertToBoundValueAllTypes) {
+    // std::string_view
+    std::string_view sv = "sv_value";
+    BoundValue bv_sv = convert_to_bound_value(sv);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_sv));
+    EXPECT_EQ(std::get<std::string>(bv_sv), "sv_value");
+
+    // const char* non-null and null
+    const char* cstr = "cstr_value";
+    BoundValue bv_cstr = convert_to_bound_value(cstr);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_cstr));
+    EXPECT_EQ(std::get<std::string>(bv_cstr), "cstr_value");
+
+    const char* cstr_null = nullptr;
+    BoundValue bv_cstr_null = convert_to_bound_value(cstr_null);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_cstr_null));
+    EXPECT_EQ(std::get<std::string>(bv_cstr_null), "");
+
+    // char* non-null and null
+    char mutable_str[] = "mutable_str_val";
+    char* p_mut = mutable_str;
+    BoundValue bv_mut = convert_to_bound_value(p_mut);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_mut));
+    EXPECT_EQ(std::get<std::string>(bv_mut), "mutable_str_val");
+
+    char* p_mut_null = nullptr;
+    BoundValue bv_mut_null = convert_to_bound_value(p_mut_null);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_mut_null));
+    EXPECT_EQ(std::get<std::string>(bv_mut_null), "");
+
+    // std::wstring_view
+    std::wstring_view wsv = L"wsv_value";
+    BoundValue bv_wsv = convert_to_bound_value(wsv);
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wsv));
+    EXPECT_EQ(std::get<std::wstring>(bv_wsv), L"wsv_value");
+
+    // const wchar_t* non-null and null
+    const wchar_t* wcstr = L"wcstr_value";
+    BoundValue bv_wcstr = convert_to_bound_value(wcstr);
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wcstr));
+    EXPECT_EQ(std::get<std::wstring>(bv_wcstr), L"wcstr_value");
+
+    const wchar_t* wcstr_null = nullptr;
+    BoundValue bv_wcstr_null = convert_to_bound_value(wcstr_null);
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wcstr_null));
+    EXPECT_EQ(std::get<std::wstring>(bv_wcstr_null), L"");
+
+    // wchar_t* non-null and null
+    wchar_t mutable_wstr[] = L"mutable_wstr_val";
+    wchar_t* p_wmut = mutable_wstr;
+    BoundValue bv_wmut = convert_to_bound_value(p_wmut);
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wmut));
+    EXPECT_EQ(std::get<std::wstring>(bv_wmut), L"mutable_wstr_val");
+
+    wchar_t* p_wmut_null = nullptr;
+    BoundValue bv_wmut_null = convert_to_bound_value(p_wmut_null);
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wmut_null));
+    EXPECT_EQ(std::get<std::wstring>(bv_wmut_null), L"");
+
+    // std::chrono::year_month_day
+    std::chrono::year_month_day ymd{std::chrono::year(2026), std::chrono::month(12), std::chrono::day(25)};
+    BoundValue bv_ymd = convert_to_bound_value(ymd);
+    ASSERT_TRUE(std::holds_alternative<SqlDate>(bv_ymd));
+    EXPECT_EQ(std::get<SqlDate>(bv_ymd).to_string(), "2026-12-25");
+
+    // std::chrono::system_clock::time_point
+    auto tp = std::chrono::system_clock::from_time_t(1700000000);
+    BoundValue bv_tp = convert_to_bound_value(tp);
+    ASSERT_TRUE(std::holds_alternative<SqlTimestamp>(bv_tp));
+
+    // std::chrono::hh_mm_ss
+    std::chrono::hh_mm_ss hms{std::chrono::hours(11) + std::chrono::minutes(22) + std::chrono::seconds(33)};
+    BoundValue bv_hms = convert_to_bound_value(hms);
+    ASSERT_TRUE(std::holds_alternative<SqlTime>(bv_hms));
+    EXPECT_EQ(std::get<SqlTime>(bv_hms).to_string(), "11:22:33");
+
+    // SqlTime
+    SqlTime st(11, 22, 33);
+    BoundValue bv_st = convert_to_bound_value(st);
+    ASSERT_TRUE(std::holds_alternative<SqlTime>(bv_st));
+    EXPECT_EQ(std::get<SqlTime>(bv_st).to_string(), "11:22:33");
+
+    // std::chrono::duration
+    std::chrono::seconds dur(3600);
+    BoundValue bv_dur = convert_to_bound_value(dur);
+    ASSERT_TRUE(std::holds_alternative<SqlInterval>(bv_dur));
+
+    // SqlInterval
+    SqlInterval iv = SqlInterval::from_day_second(1, 2, 3, 4);
+    BoundValue bv_iv = convert_to_bound_value(iv);
+    ASSERT_TRUE(std::holds_alternative<SqlInterval>(bv_iv));
+    EXPECT_EQ(std::get<SqlInterval>(bv_iv).to_string(), "1 02:03:04");
+
+    // SqlGuid
+    SqlGuid g("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+    BoundValue bv_g = convert_to_bound_value(g);
+    ASSERT_TRUE(std::holds_alternative<SqlGuid>(bv_g));
+    EXPECT_EQ(std::get<SqlGuid>(bv_g).to_string(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+
+    // std::monostate
+    BoundValue bv_mono = convert_to_bound_value(std::monostate{});
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(bv_mono));
+
+    // BoundValue directly
+    BoundValue orig_bv = int64_t{999};
+    BoundValue bv_direct = convert_to_bound_value(orig_bv);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_direct));
+    EXPECT_EQ(std::get<int64_t>(bv_direct), 999);
+
+    // Unsigned integral types
+    uint8_t u8 = 8;
+    BoundValue bv_u8 = convert_to_bound_value(u8);
+    ASSERT_TRUE(std::holds_alternative<uint64_t>(bv_u8));
+    EXPECT_EQ(std::get<uint64_t>(bv_u8), 8u);
+
+    uint16_t u16 = 16;
+    BoundValue bv_u16 = convert_to_bound_value(u16);
+    ASSERT_TRUE(std::holds_alternative<uint64_t>(bv_u16));
+    EXPECT_EQ(std::get<uint64_t>(bv_u16), 16u);
+
+    uint32_t u32 = 32;
+    BoundValue bv_u32 = convert_to_bound_value(u32);
+    ASSERT_TRUE(std::holds_alternative<uint64_t>(bv_u32));
+    EXPECT_EQ(std::get<uint64_t>(bv_u32), 32u);
+
+    uint64_t u64 = 64;
+    BoundValue bv_u64 = convert_to_bound_value(u64);
+    ASSERT_TRUE(std::holds_alternative<uint64_t>(bv_u64));
+    EXPECT_EQ(std::get<uint64_t>(bv_u64), 64u);
+
+    // Signed integral types
+    int8_t i8 = -8;
+    BoundValue bv_i8 = convert_to_bound_value(i8);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_i8));
+    EXPECT_EQ(std::get<int64_t>(bv_i8), -8);
+
+    int16_t i16 = -16;
+    BoundValue bv_i16 = convert_to_bound_value(i16);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_i16));
+    EXPECT_EQ(std::get<int64_t>(bv_i16), -16);
+
+    int32_t i32 = -32;
+    BoundValue bv_i32 = convert_to_bound_value(i32);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_i32));
+    EXPECT_EQ(std::get<int64_t>(bv_i32), -32);
+
+    int64_t i64 = -64;
+    BoundValue bv_i64 = convert_to_bound_value(i64);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_i64));
+    EXPECT_EQ(std::get<int64_t>(bv_i64), -64);
+
+    // Floating point types
+    float f = 3.14f;
+    BoundValue bv_f = convert_to_bound_value(f);
+    ASSERT_TRUE(std::holds_alternative<double>(bv_f));
+    EXPECT_NEAR(std::get<double>(bv_f), 3.14, 0.001);
+
+    double d = 2.71828;
+    BoundValue bv_d = convert_to_bound_value(d);
+    ASSERT_TRUE(std::holds_alternative<double>(bv_d));
+    EXPECT_DOUBLE_EQ(std::get<double>(bv_d), 2.71828);
+
+    // bool
+    BoundValue bv_b = convert_to_bound_value(true);
+    ASSERT_TRUE(std::holds_alternative<bool>(bv_b));
+    EXPECT_TRUE(std::get<bool>(bv_b));
+
+    // std::string
+    BoundValue bv_str = convert_to_bound_value(std::string("str_val"));
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_str));
+    EXPECT_EQ(std::get<std::string>(bv_str), "str_val");
+
+    // std::wstring
+    BoundValue bv_wstr = convert_to_bound_value(std::wstring(L"wstr_val"));
+    ASSERT_TRUE(std::holds_alternative<std::wstring>(bv_wstr));
+    EXPECT_EQ(std::get<std::wstring>(bv_wstr), L"wstr_val");
+
+    // std::vector<uint8_t>
+    std::vector<uint8_t> blob{1, 2, 3};
+    BoundValue bv_blob = convert_to_bound_value(blob);
+    ASSERT_TRUE(std::holds_alternative<std::vector<uint8_t>>(bv_blob));
+    EXPECT_EQ(std::get<std::vector<uint8_t>>(bv_blob), blob);
+
+    // SqlNumeric
+    BoundValue bv_num = convert_to_bound_value(SqlNumeric("123.45"));
+    ASSERT_TRUE(std::holds_alternative<SqlNumeric>(bv_num));
+    EXPECT_EQ(std::get<SqlNumeric>(bv_num).to_string(), "123.45");
+
+    // SqlDate
+    BoundValue bv_date = convert_to_bound_value(SqlDate(2026, 1, 1));
+    ASSERT_TRUE(std::holds_alternative<SqlDate>(bv_date));
+    EXPECT_EQ(std::get<SqlDate>(bv_date).to_string(), "2026-01-01");
+
+    // SqlTimestamp
+    BoundValue bv_ts = convert_to_bound_value(SqlTimestamp(2026, 1, 1, 12, 0, 0));
+    ASSERT_TRUE(std::holds_alternative<SqlTimestamp>(bv_ts));
+    EXPECT_EQ(std::get<SqlTimestamp>(bv_ts).to_string(), "2026-01-01 12:00:00");
+}
+
+struct FieldTestEntity {
+    int id = 0;
+    std::string name;
+    std::optional<int> opt_int;
+    std::optional<std::string> opt_str;
+    std::optional<double> opt_double;
+};
+
+TEST(RowMapperTest, FieldToBoundValueOptionalAndNonOptional) {
+    FieldTestEntity entity_nulls{
+        .id = 101,
+        .name = "TestEntity",
+        .opt_int = std::nullopt,
+        .opt_str = std::nullopt,
+        .opt_double = std::nullopt
+    };
+
+    // Non-optional fields
+    BoundValue bv_id = field_to_bound_value(entity_nulls, &FieldTestEntity::id);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_id));
+    EXPECT_EQ(std::get<int64_t>(bv_id), 101);
+
+    BoundValue bv_name = field_to_bound_value(entity_nulls, &FieldTestEntity::name);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_name));
+    EXPECT_EQ(std::get<std::string>(bv_name), "TestEntity");
+
+    // Optional fields with nullopt -> std::monostate
+    BoundValue bv_null_int = field_to_bound_value(entity_nulls, &FieldTestEntity::opt_int);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(bv_null_int));
+
+    BoundValue bv_null_str = field_to_bound_value(entity_nulls, &FieldTestEntity::opt_str);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(bv_null_str));
+
+    BoundValue bv_null_double = field_to_bound_value(entity_nulls, &FieldTestEntity::opt_double);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(bv_null_double));
+
+    // Optional fields with values
+    FieldTestEntity entity_vals{
+        .id = 102,
+        .name = "TestEntityVals",
+        .opt_int = 42,
+        .opt_str = "hello",
+        .opt_double = 3.14159
+    };
+
+    BoundValue bv_val_int = field_to_bound_value(entity_vals, &FieldTestEntity::opt_int);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(bv_val_int));
+    EXPECT_EQ(std::get<int64_t>(bv_val_int), 42);
+
+    BoundValue bv_val_str = field_to_bound_value(entity_vals, &FieldTestEntity::opt_str);
+    ASSERT_TRUE(std::holds_alternative<std::string>(bv_val_str));
+    EXPECT_EQ(std::get<std::string>(bv_val_str), "hello");
+
+    BoundValue bv_val_double = field_to_bound_value(entity_vals, &FieldTestEntity::opt_double);
+    ASSERT_TRUE(std::holds_alternative<double>(bv_val_double));
+    EXPECT_DOUBLE_EQ(std::get<double>(bv_val_double), 3.14159);
+}
+
+class MinimalDataReader : public IDataReader {
+public:
+    bool next() override { return true; }
+    int column_count() const override { return 2; }
+    bool is_null(int col) const override { return col == 0; }
+    int64_t get_int64(int) const override { return 0; }
+    uint64_t get_uint64(int) const override { return 0; }
+    double get_double(int) const override { return 0.0; }
+    std::string get_string(int col) const override { return col == 1 ? "minimal_str" : ""; }
+    std::wstring get_wstring(int) const override { return {}; }
+    bool get_bool(int) const override { return false; }
+    std::vector<uint8_t> get_blob(int) const override { return {}; }
+    SqlNumeric get_numeric(int) const override { return {}; }
+    SqlDate get_date(int) const override { return {}; }
+    SqlTime get_time(int) const override { return {}; }
+    SqlTimestamp get_timestamp(int) const override { return {}; }
+    SqlInterval get_interval(int) const override { return {}; }
+    SqlGuid get_guid(int) const override { return {}; }
+};
+
+TEST(RowMapperTest, MinimalDataReaderDefaults) {
+    MinimalDataReader reader;
+
+    // get_string_view default implementation returns {}
+    EXPECT_TRUE(reader.get_string_view(0).empty());
+    EXPECT_EQ(reader.get_string_view(0).data(), nullptr);
+    EXPECT_TRUE(reader.get_string_view(1).empty());
+    EXPECT_EQ(reader.get_string_view(1).data(), nullptr);
+
+    // get_value default implementation: monostate when is_null, get_string when not null
+    BoundValue val_null = reader.get_value(0);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(val_null));
+
+    BoundValue val_non_null = reader.get_value(1);
+    ASSERT_TRUE(std::holds_alternative<std::string>(val_non_null));
+    EXPECT_EQ(std::get<std::string>(val_non_null), "minimal_str");
+
+    // read_column_value and assign_column_value fallback to get_string when get_string_view returns nullptr
+    auto read_str = read_column_value<std::string>(reader, 1);
+    EXPECT_EQ(read_str, "minimal_str");
+
+    std::string assigned_str;
+    assign_column_value(assigned_str, reader, 1);
+    EXPECT_EQ(assigned_str, "minimal_str");
+}
+
+struct ComprehensiveEntity {
+    int id = 0;
+    std::string name;
+    double score = 0.0;
+    std::optional<std::string> opt_str;
+    std::optional<int> opt_int;
+};
+
+TEST(RowMapperTest, IsAllNullAndInPlaceMappingWithComprehensiveTypes) {
+    const auto cols = std::make_tuple(
+        column("id", &ComprehensiveEntity::id),
+        column("name", &ComprehensiveEntity::name),
+        column("score", &ComprehensiveEntity::score),
+        column("opt_str", &ComprehensiveEntity::opt_str),
+        column("opt_int", &ComprehensiveEntity::opt_int)
+    );
+    auto mapper = create_mapper<ComprehensiveEntity>(cols);
+
+    // 1. All columns null -> is_all_null returns true
+    MockDataReader null_reader({
+        { std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{} }
+    });
+    ASSERT_TRUE(null_reader.next());
+    EXPECT_TRUE(mapper.is_all_null(null_reader));
+
+    // In-place mapping from non-default entity into null row
+    ComprehensiveEntity entity{10, "initial", 5.5, "opt_init", 99};
+    mapper.map_row(null_reader, entity);
+    EXPECT_EQ(entity.id, 0);
+    EXPECT_EQ(entity.name, "");
+    EXPECT_DOUBLE_EQ(entity.score, 0.0);
+    EXPECT_FALSE(entity.opt_str.has_value());
+    EXPECT_FALSE(entity.opt_int.has_value());
+
+    // 2. Only first column non-null -> is_all_null returns false
+    MockDataReader col0_reader({
+        { int64_t{1}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{} }
+    });
+    col0_reader.next();
+    EXPECT_FALSE(mapper.is_all_null(col0_reader));
+
+    // 3. Only middle column non-null -> is_all_null returns false
+    MockDataReader col2_reader({
+        { std::monostate{}, std::monostate{}, double{2.5}, std::monostate{}, std::monostate{} }
+    });
+    col2_reader.next();
+    EXPECT_FALSE(mapper.is_all_null(col2_reader));
+
+    // 4. Only last column non-null -> is_all_null returns false
+    MockDataReader col4_reader({
+        { std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, int64_t{77} }
+    });
+    col4_reader.next();
+    EXPECT_FALSE(mapper.is_all_null(col4_reader));
+
+    // 5. All columns non-null -> is_all_null returns false and in-place map succeeds
+    MockDataReader full_reader({
+        { int64_t{42}, std::string{"Alice"}, double{98.5}, std::string{"nick"}, int64_t{7} }
+    });
+    full_reader.next();
+    EXPECT_FALSE(mapper.is_all_null(full_reader));
+    mapper.map_row(full_reader, entity);
+    EXPECT_EQ(entity.id, 42);
+    EXPECT_EQ(entity.name, "Alice");
+    EXPECT_DOUBLE_EQ(entity.score, 98.5);
+    ASSERT_TRUE(entity.opt_str.has_value());
+    EXPECT_EQ(*entity.opt_str, "nick");
+    ASSERT_TRUE(entity.opt_int.has_value());
+    EXPECT_EQ(*entity.opt_int, 7);
+
+    ComprehensiveEntity val_p = mapper.map_row(full_reader);
+    EXPECT_EQ(val_p.id, 42);
+    EXPECT_EQ(val_p.name, "Alice");
+    EXPECT_DOUBLE_EQ(val_p.score, 98.5);
+
+    ComprehensiveEntity null_p = mapper.map_row(null_reader);
+    EXPECT_EQ(null_p.id, 0);
+    EXPECT_EQ(null_p.name, "");
+    EXPECT_DOUBLE_EQ(null_p.score, 0.0);
+    EXPECT_FALSE(null_p.opt_str.has_value());
+    EXPECT_FALSE(null_p.opt_int.has_value());
+}
+
+TEST(RowMapperTest, ReadColumnValueAndAssignColumnValueAllTypes) {
+    SqlGuid guid("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+    SqlInterval iv = SqlInterval::from_day_second(1, 2, 3, 4);
+    SqlTimestamp ts(2026, 10, 18, 12, 30, 45);
+    SqlTime tm(12, 30, 45);
+    SqlDate dt(2026, 10, 18);
+    SqlNumeric num("12345.67");
+    std::vector<uint8_t> blob{10, 20, 30};
+
+    MockDataReader reader({
+        {
+            bool{true},
+            int64_t{-12345},
+            uint64_t{54321},
+            double{3.14159},
+            std::string{"string_val"},
+            std::wstring{L"wstring_val"},
+            blob,
+            num,
+            dt,
+            tm,
+            ts,
+            iv,
+            guid
+        }
+    });
+    ASSERT_TRUE(reader.next());
+
+    // bool
+    EXPECT_EQ(read_column_value<bool>(reader, 0), true);
+
+    // signed integrals
+    EXPECT_EQ(read_column_value<int8_t>(reader, 1), static_cast<int8_t>(-12345));
+    EXPECT_EQ(read_column_value<int16_t>(reader, 1), static_cast<int16_t>(-12345));
+    EXPECT_EQ(read_column_value<int32_t>(reader, 1), -12345);
+    EXPECT_EQ(read_column_value<int64_t>(reader, 1), -12345);
+
+    // unsigned integrals
+    EXPECT_EQ(read_column_value<uint8_t>(reader, 2), static_cast<uint8_t>(54321));
+    EXPECT_EQ(read_column_value<uint16_t>(reader, 2), static_cast<uint16_t>(54321));
+    EXPECT_EQ(read_column_value<uint32_t>(reader, 2), 54321u);
+    EXPECT_EQ(read_column_value<uint64_t>(reader, 2), 54321u);
+
+    // floating point
+    EXPECT_NEAR(read_column_value<float>(reader, 3), 3.14159f, 0.0001f);
+    EXPECT_DOUBLE_EQ(read_column_value<double>(reader, 3), 3.14159);
+
+    // string & string_view
+    EXPECT_EQ(read_column_value<std::string>(reader, 4), "string_val");
+    EXPECT_EQ(read_column_value<std::string_view>(reader, 4), "string_val");
+
+    // wstring
+    EXPECT_EQ(read_column_value<std::wstring>(reader, 5), L"wstring_val");
+
+    // blob
+    EXPECT_EQ(read_column_value<std::vector<uint8_t>>(reader, 6), blob);
+
+    // SqlNumeric, SqlDate, SqlTime, SqlTimestamp, SqlInterval, SqlGuid
+    EXPECT_EQ(read_column_value<SqlNumeric>(reader, 7).to_string(), "12345.67");
+    EXPECT_EQ(read_column_value<SqlDate>(reader, 8).to_string(), "2026-10-18");
+    EXPECT_EQ(read_column_value<SqlTime>(reader, 9).to_string(), "12:30:45");
+    EXPECT_EQ(read_column_value<SqlTimestamp>(reader, 10).to_string(), "2026-10-18 12:30:45");
+    EXPECT_EQ(read_column_value<SqlInterval>(reader, 11).to_string(), "1 02:03:04");
+    EXPECT_EQ(read_column_value<SqlGuid>(reader, 12).to_string(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+
+    // chrono mappings
+    auto ymd = read_column_value<std::chrono::year_month_day>(reader, 8);
+    EXPECT_EQ(static_cast<int>(ymd.year()), 2026);
+    EXPECT_EQ(static_cast<unsigned>(ymd.month()), 10);
+    EXPECT_EQ(static_cast<unsigned>(ymd.day()), 18);
+
+    auto hms = read_column_value<std::chrono::hh_mm_ss<std::chrono::seconds>>(reader, 9);
+    EXPECT_EQ(hms.hours().count(), 12);
+    EXPECT_EQ(hms.minutes().count(), 30);
+    EXPECT_EQ(hms.seconds().count(), 45);
+
+    auto tp = read_column_value<std::chrono::system_clock::time_point>(reader, 10);
+    EXPECT_EQ(SqlTimestamp::from_time_point(tp).to_string(), "2026-10-18 12:30:45");
+
+    auto dur = read_column_value<std::chrono::seconds>(reader, 11);
+    EXPECT_EQ(dur.count(), 86400 + 7200 + 180 + 4);
+
+    // assign_column_value
+    std::vector<uint8_t> assigned_blob;
+    assign_column_value(assigned_blob, reader, 6);
+    EXPECT_EQ(assigned_blob, blob);
+
+    std::string assigned_str;
+    assign_column_value(assigned_str, reader, 4);
+    EXPECT_EQ(assigned_str, "string_val");
+
+    int assigned_int = 0;
+    assign_column_value(assigned_int, reader, 1);
+    EXPECT_EQ(assigned_int, -12345);
+}
+
+TEST(DataTypesTest, AdditionalCoverageForDataTypes) {
+    // utf8_to_wstring invalid byte sequence fallback
+    std::string invalid_utf8 = "\xFF\xFE\x80";
+    std::wstring converted_invalid = utf8_to_wstring(invalid_utf8);
+    EXPECT_FALSE(converted_invalid.empty());
+
+    // SqlGuid methods
+    SqlGuid nil_g;
+    EXPECT_TRUE(nil_g.is_nil());
+    EXPECT_EQ(nil_g.to_string(false, false), "00000000000000000000000000000000");
+    EXPECT_EQ(nil_g.to_string(false, true), "00000000000000000000000000000000");
+    EXPECT_EQ(nil_g.to_string(true, true), "00000000-0000-0000-0000-000000000000");
+
+    SqlGuid g_upper = SqlGuid::from_string("6BA7B8109DAD11D180B400C04FD430C8");
+    EXPECT_FALSE(g_upper.is_nil());
+    EXPECT_EQ(g_upper.to_string(false, true), "6BA7B8109DAD11D180B400C04FD430C8");
+
+    SqlGuid g_empty = SqlGuid::from_string("");
+    EXPECT_TRUE(g_empty.is_nil());
+
+    SqlGuid g_short = SqlGuid::from_string("invalid_short");
+    EXPECT_TRUE(g_short.is_nil());
+
+    uint8_t d4[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    SqlGuid g_parts(0x12345678, 0x1234, 0x5678, d4);
+    EXPECT_FALSE(g_parts.is_nil());
+
+    SqlGuid g_parts_null(0x12345678, 0x1234, 0x5678, nullptr);
+    EXPECT_FALSE(g_parts_null.is_nil());
+
+    // SqlNumeric conversions exceptions and edge cases
+    SqlNumeric num_overflow("1e9999");
+    EXPECT_EQ(num_overflow.to_double(), 0.0);
+
+    SqlNumeric num_big("999999999999999999999999999999999999");
+    EXPECT_EQ(num_big.to_int64(), 0);
+    EXPECT_EQ(num_big.to_uint64(), 0);
+
+    SqlNumeric num_neg("-123.45");
+    EXPECT_EQ(num_neg.to_uint64(), 0);
+    EXPECT_EQ(num_neg.to_int64(), -123);
+    EXPECT_DOUBLE_EQ(num_neg.to_double(), -123.45);
+
+    // SqlNumeric comparisons with zero and opposing signs
+    EXPECT_TRUE((SqlNumeric("0") <=> SqlNumeric("5")) < 0);
+    EXPECT_TRUE((SqlNumeric("0") <=> SqlNumeric("-5")) > 0);
+    EXPECT_TRUE((SqlNumeric("5") <=> SqlNumeric("0")) > 0);
+    EXPECT_TRUE((SqlNumeric("-5") <=> SqlNumeric("0")) < 0);
+    EXPECT_TRUE((SqlNumeric("-5") <=> SqlNumeric("5")) < 0);
+    EXPECT_TRUE((SqlNumeric("5") <=> SqlNumeric("-5")) > 0);
+
+    EXPECT_TRUE((SqlNumeric("100") <=> SqlNumeric("50")) > 0);
+    EXPECT_TRUE((SqlNumeric("50") <=> SqlNumeric("100")) < 0);
+    EXPECT_TRUE((SqlNumeric("1.23") <=> SqlNumeric("1.25")) < 0);
+    EXPECT_TRUE((SqlNumeric("1.25") <=> SqlNumeric("1.23")) > 0);
+    EXPECT_TRUE((SqlNumeric("1.234") <=> SqlNumeric("1.23")) > 0);
+
+    // SqlTimestamp string formatting with tz offset
+    SqlTimestamp ts_tz_pos(2026, 1, 1, 12, 0, 0, 0, 120);
+    EXPECT_EQ(ts_tz_pos.to_string(), "2026-01-01 12:00:00+02:00");
+
+    SqlTimestamp ts_tz_neg(2026, 1, 1, 12, 0, 0, 0, -300);
+    EXPECT_EQ(ts_tz_neg.to_string(), "2026-01-01 12:00:00-05:00");
+
+    SqlTimestamp ts_long_frac = SqlTimestamp::from_string("2026-01-01 12:00:00.123456789999Z");
+    EXPECT_EQ(ts_long_frac.fraction, 123456789U);
+
+    SqlTimestamp ts_ws_tz = SqlTimestamp::from_string("2026-01-01 12:00:00   Z");
+    EXPECT_EQ(ts_ws_tz.tz_offset_minutes, 0);
+
+    SqlTimestamp ts_compact_tz = SqlTimestamp::from_string("2026-01-01 12:00:00+0200");
+    EXPECT_EQ(ts_compact_tz.tz_offset_minutes, 120);
+
+    SqlTimestamp ts_compact_tz_neg = SqlTimestamp::from_string("2026-01-01 12:00:00-0530");
+    EXPECT_EQ(ts_compact_tz_neg.tz_offset_minutes, -330);
+
+    SqlTimestamp ts_empty = SqlTimestamp::from_string("");
+    EXPECT_EQ(ts_empty.year, 1970);
+
+    // SqlInterval
+    SqlInterval iv_ym_neg = SqlInterval::from_year_month(2, 6, true);
+    auto months_neg = iv_ym_neg.to_duration<std::chrono::months>();
+    EXPECT_EQ(months_neg.count(), -30);
+
+    SqlInterval iv_comp_pos;
+    iv_comp_pos.years = 1;
+    iv_comp_pos.months = 2;
+    iv_comp_pos.days = 5;
+    auto comp_dur = iv_comp_pos.to_duration<std::chrono::seconds>();
+    EXPECT_GT(comp_dur.count(), 0);
+
+    SqlInterval iv_comp_neg;
+    iv_comp_neg.years = 1;
+    iv_comp_neg.months = 2;
+    iv_comp_neg.days = 5;
+    iv_comp_neg.is_negative = true;
+    auto comp_dur_neg = iv_comp_neg.to_duration<std::chrono::seconds>();
+    EXPECT_LT(comp_dur_neg.count(), 0);
+
+    SqlInterval iv_neg_day = SqlInterval::from_day_second(1, 2, 3, 4, 0, true);
+    auto sec_neg = iv_neg_day.to_duration<std::chrono::seconds>();
+    EXPECT_LT(sec_neg.count(), 0);
+
+    SqlInterval iv_plus = SqlInterval::from_string("+1 02:03:04");
+    EXPECT_FALSE(iv_plus.is_negative);
+    EXPECT_EQ(iv_plus.days, 1);
+
+    SqlInterval iv_frac_long = SqlInterval::from_string("1 02:03:04.123456789999");
+    EXPECT_EQ(iv_frac_long.fraction, 123456789U);
+
+    SqlInterval iv_empty = SqlInterval::from_string("");
+    EXPECT_EQ(iv_empty.days, 0);
+}
+

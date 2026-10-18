@@ -329,3 +329,216 @@ TEST(AsyncConnectionPoolTest, CloseCancelsQueuedAndFinishesRunningWork) {
     EXPECT_TRUE(pool->is_closed());
     EXPECT_TRUE(close_finished);
 }
+
+TEST(BoundedTaskExecutorTest, DefaultsZeroWorkersAndCapacityToOne) {
+    cpplinq::detail::BoundedTaskExecutor executor(0, 0);
+    auto fut = executor.submit<int>([]() { return 42; });
+    EXPECT_EQ(fut.get(), 42);
+}
+
+TEST(BoundedTaskExecutorTest, SubmitVoidAndExceptionHandling) {
+    cpplinq::detail::BoundedTaskExecutor executor(1, 2);
+
+    std::atomic<bool> void_called{false};
+    auto void_fut = executor.submit<void>([&]() {
+        void_called.store(true);
+    });
+    EXPECT_NO_THROW(void_fut.get());
+    EXPECT_TRUE(void_called.load());
+
+    auto void_err_fut = executor.submit<void>([]() {
+        throw std::runtime_error("void error");
+    });
+    EXPECT_THROW(void_err_fut.get(), std::runtime_error);
+
+    auto int_err_fut = executor.submit<int>([]() -> int {
+        throw std::runtime_error("int error");
+    });
+    EXPECT_THROW(int_err_fut.get(), std::runtime_error);
+}
+
+TEST(BoundedTaskExecutorTest, QueueFullThrowsDbException) {
+    cpplinq::detail::BoundedTaskExecutor executor(1, 1);
+    std::latch running(1);
+    std::latch release(1);
+
+    auto fut1 = executor.submit<int>([&]() {
+        running.count_down();
+        release.wait();
+        return 1;
+    });
+    running.wait();
+
+    auto fut2 = executor.submit<int>([]() {
+        return 2;
+    });
+    auto fut3 = executor.submit<int>([]() {
+        return 3;
+    });
+
+    try {
+        fut3.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: executor queue is full");
+    }
+
+    release.count_down();
+    EXPECT_EQ(fut1.get(), 1);
+    EXPECT_EQ(fut2.get(), 2);
+
+    // Also test submit<void> when queue is full
+    cpplinq::detail::BoundedTaskExecutor executor_void(1, 1);
+    std::latch running_v(1);
+    std::latch release_v(1);
+    auto fv1 = executor_void.submit<void>([&]() {
+        running_v.count_down();
+        release_v.wait();
+    });
+    running_v.wait();
+
+    auto fv2 = executor_void.submit<void>([]() {});
+    auto fv3 = executor_void.submit<void>([]() {});
+
+    try {
+        fv3.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: executor queue is full");
+    }
+
+    release_v.count_down();
+    EXPECT_NO_THROW(fv1.get());
+    EXPECT_NO_THROW(fv2.get());
+}
+
+TEST(BoundedTaskExecutorTest, SubmitAfterShutdownThrowsDbException) {
+    cpplinq::detail::BoundedTaskExecutor executor(1, 2);
+    executor.shutdown();
+
+    auto int_fut = executor.submit<int>([]() { return 10; });
+    try {
+        int_fut.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: executor is shut down");
+    }
+
+    auto void_fut = executor.submit<void>([]() {});
+    try {
+        void_fut.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: executor is shut down");
+    }
+}
+
+TEST(BoundedTaskExecutorTest, ShutdownCancelsQueuedJobs) {
+    cpplinq::detail::BoundedTaskExecutor executor(1, 2);
+    std::latch running(1);
+    std::latch release(1);
+
+    auto fut1 = executor.submit<int>([&]() {
+        running.count_down();
+        release.wait();
+        return 1;
+    });
+    running.wait();
+
+    auto fut2 = executor.submit<int>([]() { return 2; });
+    auto fut3 = executor.submit<void>([]() {});
+
+    std::thread shutdown_thread([&]() {
+        executor.shutdown();
+    });
+
+    // fut2 gets cancelled during shutdown before shutdown waits for worker.join()
+    fut2.wait();
+    release.count_down();
+    shutdown_thread.join();
+
+    EXPECT_EQ(fut1.get(), 1);
+    EXPECT_THROW(fut2.get(), OperationCancelled);
+    EXPECT_THROW(fut3.get(), OperationCancelled);
+}
+
+TEST(BoundedTaskExecutorTest, WorkerCallingShutdownDetachesSelfAndJoinsOthers) {
+    cpplinq::detail::BoundedTaskExecutor executor(2, 4);
+    auto fut = executor.submit<int>([&executor]() {
+        executor.shutdown();
+        return 99;
+    });
+    EXPECT_EQ(fut.get(), 99);
+}
+
+TEST(AsyncConnectionPoolTest, SubmitVoidReturningLambda) {
+    const auto database_path = make_database_path();
+    auto pool = make_pool<sqlite>(database_path, single_worker_config());
+
+    std::atomic<bool> invoked{false};
+    auto future = pool->submit([&](auto& db) {
+        db.ensure_table(async_items_table);
+        invoked.store(true);
+    });
+    EXPECT_NO_THROW(future.get());
+    EXPECT_TRUE(invoked.load());
+
+    pool->close();
+    std::filesystem::remove(database_path);
+}
+
+TEST(AsyncConnectionPoolTest, SubmitThrowsStdException) {
+    auto pool = make_pool<sqlite>(make_database_path(), single_worker_config());
+
+    auto int_future = pool->submit([](auto&) -> int {
+        throw std::runtime_error("boom");
+    });
+    EXPECT_THROW(int_future.get(), std::runtime_error);
+
+    auto void_future = pool->submit([](auto&) {
+        throw std::runtime_error("void boom");
+    });
+    EXPECT_THROW(void_future.get(), std::runtime_error);
+
+    pool->close();
+}
+
+TEST(AsyncConnectionPoolTest, SubmitAfterCloseRejectsWithExactMessage) {
+    auto pool = make_pool<sqlite>(make_database_path(), single_worker_config());
+    pool->close();
+
+    auto int_fut = pool->submit([](auto&) { return 1; });
+    try {
+        int_fut.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: ConnectionPool is closed");
+    }
+
+    auto void_fut = pool->submit([](auto&) {});
+    try {
+        void_fut.get();
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Cannot submit asynchronous operation: ConnectionPool is closed");
+    }
+}
+
+TEST(AsyncConnectionPoolTest, PoolClosedWhileSubmitWaitingForConnection) {
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 1;
+    config.async_worker_count = 1;
+    config.async_queue_capacity = 4;
+    config.acquire_timeout = std::chrono::seconds(5);
+
+    auto pool = make_pool<sqlite>(make_database_path(), config);
+    auto conn = pool->acquire();
+
+    auto fut = pool->submit([](auto&) { return 42; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    pool->close();
+
+    EXPECT_THROW(fut.get(), OperationCancelled);
+}
+

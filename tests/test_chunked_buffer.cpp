@@ -417,3 +417,442 @@ TEST(ChunkedBufferTest, EmptyChunkAfterConstructorThrowDoesNotLaunder) {
     EXPECT_EQ(buffer.size(), 0u);
     EXPECT_EQ(ThrowingType::live_instances, 0);
 }
+
+namespace {
+template <typename C>
+concept HasReserveMethod = requires(C c) { c.reserve(10); };
+
+template <typename C>
+concept HasShrinkToFitMethod = requires(C c) { c.shrink_to_fit(); };
+
+template <typename C>
+concept HasPopBackMethod = requires(C c) { c.pop_back(); };
+} // namespace
+
+TEST(ChunkedBufferTest, MoveConstructorAndAssignment) {
+    // 1. Move construct empty buffer
+    {
+        ChunkedBuffer<int, 4> src;
+        EXPECT_TRUE(src.empty());
+        ChunkedBuffer<int, 4> dst(std::move(src));
+        EXPECT_TRUE(dst.empty());
+        EXPECT_EQ(dst.size(), 0u);
+        EXPECT_TRUE(src.empty());
+        EXPECT_EQ(src.size(), 0u);
+    }
+
+    // 2. Move construct populated buffer across multiple chunk boundaries
+    {
+        DestructorTracker::reset();
+        {
+            ChunkedBuffer<DestructorTracker, 2> src;
+            for (int i = 0; i < 7; ++i) {
+                src.emplace_back(i * 10);
+            }
+            EXPECT_EQ(src.size(), 7u);
+            EXPECT_EQ(DestructorTracker::construct_count, 7);
+            EXPECT_EQ(DestructorTracker::move_count, 0);
+
+            ChunkedBuffer<DestructorTracker, 2> dst(std::move(src));
+            EXPECT_TRUE(src.empty());
+            EXPECT_EQ(src.size(), 0u);
+            EXPECT_EQ(dst.size(), 7u);
+            EXPECT_EQ(DestructorTracker::construct_count, 7);
+            EXPECT_EQ(DestructorTracker::move_count, 0); // No element moves, only chunk pointers transferred!
+
+            for (int i = 0; i < 7; ++i) {
+                EXPECT_EQ(dst[i].value, i * 10);
+            }
+        }
+        EXPECT_EQ(DestructorTracker::destruct_count, 7);
+    }
+
+    // 3. Move assignment self-assignment
+    {
+        ChunkedBuffer<int, 4> buf;
+        buf.push_back(10);
+        buf.push_back(20);
+        auto* p = &buf;
+        *p = std::move(buf);
+        EXPECT_EQ(buf.size(), 2u);
+        EXPECT_EQ(buf[0], 10);
+        EXPECT_EQ(buf[1], 20);
+    }
+
+    // 4. Move assignment into populated buffer (destructs previous contents)
+    {
+        DestructorTracker::reset();
+        {
+            ChunkedBuffer<DestructorTracker, 2> dst;
+            dst.emplace_back(1);
+            dst.emplace_back(2);
+            dst.emplace_back(3);
+
+            ChunkedBuffer<DestructorTracker, 2> src;
+            src.emplace_back(100);
+            src.emplace_back(200);
+
+            EXPECT_EQ(DestructorTracker::construct_count, 5);
+            EXPECT_EQ(DestructorTracker::destruct_count, 0);
+
+            dst = std::move(src);
+
+            EXPECT_EQ(dst.size(), 2u);
+            EXPECT_EQ(dst[0].value, 100);
+            EXPECT_EQ(dst[1].value, 200);
+            EXPECT_TRUE(src.empty());
+            EXPECT_EQ(src.size(), 0u);
+
+            // Previous 3 elements in dst were destroyed during clear() inside operator=
+            EXPECT_EQ(DestructorTracker::destruct_count, 3);
+        }
+        EXPECT_EQ(DestructorTracker::destruct_count, 5);
+    }
+}
+
+TEST(ChunkedBufferTest, ContainerTraitsAndDeletedOperations) {
+    static_assert(!std::is_copy_constructible_v<ChunkedBuffer<int, 4>>);
+    static_assert(!std::is_copy_assignable_v<ChunkedBuffer<int, 4>>);
+    static_assert(!std::is_copy_constructible_v<ChunkedList<int, 4>>);
+    static_assert(!std::is_copy_assignable_v<ChunkedList<int, 4>>);
+    static_assert(std::is_move_constructible_v<ChunkedBuffer<int, 4>>);
+    static_assert(std::is_move_assignable_v<ChunkedBuffer<int, 4>>);
+
+    // Verify ChunkedBuffer does not have reserve, shrink_to_fit, or pop_back
+    static_assert(!HasReserveMethod<ChunkedBuffer<int, 4>>);
+    static_assert(!HasShrinkToFitMethod<ChunkedBuffer<int, 4>>);
+    static_assert(!HasPopBackMethod<ChunkedBuffer<int, 4>>);
+}
+
+TEST(ChunkedBufferTest, FrontBackEmptyAndConstAccess) {
+    // Empty non-const container
+    ChunkedBuffer<int, 4> buf;
+    EXPECT_TRUE(buf.empty());
+    EXPECT_EQ(buf.size(), 0u);
+    EXPECT_THROW(buf.front(), std::out_of_range);
+    EXPECT_THROW(buf.back(), std::out_of_range);
+
+    // Empty const container
+    const auto& cbuf = buf;
+    EXPECT_TRUE(cbuf.empty());
+    EXPECT_EQ(cbuf.size(), 0u);
+    EXPECT_THROW(cbuf.front(), std::out_of_range);
+    EXPECT_THROW(cbuf.back(), std::out_of_range);
+
+    // Populated single element
+    buf.push_back(42);
+    EXPECT_FALSE(buf.empty());
+    EXPECT_EQ(buf.size(), 1u);
+    EXPECT_EQ(buf.front(), 42);
+    EXPECT_EQ(buf.back(), 42);
+    EXPECT_EQ(cbuf.front(), 42);
+    EXPECT_EQ(cbuf.back(), 42);
+
+    // Mutating via non-const front()
+    buf.front() = 99;
+    EXPECT_EQ(buf.front(), 99);
+    EXPECT_EQ(buf.back(), 99);
+
+    // Multiple elements spanning chunk boundary
+    buf.push_back(100);
+    buf.push_back(200);
+    buf.push_back(300);
+    buf.push_back(400); // 5 elements, chunks of 4 -> spans boundary
+    EXPECT_EQ(buf.size(), 5u);
+    EXPECT_EQ(buf.front(), 99);
+    EXPECT_EQ(buf.back(), 400);
+    EXPECT_EQ(cbuf.front(), 99);
+    EXPECT_EQ(cbuf.back(), 400);
+
+    // Mutating via non-const back()
+    buf.back() = 555;
+    EXPECT_EQ(buf.back(), 555);
+    EXPECT_EQ(cbuf.back(), 555);
+}
+
+TEST(ChunkedBufferTest, PushAndEmplaceAcrossChunkBoundaries) {
+    ChunkedBuffer<int, 2> buf;
+    EXPECT_TRUE(buf.empty());
+    EXPECT_EQ(buf.size(), 0u);
+
+    // Push lvalue
+    const int val1 = 11;
+    buf.push_back(val1);
+    EXPECT_FALSE(buf.empty());
+    EXPECT_EQ(buf.size(), 1u);
+    EXPECT_EQ(buf[0], 11);
+
+    // Push rvalue (fills chunk 0)
+    buf.push_back(22);
+    EXPECT_EQ(buf.size(), 2u);
+    EXPECT_EQ(buf[1], 22);
+
+    // Emplace back (allocates chunk 1)
+    buf.emplace_back(33);
+    EXPECT_EQ(buf.size(), 3u);
+    EXPECT_EQ(buf[2], 33);
+
+    // Fills chunk 1
+    buf.push_back(44);
+    EXPECT_EQ(buf.size(), 4u);
+    EXPECT_EQ(buf[3], 44);
+
+    // Allocates chunk 2
+    buf.push_back(55);
+    EXPECT_EQ(buf.size(), 5u);
+    EXPECT_EQ(buf[4], 55);
+
+    // Verify all indexing and at()
+    for (size_t i = 0; i < buf.size(); ++i) {
+        EXPECT_EQ(buf[i], static_cast<int>((i + 1) * 11));
+        EXPECT_EQ(buf.at(i), static_cast<int>((i + 1) * 11));
+    }
+
+    const auto& cbuf = buf;
+    for (size_t i = 0; i < cbuf.size(); ++i) {
+        EXPECT_EQ(cbuf[i], static_cast<int>((i + 1) * 11));
+        EXPECT_EQ(cbuf.at(i), static_cast<int>((i + 1) * 11));
+    }
+}
+
+TEST(ChunkedBufferTest, ClearEdgeCasesAndReuse) {
+    DestructorTracker::reset();
+    ChunkedBuffer<DestructorTracker, 2> buf;
+
+    // Clear on empty buffer
+    EXPECT_NO_THROW(buf.clear());
+    EXPECT_TRUE(buf.empty());
+    EXPECT_EQ(buf.size(), 0u);
+
+    // Push elements
+    buf.emplace_back(1);
+    buf.emplace_back(2);
+    buf.emplace_back(3);
+    EXPECT_EQ(buf.size(), 3u);
+    EXPECT_EQ(DestructorTracker::construct_count, 3);
+    EXPECT_EQ(DestructorTracker::destruct_count, 0);
+
+    // Clear populated
+    buf.clear();
+    EXPECT_TRUE(buf.empty());
+    EXPECT_EQ(buf.size(), 0u);
+    EXPECT_EQ(DestructorTracker::destruct_count, 3);
+
+    // Clear again
+    buf.clear();
+    EXPECT_TRUE(buf.empty());
+    EXPECT_EQ(buf.size(), 0u);
+    EXPECT_EQ(DestructorTracker::destruct_count, 3);
+
+    // Push after clear
+    buf.emplace_back(10);
+    buf.emplace_back(20);
+    EXPECT_EQ(buf.size(), 2u);
+    EXPECT_EQ(buf[0].value, 10);
+    EXPECT_EQ(buf[1].value, 20);
+}
+
+TEST(ChunkedBufferTest, AtOutOfBoundsConstAndNonConst) {
+    ChunkedBuffer<std::string, 2> buf;
+    EXPECT_THROW(buf.at(0), std::out_of_range);
+
+    const auto& cbuf = buf;
+    EXPECT_THROW(cbuf.at(0), std::out_of_range);
+
+    buf.push_back("a");
+    buf.push_back("b");
+    EXPECT_EQ(buf.at(0), "a");
+    EXPECT_EQ(buf.at(1), "b");
+    EXPECT_EQ(cbuf.at(0), "a");
+    EXPECT_EQ(cbuf.at(1), "b");
+
+    EXPECT_THROW(buf.at(2), std::out_of_range);
+    EXPECT_THROW(buf.at(99), std::out_of_range);
+    EXPECT_THROW(cbuf.at(2), std::out_of_range);
+    EXPECT_THROW(cbuf.at(99), std::out_of_range);
+}
+
+TEST(ChunkedBufferTest, IteratorComprehensiveOperations) {
+    // 1. Default constructor
+    ChunkedBuffer<int, 4>::iterator def_it1, def_it2;
+    EXPECT_TRUE(def_it1 == def_it2);
+    EXPECT_FALSE(def_it1 != def_it2);
+
+    ChunkedBuffer<int, 4>::const_iterator def_cit1, def_cit2;
+    EXPECT_TRUE(def_cit1 == def_cit2);
+    EXPECT_FALSE(def_cit1 != def_cit2);
+
+    // 2. Iterators on empty buffer
+    ChunkedBuffer<int, 4> empty_buf;
+    EXPECT_EQ(empty_buf.begin(), empty_buf.end());
+    EXPECT_EQ(empty_buf.cbegin(), empty_buf.cend());
+
+    // 3. Increment, decrement, and compound arithmetic across chunk boundaries
+    ChunkedBuffer<int, 2> buf;
+    for (int i = 0; i < 7; ++i) {
+        buf.push_back(i * 10);
+    }
+
+    auto it = buf.begin();
+    EXPECT_EQ(*it, 0);
+
+    // Post-increment
+    auto old_it = it++;
+    EXPECT_EQ(*old_it, 0);
+    EXPECT_EQ(*it, 10);
+
+    // Pre-increment
+    auto pre_it = ++it;
+    EXPECT_EQ(*pre_it, 20);
+    EXPECT_EQ(*it, 20);
+
+    // Pre-decrement
+    auto it_end = buf.end();
+    auto pre_dec = --it_end;
+    EXPECT_EQ(*pre_dec, 60);
+
+    // Post-decrement
+    auto post_dec = it_end--;
+    EXPECT_EQ(*post_dec, 60);
+    EXPECT_EQ(*it_end, 50);
+
+    // Operator += and -= with positive and negative differences
+    it_end += 1;
+    EXPECT_EQ(*it_end, 60);
+
+    it_end += -2;
+    EXPECT_EQ(*it_end, 40);
+
+    it_end -= 1;
+    EXPECT_EQ(*it_end, 30);
+
+    it_end -= -2;
+    EXPECT_EQ(*it_end, 50);
+
+    // Operator it + n and n + it
+    auto it_add1 = buf.begin() + 4;
+    EXPECT_EQ(*it_add1, 40);
+
+    auto it_add2 = 4 + buf.begin();
+    EXPECT_EQ(*it_add2, 40);
+
+    // Operator it - n
+    auto it_sub = buf.end() - 2;
+    EXPECT_EQ(*it_sub, 50);
+
+    // Operator it1 - it2
+    EXPECT_EQ(buf.end() - buf.begin(), 7);
+    EXPECT_EQ(buf.begin() - buf.end(), -7);
+
+    // Operator[]
+    auto mid = buf.begin() + 3;
+    EXPECT_EQ(mid[0], 30);
+    EXPECT_EQ(mid[2], 50);
+    EXPECT_EQ(mid[-2], 10);
+
+    // Non-const to const iterator conversion
+    ChunkedBuffer<int, 2>::const_iterator cit = buf.begin();
+    EXPECT_EQ(cit, buf.cbegin());
+    EXPECT_EQ(*cit, 0);
+    cit += 5;
+    EXPECT_EQ(*cit, 50);
+
+    // Comparisons
+    auto it_a = buf.begin();
+    auto it_b = buf.begin() + 3;
+    EXPECT_TRUE(it_a < it_b);
+    EXPECT_TRUE(it_a <= it_b);
+    EXPECT_TRUE(it_b > it_a);
+    EXPECT_TRUE(it_b >= it_a);
+    EXPECT_TRUE(it_a != it_b);
+    EXPECT_FALSE(it_a == it_b);
+    EXPECT_TRUE((it_a <=> it_b) < 0);
+    EXPECT_TRUE((it_b <=> it_a) > 0);
+    EXPECT_TRUE((it_a <=> it_a) == 0);
+
+    // Arrow operator
+    ChunkedBuffer<std::string, 2> sbuf;
+    sbuf.push_back("hello");
+    sbuf.push_back("world");
+    EXPECT_EQ(sbuf.begin()->length(), 5u);
+    EXPECT_EQ(sbuf.cbegin()->length(), 5u);
+}
+
+TEST(ChunkedBufferTest, ReverseIteratorsAndConstOverloads) {
+    // Empty container reverse iterators
+    ChunkedBuffer<int, 4> empty_buf;
+    EXPECT_EQ(empty_buf.rbegin(), empty_buf.rend());
+    EXPECT_EQ(empty_buf.crbegin(), empty_buf.crend());
+
+    const auto& c_empty = empty_buf;
+    EXPECT_EQ(c_empty.rbegin(), c_empty.rend());
+    EXPECT_EQ(c_empty.crbegin(), c_empty.crend());
+
+    // Populated container
+    ChunkedBuffer<int, 2> buf;
+    for (int i = 0; i < 5; ++i) {
+        buf.push_back(i);
+    }
+
+    std::vector<int> rev;
+    for (auto it = buf.crbegin(); it != buf.crend(); ++it) {
+        rev.push_back(*it);
+    }
+    EXPECT_EQ(rev, (std::vector<int>{4, 3, 2, 1, 0}));
+
+    // Mutating via non-const reverse iterator
+    *buf.rbegin() = 999;
+    EXPECT_EQ(buf.back(), 999);
+
+    const auto& cbuf = buf;
+    EXPECT_EQ(*cbuf.rbegin(), 999);
+}
+
+TEST(ChunkedBufferTest, ForEachChunkAndToVectorEdgeCases) {
+    // 1. for_each_chunk on empty container
+    ChunkedBuffer<int, 4> empty_buf;
+    size_t count_invocations = 0;
+    empty_buf.for_each_chunk([&](int*, size_t) { ++count_invocations; });
+    EXPECT_EQ(count_invocations, 0u);
+
+    const auto& c_empty = empty_buf;
+    c_empty.for_each_chunk([&](const int*, size_t) { ++count_invocations; });
+    EXPECT_EQ(count_invocations, 0u);
+
+    // 2. to_vector on empty container
+    auto v_empty_const = c_empty.to_vector();
+    EXPECT_TRUE(v_empty_const.empty());
+
+    auto v_empty_rvalue = std::move(empty_buf).to_vector();
+    EXPECT_TRUE(v_empty_rvalue.empty());
+
+    // 3. for_each_chunk on multi-chunk with mutating callback
+    ChunkedBuffer<int, 3> buf;
+    for (int i = 0; i < 8; ++i) {
+        buf.push_back(i + 1);
+    }
+
+    buf.for_each_chunk([](int* data, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            data[i] *= 10;
+        }
+    });
+
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(buf[i], (i + 1) * 10);
+    }
+
+    // 4. for_each_chunk on const multi-chunk
+    const auto& cbuf = buf;
+    std::vector<int> collected;
+    cbuf.for_each_chunk([&](const int* data, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            collected.push_back(data[i]);
+        }
+    });
+    EXPECT_EQ(collected.size(), 8u);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(collected[i], (i + 1) * 10);
+    }
+}
+

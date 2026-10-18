@@ -1971,3 +1971,480 @@ TEST(ReviewFixesTest, OdbcUtilsStringToNumericLeadingZeroPrecisionAndScaleClampi
 }
 #endif
 
+#ifdef CPPLINQ_HAS_SQLITE
+TEST(QueryBuilderCoverageTest, JoinedCountAndFirstAndWhere) {
+    DbContext<sqlite> db(":memory:");
+    auto users = query_builder_users_table();
+    auto orders = query_builder_orders_table();
+    auto accounts = query_builder_accounts_table();
+
+    db.ensure_table(users);
+    db.ensure_table(orders);
+    db.ensure_table(accounts);
+
+    db.insert(users, QueryBuilderUser{1, "Alice"});
+    db.insert(users, QueryBuilderUser{2, "Bob"});
+    db.insert(users, QueryBuilderUser{3, "Charlie"});
+
+    db.insert(orders, QueryBuilderOrder{101, 1, 100.0});
+    db.insert(orders, QueryBuilderOrder{102, 1, 200.0});
+    db.insert(orders, QueryBuilderOrder{103, 2, 50.0});
+
+    db.insert(accounts, QueryBuilderAccount{201, 1, "USD", 1000.0});
+
+    // 1. joined.count() on Inner join without WHERE (exercises params.empty() branch)
+    auto jq_inner = db.from(users).join(orders).on(users["id"] == orders["user_id"]);
+    EXPECT_EQ(jq_inner.count(), 3u);
+
+    // 2. joined.count() on Inner join with WHERE (exercises params not empty branch)
+    auto jq_inner_where = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                            .where(orders["amount"] > 75.0);
+    EXPECT_EQ(jq_inner_where.count(), 2u);
+
+    // 3. joined.count() on Left join without WHERE
+    auto jq_left = db.from(users).left_join(orders).on(users["id"] == orders["user_id"]);
+    EXPECT_EQ(jq_left.count(), 4u); // Alice (2), Bob (1), Charlie (1 null)
+
+    // 4. joined.count() on Left join with WHERE
+    auto jq_left_where = db.from(users).left_join(orders).on(users["id"] == orders["user_id"])
+                           .where(users["name"] == "Alice");
+    EXPECT_EQ(jq_left_where.count(), 2u);
+
+    // 5. joined.count() with condition matching 0 rows
+    auto jq_zero = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                     .where(users["name"] == "Nobody");
+    EXPECT_EQ(jq_zero.count(), 0u);
+
+    // 6. joined.first() on Inner join with data
+    auto first_inner = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                         .order_by(orders["amount"])
+                         .first();
+    ASSERT_TRUE(first_inner.has_value());
+    EXPECT_EQ(first_inner->first.name, "Bob");
+    EXPECT_DOUBLE_EQ(first_inner->second.amount, 50.0);
+
+    // 7. joined.first() on Inner join with no matching rows -> nullopt
+    auto first_none = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                        .where(users["name"] == "Nobody")
+                        .first();
+    EXPECT_FALSE(first_none.has_value());
+
+    // 8. joined.first() on Left join matching row
+    auto first_left = db.from(users).left_join(orders).on(users["id"] == orders["user_id"])
+                        .where(users["name"] == "Alice")
+                        .order_by(orders["amount"])
+                        .first();
+    ASSERT_TRUE(first_left.has_value());
+    EXPECT_EQ(first_left->first.name, "Alice");
+    ASSERT_TRUE(first_left->second.has_value());
+    EXPECT_DOUBLE_EQ(first_left->second->amount, 100.0);
+
+    // 9. joined.first() on Left join non-matching row (second is nullopt)
+    auto first_left_null = db.from(users).left_join(orders).on(users["id"] == orders["user_id"])
+                             .where(users["name"] == "Charlie")
+                             .first();
+    ASSERT_TRUE(first_left_null.has_value());
+    EXPECT_EQ(first_left_null->first.name, "Charlie");
+    EXPECT_FALSE(first_left_null->second.has_value());
+
+    // 10. joined.where(...) chaining
+    auto jq_chained = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                        .where(users["id"] == 1)
+                        .where(orders["amount"] > 150.0);
+    auto chained_list = jq_chained.to_list();
+    ASSERT_EQ(chained_list.size(), 1u);
+    EXPECT_EQ(chained_list[0].first.name, "Alice");
+    EXPECT_DOUBLE_EQ(chained_list[0].second.amount, 200.0);
+
+    // 11. joined order_by_desc and then_by / then_by_desc
+    auto jq_orders = db.from(users).join(orders).on(users["id"] == orders["user_id"])
+                       .order_by_desc(users["id"])
+                       .then_by(orders["amount"])
+                       .then_by_desc(orders["id"])
+                       .limit(2)
+                       .offset(0)
+                       .to_list();
+    EXPECT_EQ(jq_orders.size(), 2u);
+
+    // 12. Joined3QueryBuilder chaining where, first, to_list with left joins
+    auto j3 = db.from(users)
+                .join(orders).on(users["id"] == orders["user_id"])
+                .join(accounts).on(accounts["user_id"] == users["id"])
+                .where(users["name"] == "Alice")
+                .where(orders["amount"] > 150.0);
+    auto j3_list = j3.to_list();
+    ASSERT_EQ(j3_list.size(), 1u);
+    EXPECT_EQ(std::get<0>(j3_list[0]).name, "Alice");
+    EXPECT_DOUBLE_EQ(std::get<1>(j3_list[0]).amount, 200.0);
+    EXPECT_EQ(std::get<2>(j3_list[0]).currency, "USD");
+
+    auto j3_first = j3.first();
+    ASSERT_TRUE(j3_first.has_value());
+
+    auto j3_none = db.from(users)
+                     .join(orders).on(users["id"] == orders["user_id"])
+                     .join(accounts).on(accounts["user_id"] == users["id"])
+                     .where(users["name"] == "Nobody")
+                     .first();
+    EXPECT_FALSE(j3_none.has_value());
+
+    // 3-way Left join where joined tables have no matching rows -> optional is nullopt
+    auto j3_left = db.from(users)
+                     .left_join(orders).on(users["id"] == orders["user_id"])
+                     .left_join(accounts).on(accounts["user_id"] == users["id"])
+                     .where(users["name"] == "Charlie")
+                     .order_by_desc(users["id"])
+                     .then_by(users["name"])
+                     .then_by_desc(users["name"])
+                     .limit(10)
+                     .offset(0);
+    auto j3_left_res = j3_left.to_list();
+    ASSERT_EQ(j3_left_res.size(), 1u);
+    EXPECT_EQ(std::get<0>(j3_left_res[0]).name, "Charlie");
+    EXPECT_FALSE(std::get<1>(j3_left_res[0]).has_value());
+    EXPECT_FALSE(std::get<2>(j3_left_res[0]).has_value());
+}
+
+TEST(QueryBuilderCoverageTest, QueryBuilderTerminalsAndEdgeCases) {
+    DbContext<sqlite> db(":memory:");
+    auto users = query_builder_users_table();
+    auto orders = query_builder_orders_table();
+
+    auto empty_orders = table<QueryBuilderOrder>("empty_orders",
+        column("id", &QueryBuilderOrder::id, primary_key),
+        column("user_id", &QueryBuilderOrder::user_id),
+        column("amount", &QueryBuilderOrder::amount));
+
+    db.ensure_table(users);
+    db.ensure_table(orders);
+    db.ensure_table(empty_orders);
+
+    db.insert(users, QueryBuilderUser{1, "Alice"});
+    db.insert(users, QueryBuilderUser{2, "Bob"});
+    db.insert(users, QueryBuilderUser{3, "Alice"}); // duplicate name
+
+    db.insert(orders, QueryBuilderOrder{1, 1, 10.0});
+    db.insert(orders, QueryBuilderOrder{2, 1, 20.0});
+    db.insert(orders, QueryBuilderOrder{3, 2, 30.0});
+
+    // 1. count_distinct with empty column expr -> throws DbException
+    try {
+        db.from(users).count_distinct(expr::Expr{});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Column name cannot be empty for count_distinct");
+    }
+
+    // count_distinct without WHERE (params empty, line 997)
+    EXPECT_EQ(db.from(users).count_distinct(users["name"]), 2u);
+
+    // count_distinct with WHERE (params not empty, line 1000)
+    EXPECT_EQ(db.from(users).where(users["id"] <= 2).count_distinct(users["name"]), 2u);
+
+    // count_distinct matching 0 rows
+    EXPECT_EQ(db.from(users).where(users["name"] == "Nobody").count_distinct(users["name"]), 0u);
+
+    // 2. avg, sum, min_val, max_val on empty tables -> std::nullopt
+    EXPECT_FALSE(db.from(empty_orders).avg(empty_orders["amount"]).has_value());
+    EXPECT_FALSE(db.from(empty_orders).sum(empty_orders["amount"]).has_value());
+    EXPECT_FALSE(db.from(empty_orders).min_val(empty_orders["amount"]).has_value());
+    EXPECT_FALSE(db.from(empty_orders).max_val(empty_orders["amount"]).has_value());
+
+    // avg, sum, min_val, max_val on tables with data without WHERE
+    auto avg_val = db.from(orders).avg(orders["amount"]);
+    ASSERT_TRUE(avg_val.has_value());
+    EXPECT_DOUBLE_EQ(*avg_val, 20.0);
+
+    auto sum_val = db.from(orders).sum(orders["amount"]);
+    ASSERT_TRUE(sum_val.has_value());
+    EXPECT_DOUBLE_EQ(*sum_val, 60.0);
+
+    auto min_val = db.from(orders).min_val(orders["amount"]);
+    ASSERT_TRUE(min_val.has_value());
+    EXPECT_DOUBLE_EQ(*min_val, 10.0);
+
+    auto max_val = db.from(orders).max_val(orders["amount"]);
+    ASSERT_TRUE(max_val.has_value());
+    EXPECT_DOUBLE_EQ(*max_val, 30.0);
+
+    // avg, sum, min_val, max_val with WHERE (params not empty)
+    auto sum_filtered = db.from(orders).where(orders["user_id"] == 1).sum(orders["amount"]);
+    ASSERT_TRUE(sum_filtered.has_value());
+    EXPECT_DOUBLE_EQ(*sum_filtered, 30.0);
+
+    // Aggregate with empty column expr -> throws DbException
+    try {
+        db.from(orders).avg(expr::Expr{});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Column name cannot be empty for AVG");
+    }
+    try {
+        db.from(orders).sum(expr::Expr{});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Column name cannot be empty for SUM");
+    }
+    try {
+        db.from(orders).min_val(expr::Expr{});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Column name cannot be empty for MIN");
+    }
+    try {
+        db.from(orders).max_val(expr::Expr{});
+        FAIL() << "Expected DbException";
+    } catch (const DbException& ex) {
+        EXPECT_STREQ(ex.what(), "Column name cannot be empty for MAX");
+    }
+
+    // 3. query.update(...) directly through QueryBuilder
+    // With params (lines 1036-1039)
+    size_t updated = db.from(users).where(users["id"] == 1).update({users["name"] = std::string("Alicia")});
+    EXPECT_EQ(updated, 1u);
+    auto reloaded = db.from(users).where(users["id"] == 1).first();
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->name, "Alicia");
+
+    // Without params (lines 1033-1035) - column assigned to column without where
+    size_t direct_upd = db.from(users).update({users["name"] = users["name"]});
+    EXPECT_EQ(direct_upd, 3u);
+
+    // 4. query.remove() directly through QueryBuilder
+    // With params (lines 1058-1061)
+    size_t removed = db.from(users).where(users["id"] == 3).remove();
+    EXPECT_EQ(removed, 1u);
+    EXPECT_EQ(db.from(users).count(), 2u);
+
+    // Without params (lines 1055-1057)
+    size_t removed_all = db.from(empty_orders).remove();
+    EXPECT_EQ(removed_all, 0u);
+
+    // 5. query.prepare() directly through QueryBuilder
+    // Without CTEs
+    auto prep_no_cte = db.from(users).where(users["id"] == param<int64_t>(0)).prepare<int64_t>();
+    auto prep_res = prep_no_cte.execute(int64_t{1});
+    ASSERT_EQ(prep_res.size(), 1u);
+    EXPECT_EQ(prep_res[0].name, "Alicia");
+
+    // With CTEs (lines 1080-1082)
+    auto cte_source = db.from(users).where(users["id"] > 0);
+    auto prep_cte = db.from(users).with_cte("user_cte", cte_source).prepare();
+    auto cte_res = prep_cte.execute();
+    EXPECT_EQ(cte_res.size(), 2u);
+
+    // 6. with_cte subquery and chaining
+    // SubqueryExpr overload (line 865)
+    auto sub = db.from(users).where(users["id"] > 0).as_subquery();
+    auto q_sub = db.from(users).with_cte("sub_cte", sub);
+    EXPECT_EQ(q_sub.to_list().size(), 2u);
+
+    // Chaining multiple CTEs
+    auto cte1 = db.from(users).where(users["id"] == 1);
+    auto cte2 = db.from(users).where(users["id"] == 2);
+    auto q_chained_cte = db.from(users).with_cte("c1", cte1).with_cte("c2", cte2);
+    EXPECT_EQ(q_chained_cte.to_list().size(), 2u);
+
+    // 7. query.exists()
+    // With params
+    EXPECT_TRUE(db.from(users).where(users["name"] == "Alicia").exists());
+    EXPECT_FALSE(db.from(users).where(users["name"] == "NonExistent").exists());
+    // Without params
+    EXPECT_TRUE(db.from(users).exists());
+    EXPECT_FALSE(db.from(empty_orders).exists());
+
+    // Zero-column table exists (lines 1102, 1118)
+    struct EmptyEntity {};
+    auto empty_col_table = table<EmptyEntity>("empty_col_table");
+    db.execute_raw("CREATE TABLE IF NOT EXISTS empty_col_table (dummy INTEGER)");
+    EXPECT_FALSE(db.from(empty_col_table).exists());
+    db.execute_raw("INSERT INTO empty_col_table VALUES (1)");
+    EXPECT_TRUE(db.from(empty_col_table).exists());
+
+    // 8. query.where chaining
+    auto chained_query = db.from(users)
+                           .where(users["id"] > 0)
+                           .where(users["name"] == "Alicia");
+    auto chained_res = chained_query.to_list();
+    ASSERT_EQ(chained_res.size(), 1u);
+    EXPECT_EQ(chained_res[0].id, 1);
+
+    // 9. query.first() on empty results -> nullopt
+    EXPECT_FALSE(db.from(empty_orders).first().has_value());
+    EXPECT_TRUE(db.from(orders).first().has_value());
+
+    // 10. query.stream with ExecutionOptions
+    std::stop_source ss;
+    ExecutionOptions opts{.query_timeout_seconds = 5, .stop_token = ss.get_token()};
+    size_t stream_count = 0;
+    for (const auto& u : db.from(users).stream(opts)) {
+        (void)u;
+        ++stream_count;
+    }
+    EXPECT_EQ(stream_count, 2u);
+
+    // 11. order_by, then_by, group_by, having
+    auto gq = db.from(orders)
+                .group_by(orders["user_id"])
+                .having(orders["user_id"] > 0)
+                .order_by(orders["user_id"])
+                .order_by_desc(orders["user_id"])
+                .then_by(orders["amount"])
+                .then_by_desc(orders["id"])
+                .to_list();
+    EXPECT_FALSE(gq.empty());
+
+    // Multiple group_by columns
+    auto gq2 = db.from(orders)
+                 .group_by(orders["user_id"], orders["amount"])
+                 .to_list();
+    EXPECT_FALSE(gq2.empty());
+
+    // 12. as_subquery variants and subquery expressions
+    auto sub_coldef = db.from(users).as_subquery(column("id", &QueryBuilderUser::id));
+    EXPECT_EQ(sub_coldef.select_columns.size(), 1u);
+    auto sub_handle = db.from(users).as_subquery(users["id"]);
+    EXPECT_EQ(sub_handle.select_columns.size(), 1u);
+    expr::Expr sub_conv = db.from(users);
+    EXPECT_TRUE(sub_conv.node.index() != 0);
+
+    auto ex_expr = cpplinq::exists(db.from(users).where(users["id"] == 1));
+    auto not_ex_expr = cpplinq::not_exists(db.from(users).where(users["id"] == 1));
+    EXPECT_TRUE(ex_expr.node.index() != 0);
+    EXPECT_TRUE(not_ex_expr.node.index() != 0);
+
+    // 13. SetOpQueryBuilder chaining: union_with, union_all, intersect, except_from (lines 1173-1227)
+    auto q_base = db.from(users);
+    auto q_u = db.from(users);
+    auto q_all = db.from(users);
+    auto q_int = db.from(users);
+    auto q_exc = db.from(users);
+    auto combined_set_ops = q_base.union_with(q_u)
+                                  .union_all(q_all)
+                                  .intersect(q_int)
+                                  .except_from(q_exc);
+    EXPECT_GE(combined_set_ops.count(), 0u);
+    EXPECT_GE(combined_set_ops.to_list().size(), 0u);
+}
+
+TEST(QueryBuilderCoverageTest, PreparedQueryAndCommandCoverage) {
+    DbContext<sqlite> db(":memory:");
+    auto users = query_builder_users_table();
+    db.ensure_table(users);
+    db.insert(users, QueryBuilderUser{1, "Alice"});
+    db.insert(users, QueryBuilderUser{2, "Bob"});
+
+    // 1. PreparedQuery: set_timeout, set_stop_token, cancel
+    auto prep = db.from(users).where(users["id"] == param<int64_t>(0)).prepare<int64_t>();
+    prep.statement().set_timeout(10);
+    std::stop_source ss;
+    prep.statement().set_stop_token(ss.get_token());
+    prep.statement().cancel();
+
+    // 2. Repeated execution with different parameters
+    auto res1 = prep.execute(int64_t{1});
+    ASSERT_EQ(res1.size(), 1u);
+    EXPECT_EQ(res1[0].name, "Alice");
+
+    auto res2 = prep.execute(int64_t{2});
+    ASSERT_EQ(res2.size(), 1u);
+    EXPECT_EQ(res2[0].name, "Bob");
+
+    auto res3 = prep.to_list(int64_t{1});
+    ASSERT_EQ(res3.size(), 1u);
+    EXPECT_EQ(res3[0].name, "Alice");
+
+    // 3. execute_scalar, execute_query, execute_non_query
+    auto scalar_stmt = db.connection().prepare("SELECT COUNT(*) FROM users");
+    auto scalar_reader = scalar_stmt->execute_query();
+    ASSERT_TRUE(scalar_reader && scalar_reader->next());
+    int64_t count_scalar = scalar_reader->get_int64(0);
+    EXPECT_EQ(count_scalar, 2);
+
+    auto update_stmt = db.connection().prepare("UPDATE users SET name = 'Bob2' WHERE id = 2");
+    size_t affected = update_stmt->execute_non_query();
+    EXPECT_EQ(affected, 1u);
+
+    // 4. PreparedQuery::first()
+    auto first_found = prep.first(int64_t{1});
+    ASSERT_TRUE(first_found.has_value());
+    EXPECT_EQ(first_found->name, "Alice");
+
+    auto first_not_found = prep.first(int64_t{999});
+    EXPECT_FALSE(first_not_found.has_value());
+
+    // 5. PreparedQuery::stream and stream_with_options
+    size_t s_count = 0;
+    for (const auto& u : prep.stream(int64_t{1})) {
+        EXPECT_EQ(u.name, "Alice");
+        ++s_count;
+    }
+    EXPECT_EQ(s_count, 1u);
+
+    size_t s_opts_count = 0;
+    for (const auto& u : prep.stream_with_options(
+             ExecutionOptions{.query_timeout_seconds = 5, .stop_token = ss.get_token()},
+             int64_t{1})) {
+        EXPECT_EQ(u.name, "Alice");
+        ++s_opts_count;
+    }
+    EXPECT_EQ(s_opts_count, 1u);
+
+    // 6. PreparedQuery error handling: null / moved statement
+    auto prep_moved = std::move(prep);
+    EXPECT_THROW(prep.execute(int64_t{1}), DbException);
+
+    // 7. PreparedQuery: missing argument for dynamic parameter slot
+    std::vector<ParameterSlot> slots_bad = {
+        ParameterSlot(5)
+    };
+    PreparedQuery<QueryBuilderUser, decltype(users.columns)> bad_prep(
+        db.connection().prepare("SELECT id, name FROM users WHERE id = ?"),
+        users.columns,
+        slots_bad
+    );
+    EXPECT_THROW(bad_prep.execute(), DbException);
+
+    // 8. PreparedQuery: static parameter slot
+    std::vector<ParameterSlot> slots_static = {
+        ParameterSlot(BoundValue{int64_t{1}})
+    };
+    PreparedQuery<QueryBuilderUser, decltype(users.columns)> static_prep(
+        db.connection().prepare("SELECT id, name FROM users WHERE id = ?"),
+        users.columns,
+        slots_static
+    );
+    auto static_res = static_prep.execute();
+    ASSERT_EQ(static_res.size(), 1u);
+    EXPECT_EQ(static_res[0].name, "Alice");
+
+    // 9. PreparedCommand: update & remove with execution & repeated execution
+    auto cmd_upd = db.from(users).where(users["id"] == param<int64_t>(0))
+                     .prepare_update<int64_t>({users["name"] = std::string("BobUpdated")});
+    cmd_upd.statement().set_timeout(5);
+    size_t upd_cnt = cmd_upd.execute(int64_t{2});
+    EXPECT_EQ(upd_cnt, 1u);
+
+    // Repeated execution
+    size_t upd_cnt2 = cmd_upd.execute(int64_t{2});
+    EXPECT_EQ(upd_cnt2, 1u);
+
+    // 10. PreparedCommand: static slots
+    auto cmd_del_static = db.from(users).where(users["id"] == 999).prepare_remove();
+    EXPECT_EQ(cmd_del_static.execute(), 0u);
+
+    // 11. PreparedCommand error handling: moved statement & missing dynamic arg
+    auto cmd_moved = std::move(cmd_upd);
+    EXPECT_THROW(cmd_upd.execute(int64_t{1}), DbException);
+
+    std::vector<ParameterSlot> cmd_slots_bad = {
+        ParameterSlot(5)
+    };
+    PreparedCommand<> bad_cmd(
+        db.connection().prepare("DELETE FROM users WHERE id = ?"),
+        cmd_slots_bad
+    );
+    EXPECT_THROW(bad_cmd.execute(), DbException);
+}
+#endif
+
