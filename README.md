@@ -9,10 +9,10 @@
 - 🛡️ **Type-Safe Expression AST**: Operator overloading (`==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`) builds a strongly-typed expression tree, preventing syntax and runtime type errors.
 - ⚡ **Zero-Overhead Struct Mapping**: Maps database records directly into plain C++ structs and tuples (`std::pair`, `std::tuple`) without macros, code generators, or reflection boilerplate.
 - 💎 **Rich Cross-Database Data Types**: Full native support for exact-precision `SqlNumeric` (decimals), dates (`SqlDate`, `std::chrono::year_month_day`), times (`SqlTime`, `std::chrono::hh_mm_ss`), timestamps (`SqlTimestamp`, `std::chrono::system_clock::time_point`), intervals/durations (`SqlInterval`, `std::chrono::duration`), native UUIDs/GUIDs (`SqlGuid`), UTF-16 Unicode wide strings (`std::wstring`), BLOBs (`std::vector<uint8_t>`), and nullables (`std::optional<T>`).
-- 🔗 **Multi-Table Joins & Relationships**: Type-safe `INNER JOIN` and `LEFT JOIN` (2 and 3+ tables) with tuple/pair hydration and nullable `std::optional<T>` mapping.
+- 🔗 **Multi-Table Joins & Relationships**: Type-safe `INNER JOIN` and `LEFT JOIN` (2 and 3 tables) with tuple/pair hydration and nullable `std::optional<T>` mapping.
 - 🧱 **Common Table Expressions (CTEs)**: Fluent `WITH cte AS (...) SELECT ...` queries via `.with_cte()`.
 - 🪟 **Window Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, and aggregate window functions (`SUM/AVG/COUNT OVER`) with `.over().partition_by(...).order_by(...)`.
-- 📅 **Cross-Dialect Date & Time Functions**: `now()`, `current_date()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix.
+- 📅 **Cross-Dialect Date & Time Functions**: `current_timestamp_val()`, `current_date_val()`, `col.year()`, `col.month()`, `col.day()`, and `col.add_days()` mapped cleanly across SQLite, PostgreSQL, MySQL / MariaDB, Microsoft SQL Server, Oracle Database, IBM Informix.
 - 🔍 **Subqueries & Predicates**: `EXISTS`, `NOT EXISTS`, `IN (subquery)`, `LIKE`, `BETWEEN`, `IN (list)`, and scalar subqueries.
 - 🔄 **Cross-Dialect UPSERT & Bulk Operations**: Atomic single and batch upserts (`insert_many`, `update_many`, `delete_many`, `upsert_many`, `truncate`) with driver-accelerated ODBC array parameter binding.
 - 🔀 **SQL Set Operations**: `union_with` (`UNION`), `union_all` (`UNION ALL`), `intersect` (`INTERSECT`), and `except_from` (`EXCEPT`).
@@ -20,8 +20,8 @@
 - 📊 **Full Aggregations & Grouping**: `count()`, `count_distinct()`, `sum()`, `avg()`, `min_val()`, `max_val()`, `group_by()`, and `having()`.
 - 💾 **Multi-Database Support**:
   - **SQLite** (built-in amalgamation, in-memory & file databases)
-  - **PostgreSQL** (native ODBC/libpq with parameter binding and `RETURNING`)
-  - **MySQL / MariaDB** (native ODBC driver with backtick quoting `` `table` ``, `ON DUPLICATE KEY UPDATE`, `LAST_INSERT_ID()`)
+  - **PostgreSQL** (native libpq C client with parameter binding and `RETURNING`)
+  - **MySQL / MariaDB** (native libmariadb / libmysqlclient driver with backtick quoting `` `table` ``, `ON DUPLICATE KEY UPDATE`, `LAST_INSERT_ID()`)
   - **Microsoft SQL Server** (native Windows ODBC driver with `[brackets]`, `OUTPUT INSERTED`, `OFFSET...FETCH`)
   - **Oracle Database** (native ODBC driver with double-quote identifiers `"table"`, ANSI `OFFSET...FETCH`, `MERGE INTO`, `NUMTODSINTERVAL`)
   - **IBM Informix** (native ODBC driver with double-quote identifiers `"table"`, `SERIAL`, Informix `MERGE`, `UNITS DAY`)
@@ -149,11 +149,14 @@ int main() {
 ### Prerequisites
 - C++20 compliant compiler (MSVC 2022 v17.4+, GCC 11+, Clang 13+)
 - CMake 3.20+
+- Database client development libraries & ODBC drivers for enabled backends:
+  - **Linux / WSL**: `libpq-dev` (PostgreSQL), `libmariadb-dev` or `libmysqlclient-dev` (MySQL), and `unixodbc-dev` (ODBC)
+  - **Windows**: MSVC C++ toolchain, client libraries and ODBC drivers (e.g. `msodbcsql18` for SQL Server)
 
 ### Build
 ```bash
 # Configure with all backends, tests, and examples
-cmake -B build -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MYSQL=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_ORACLE=ON -DCPPLINQ_ENABLE_INFORMIX=ON
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCPPLINQ_BUILD_TESTS=ON -DCPPLINQ_BUILD_EXAMPLES=ON -DCPPLINQ_ENABLE_SQLITE=ON -DCPPLINQ_ENABLE_POSTGRES=ON -DCPPLINQ_ENABLE_MYSQL=ON -DCPPLINQ_ENABLE_MSSQL=ON -DCPPLINQ_ENABLE_ORACLE=ON -DCPPLINQ_ENABLE_INFORMIX=ON
 
 # Build in Release mode
 cmake --build build --config Release --parallel
@@ -161,15 +164,22 @@ cmake --build build --config Release --parallel
 
 ### Run Test Suite
 ```bash
-# Run all test suites
+# Run all unit tests
 ctest --test-dir build --output-on-failure -C Release
+```
 
-# Optional: Run against live database instances
-$env:CPPLINQ_POSTGRES_ODBC="PostgreSQL35W"
-$env:CPPLINQ_MYSQL_ODBC="MySQLDSN"
-$env:CPPLINQ_MSSQL_ODBC="MSSQLLocalDB"
-$env:CPPLINQ_ORACLE_ODBC="OracleDSN"
-$env:CPPLINQ_INFORMIX_ODBC="InformixDSN"
+#### Optional: Run Against Live Database Instances
+Set environment variables or use the repository helper scripts (`scripts/set_test_env.sh` for Linux/WSL or `scripts/set_test_env.ps1` for Windows):
+
+```bash
+# Linux / WSL (Bash)
+source ./scripts/set_test_env.sh
+ctest --test-dir build --output-on-failure -C Release
+```
+
+```powershell
+# Windows (PowerShell)
+. .\scripts\set_test_env.ps1
 ctest --test-dir build --output-on-failure -C Release
 ```
 
@@ -177,18 +187,23 @@ ctest --test-dir build --output-on-failure -C Release
 |---|---|
 | `test_expression` | AST construction, boolean operators, date/time AST, window function AST |
 | `test_query_builder` | Dialect-aware SQL generator (SELECT, INSERT, CTEs, Joins, Windows, UPSERT, Set Ops) |
-| `test_oracle_query_builder` | Oracle dialect-specific query generator and ANSI pagination unit tests |
-| `test_informix_query_builder` | IBM Informix dialect-specific query generator unit tests |
 | `test_row_mapper` | Struct and tuple row materialization, optional NULL handling |
 | `test_chunked_buffer` | Zero-reallocation chunk-based buffer, placement new, and exact-fit vector extraction |
+| `test_data_types` | Cross-database data types (SqlNumeric, SqlDate, SqlTime, SqlTimestamp, SqlInterval, SqlGuid, BLOB, wstring) |
+| `test_odbc_utils` | ODBC connection string utilities, diagnostic records, and driver handle checks |
 | `test_sqlite_integration` | End-to-end SQLite in-memory integration testing (CRUD, joins, CTEs, subqueries) |
 | `test_connection_pool` | Multi-threaded connection leasing, timeouts, recycling (8 threads, 200 ops) |
 | `test_async_connection_pool` | Bounded future submission, queued cancellation, backpressure, exceptions, and shutdown |
-| `test_streaming` | Single-pass C++20 input ranges, timeouts, and cooperative stop_token cancellation |
+| `test_streaming` | Single-pass row range streaming, query timeouts, and cooperative stop_token cancellation |
+| `test_postgres_query_builder` | PostgreSQL dialect-specific query generator and parameter binding unit tests |
 | `test_postgres_integration` | Live PostgreSQL integration test suite |
+| `test_mysql_query_builder` | MySQL / MariaDB dialect-specific query generator and identifier unit tests |
 | `test_mysql_integration` | Live MySQL / MariaDB integration test suite |
+| `test_mssql_query_builder` | Microsoft SQL Server dialect-specific query generator unit tests |
 | `test_mssql_integration` | Live Microsoft SQL Server integration test suite |
+| `test_oracle_query_builder` | Oracle dialect-specific query generator and ANSI pagination unit tests |
 | `test_oracle_integration` | Live Oracle Database integration test suite |
+| `test_informix_query_builder` | IBM Informix dialect-specific query generator unit tests |
 | `test_informix_integration` | Live IBM Informix integration test suite |
 
 ---
