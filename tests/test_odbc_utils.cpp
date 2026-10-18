@@ -185,9 +185,20 @@ public:
     void set_hdbc(SQLHDBC h) { hdbc_ = h; }
 };
 
-extern "C" void _ZN7cpplinq11IDataReaderD0Ev(void*);
-extern "C" void _ZN7cpplinq18IPreparedStatementD0Ev(void*);
-extern "C" void _ZN7cpplinq11IConnectionD0Ev(void*);
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(leak_sanitizer)
+#    define CPPLINQ_TEST_HAS_LSAN 1
+#  endif
+#elif defined(__SANITIZE_ADDRESS__)
+#  define CPPLINQ_TEST_HAS_LSAN 1
+#endif
+
+#ifdef CPPLINQ_TEST_HAS_LSAN
+extern "C" const char* __lsan_default_suppressions() {
+    return "leak:psqlodbcw.so\n"
+           "leak:libodbc.so\n";
+}
+#endif
 
 TEST(ConnectionDefaultsTest, ExceptionsAndDefaults) {
     // UnsupportedFeature
@@ -231,16 +242,6 @@ TEST(ConnectionDefaultsTest, ExceptionsAndDefaults) {
     s_ptr.reset();
     std::unique_ptr<IConnection> c_ptr = std::make_unique<TestOdbcConnection>("dummy");
     c_ptr.reset();
-
-    // Calling deleting destructors directly to cover abstract base virtual destructors
-    void* p1 = ::operator new(sizeof(IDataReader));
-    _ZN7cpplinq11IDataReaderD0Ev(p1);
-
-    void* p2 = ::operator new(sizeof(IPreparedStatement));
-    _ZN7cpplinq18IPreparedStatementD0Ev(p2);
-
-    void* p3 = ::operator new(sizeof(IConnection));
-    _ZN7cpplinq11IConnectionD0Ev(p3);
 }
 
 // ----------------------------------------------------------------------------
