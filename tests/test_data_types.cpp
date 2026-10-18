@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 #include "cpplinq/mapping/data_types.h"
+#include "cpplinq/mapping/type_traits.h"
+#include <cstddef>
 #include <limits>
 #include <chrono>
+#include <type_traits>
 
 using namespace cpplinq;
 
@@ -329,4 +332,105 @@ TEST(DataTypesTest, SqlIntervalComprehensive) {
     EXPECT_EQ(parsed_neg.days, 2);
 
     EXPECT_TRUE(SqlInterval::from_string("").days == 0);
+}
+
+// 8. Compile-time SQL type mappings
+//
+// These assertions document the mapping table used by ColumnDef and the
+// row mapper. Only std::vector<uint8_t> is a supported BLOB type; the other
+// byte-vector spellings are deliberately left without a sql_type_of
+// specialization and therefore fail the SqlMappable concept.
+
+static_assert(sql_type_of<char>::value == SqlType::Integer);
+static_assert(sql_type_of<signed char>::value == SqlType::Integer);
+static_assert(sql_type_of<short>::value == SqlType::Integer);
+static_assert(sql_type_of<int>::value == SqlType::Integer);
+static_assert(sql_type_of<long>::value ==
+              (sizeof(long) == 4 ? SqlType::Integer : SqlType::BigInt));
+static_assert(sql_type_of<long long>::value == SqlType::BigInt);
+
+static_assert(sql_type_of<unsigned char>::value == SqlType::UnsignedBigInt);
+static_assert(sql_type_of<unsigned short>::value == SqlType::UnsignedBigInt);
+static_assert(sql_type_of<unsigned int>::value == SqlType::UnsignedBigInt);
+static_assert(sql_type_of<unsigned long>::value == SqlType::UnsignedBigInt);
+static_assert(sql_type_of<unsigned long long>::value == SqlType::UnsignedBigInt);
+
+static_assert(sql_type_of<float>::value == SqlType::Real);
+static_assert(sql_type_of<double>::value == SqlType::Real);
+static_assert(sql_type_of<SqlNumeric>::value == SqlType::Decimal);
+
+static_assert(sql_type_of<std::string>::value == SqlType::Text);
+static_assert(sql_type_of<std::wstring>::value == SqlType::WString);
+static_assert(sql_type_of<bool>::value == SqlType::Boolean);
+static_assert(sql_type_of<std::vector<uint8_t>>::value == SqlType::Blob);
+
+static_assert(sql_type_of<SqlDate>::value == SqlType::Date);
+static_assert(sql_type_of<std::chrono::year_month_day>::value == SqlType::Date);
+static_assert(sql_type_of<SqlTime>::value == SqlType::Time);
+static_assert(sql_type_of<std::chrono::hh_mm_ss<std::chrono::seconds>>::value == SqlType::Time);
+static_assert(sql_type_of<SqlTimestamp>::value == SqlType::Timestamp);
+static_assert(sql_type_of<std::chrono::system_clock::time_point>::value == SqlType::Timestamp);
+
+static_assert(sql_type_of<SqlInterval>::value == SqlType::Interval);
+static_assert(sql_type_of<std::chrono::duration<int, std::milli>>::value == SqlType::Interval);
+static_assert(sql_type_of<SqlGuid>::value == SqlType::Guid);
+
+static_assert(sql_type_of<std::optional<int>>::value == SqlType::Integer);
+static_assert(sql_type_of<std::optional<std::vector<uint8_t>>>::value == SqlType::Blob);
+
+static_assert(SqlMappable<int>);
+static_assert(SqlMappable<std::string>);
+static_assert(SqlMappable<const std::string&>);
+static_assert(SqlMappable<std::vector<uint8_t>>);
+static_assert(SqlMappable<const std::vector<uint8_t>&>);
+static_assert(SqlMappable<std::optional<std::vector<uint8_t>>>);
+
+static_assert(!SqlMappable<std::vector<char>>);
+static_assert(!SqlMappable<std::vector<std::byte>>);
+static_assert(!SqlMappable<std::vector<int>>);
+static_assert(!SqlMappable<std::monostate>);
+
+TEST(DataTypesTest, SqlMappableMatchesDocumentedBlobTypes) {
+    EXPECT_TRUE(SqlMappable<std::vector<uint8_t>>);
+    EXPECT_FALSE(SqlMappable<std::vector<char>>);
+    EXPECT_FALSE(SqlMappable<std::vector<std::byte>>);
+
+    EXPECT_EQ(sql_type_of<std::vector<uint8_t>>::value, SqlType::Blob);
+}
+
+TEST(DataTypesTest, SqlTypeMappingsForDocumentedScalarTypes) {
+    EXPECT_EQ(sql_type_of<char>::value, SqlType::Integer);
+    EXPECT_EQ(sql_type_of<short>::value, SqlType::Integer);
+    EXPECT_EQ(sql_type_of<int>::value, SqlType::Integer);
+    EXPECT_EQ(sql_type_of<long long>::value, SqlType::BigInt);
+    EXPECT_EQ(sql_type_of<unsigned int>::value, SqlType::UnsignedBigInt);
+    EXPECT_EQ(sql_type_of<float>::value, SqlType::Real);
+    EXPECT_EQ(sql_type_of<double>::value, SqlType::Real);
+    EXPECT_EQ(sql_type_of<SqlNumeric>::value, SqlType::Decimal);
+    EXPECT_EQ(sql_type_of<std::string>::value, SqlType::Text);
+    EXPECT_EQ(sql_type_of<std::wstring>::value, SqlType::WString);
+    EXPECT_EQ(sql_type_of<bool>::value, SqlType::Boolean);
+}
+
+TEST(DataTypesTest, SqlTypeMappingsForDocumentedTemporalTypes) {
+    EXPECT_EQ(sql_type_of<SqlDate>::value, SqlType::Date);
+    EXPECT_EQ(sql_type_of<std::chrono::year_month_day>::value, SqlType::Date);
+    EXPECT_EQ(sql_type_of<SqlTime>::value, SqlType::Time);
+    EXPECT_EQ(sql_type_of<std::chrono::hh_mm_ss<std::chrono::seconds>>::value, SqlType::Time);
+    EXPECT_EQ(sql_type_of<SqlTimestamp>::value, SqlType::Timestamp);
+    EXPECT_EQ(sql_type_of<std::chrono::system_clock::time_point>::value, SqlType::Timestamp);
+    EXPECT_EQ(sql_type_of<SqlInterval>::value, SqlType::Interval);
+    EXPECT_EQ((sql_type_of<std::chrono::duration<int, std::milli>>::value), SqlType::Interval);
+    EXPECT_EQ(sql_type_of<SqlGuid>::value, SqlType::Guid);
+}
+
+TEST(DataTypesTest, OptionalAndCvRefTypesPreserveUnderlyingMapping) {
+    EXPECT_EQ(sql_type_of<std::optional<int>>::value, SqlType::Integer);
+    EXPECT_EQ(sql_type_of<std::optional<std::vector<uint8_t>>>::value, SqlType::Blob);
+    EXPECT_TRUE(is_nullable_v<std::optional<int>>);
+    EXPECT_FALSE(is_nullable_v<int>);
+
+    EXPECT_TRUE(SqlMappable<const std::string&>);
+    EXPECT_TRUE(SqlMappable<const std::vector<uint8_t>&>);
+    EXPECT_FALSE(SqlMappable<const std::vector<char>&>);
 }

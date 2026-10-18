@@ -167,6 +167,30 @@ TEST(AsyncConnectionPoolTest, CancelsQueuedOperationBeforeCallbackStarts) {
     pool->close();
 }
 
+TEST(AsyncConnectionPoolTest, CompletesRunningCallbackWhenStopRequestedAfterStart) {
+    auto pool = make_pool<sqlite>(make_database_path(), single_worker_config());
+    std::latch started(1);
+    std::latch release(1);
+    std::stop_source stop_source;
+
+    auto future = pool->submit(stop_source.get_token(), [&](auto&) {
+        // Reaching this point means the worker passed the final cancellation
+        // check immediately before invoking the callback.
+        started.count_down();
+        release.wait();
+        return 23;
+    });
+
+    started.wait();
+    stop_source.request_stop();
+    release.count_down();
+
+    EXPECT_EQ(future.get(), 23);
+    EXPECT_EQ(pool->active_count(), 0);
+
+    pool->close();
+}
+
 TEST(AsyncConnectionPoolTest, CancelsWaitingAcquisitionWhenStopTokenTriggered) {
     PoolConfig config;
     config.min_connections = 1;

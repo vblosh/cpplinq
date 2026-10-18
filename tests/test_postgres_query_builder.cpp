@@ -4,6 +4,10 @@
 #include "cpplinq/dialect/dialect.h"
 #include "dialect/postgres_dialect.h"
 
+#ifdef CPPLINQ_HAS_POSTGRES
+#include "driver/postgres_connection.h"
+#endif
+
 using namespace cpplinq;
 
 TEST(PostgresQueryBuilderTest, SelectWithQuotesAndPagination) {
@@ -70,3 +74,155 @@ TEST(PostgresQueryBuilderTest, ReturningClauseAndDateFunctions) {
     EXPECT_EQ(dialect.type_name(SqlType::Blob), "BYTEA");
     EXPECT_EQ(dialect.type_name(SqlType::Boolean), "BOOLEAN");
 }
+
+TEST(PostgresQueryBuilderTest, DialectPlaceholdersStayQuestionMarks) {
+    PostgresDialect dialect;
+
+    EXPECT_EQ(dialect.placeholder(0), "?");
+    EXPECT_EQ(dialect.placeholder(1), "?");
+    EXPECT_EQ(dialect.placeholder(99), "?");
+
+    EXPECT_EQ(dialect.limit_offset(10, std::nullopt), " LIMIT 10");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, 20), " OFFSET 20");
+    EXPECT_EQ(dialect.limit_offset(10, 20), " LIMIT 10 OFFSET 20");
+    EXPECT_EQ(dialect.limit_offset(std::nullopt, std::nullopt), "");
+}
+
+TEST(PostgresQueryBuilderTest, GeneratedSqlKeepsQuestionMarksForDriverRewrite) {
+    PostgresDialect dialect;
+    SqlGenerator gen(dialect);
+    ColumnHandle id("users", "id");
+
+    auto select = gen.generate_select("users", {"id"}, (id > 7).node);
+    EXPECT_EQ(select.sql, "SELECT \"id\" FROM \"users\" WHERE (\"users\".\"id\" > ?)");
+    EXPECT_EQ(select.sql.find('$'), std::string::npos);
+    ASSERT_EQ(select.params.size(), 1u);
+    EXPECT_EQ(std::get<int64_t>(select.params[0]), 7);
+
+    auto insert = gen.generate_insert(
+        "users", {"id", "name"}, {int64_t(1), std::string("Alice")}, "id");
+    EXPECT_EQ(insert.sql,
+              "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) RETURNING \"id\"");
+    EXPECT_EQ(insert.sql.find('$'), std::string::npos);
+    EXPECT_EQ(insert.sql.find("LAST_INSERT_ID"), std::string::npos);
+
+    std::vector<std::pair<std::string, BoundValue>> assignments;
+    assignments.emplace_back("name", std::string("Alice"));
+    auto update = gen.generate_update("users", assignments, std::nullopt);
+    EXPECT_EQ(update.sql, "UPDATE \"users\" SET \"name\" = ?");
+    EXPECT_EQ(update.sql.find('$'), std::string::npos);
+
+    auto remove = gen.generate_delete("users", (id == int64_t(3)).node);
+    EXPECT_EQ(remove.sql, "DELETE FROM \"users\" WHERE (\"users\".\"id\" = ?)");
+    EXPECT_EQ(remove.sql.find('$'), std::string::npos);
+}
+
+TEST(PostgresQueryBuilderTest, DialectTypeNamesCoverAllMappedTypes) {
+    PostgresDialect dialect;
+
+    EXPECT_EQ(dialect.type_name(SqlType::UnsignedBigInt), "NUMERIC(20, 0)");
+    EXPECT_EQ(dialect.type_name(SqlType::Real), "DOUBLE PRECISION");
+    EXPECT_EQ(dialect.type_name(SqlType::Decimal), "NUMERIC");
+    EXPECT_EQ(dialect.type_name(SqlType::WString), "TEXT");
+    EXPECT_EQ(dialect.type_name(SqlType::Date), "DATE");
+    EXPECT_EQ(dialect.type_name(SqlType::Time), "TIME");
+    EXPECT_EQ(dialect.type_name(SqlType::Timestamp), "TIMESTAMP");
+    EXPECT_EQ(dialect.type_name(SqlType::Interval), "INTERVAL");
+    EXPECT_EQ(dialect.type_name(SqlType::Guid), "UUID");
+}
+
+TEST(PostgresQueryBuilderTest, CurrentDateAndTimestampExpressions) {
+    PostgresDialect dialect;
+    SqlGenerator gen(dialect);
+
+    EXPECT_EQ(gen.generate_expression(current_timestamp_val().node).sql,
+              "CURRENT_TIMESTAMP");
+    EXPECT_EQ(gen.generate_expression(current_date_val().node).sql,
+              "CURRENT_DATE");
+}
+
+#ifdef CPPLINQ_HAS_POSTGRES
+
+TEST(PostgresQueryBuilderTest, FactoryAndIntrospectionWorkWhileClosed) {
+    auto conn = make_connection<postgres>(
+        "host=127.0.0.1 port=1 dbname=cppdb user=cppdb password=cppdb sslmode=disable");
+    ASSERT_NE(conn, nullptr);
+    EXPECT_FALSE(conn->is_open());
+
+    const ISqlDialect& dialect = conn->dialect();
+    EXPECT_EQ(dialect.placeholder(0), "?");
+    EXPECT_EQ(dialect.quote_id("users"), "\"users\"");
+    EXPECT_EQ(dialect.returning_clause("id"), " RETURNING \"id\"");
+
+    DriverInfo info = conn->info();
+    EXPECT_EQ(info.driver_name, "PostgreSQL Native Driver (libpq)");
+    EXPECT_FALSE(info.driver_version.empty());
+    EXPECT_EQ(info.dbms_name, "PostgreSQL");
+    EXPECT_EQ(info.dbms_version, "unknown");
+    EXPECT_EQ(info.odbc_version, "N/A");
+
+    DriverCapabilities caps = conn->capabilities();
+    EXPECT_TRUE(caps.cancel);
+    EXPECT_TRUE(caps.streaming);
+    EXPECT_TRUE(caps.query_timeout);
+    EXPECT_TRUE(caps.transactions);
+    EXPECT_TRUE(caps.savepoints);
+    EXPECT_TRUE(caps.returning_clause);
+    EXPECT_FALSE(caps.output_clause);
+    EXPECT_TRUE(caps.upsert);
+    EXPECT_TRUE(caps.array_batch_insert);
+    EXPECT_EQ(caps.default_batch_chunk_size, size_t(50000));
+    EXPECT_TRUE(caps.window_functions);
+    EXPECT_TRUE(caps.ctes);
+}
+
+TEST(PostgresQueryBuilderTest, BareDsnFactoryDoesNotOpenOrResolve) {
+    auto conn = make_connection<postgres>("PostgreSQL35W");
+    ASSERT_NE(conn, nullptr);
+    EXPECT_FALSE(conn->is_open());
+    EXPECT_EQ(conn->info().dbms_version, "unknown");
+}
+
+TEST(PostgresQueryBuilderTest, NativePreparedRewriteRequiresOpenConnection) {
+    PgConnection conn(
+        "host=127.0.0.1 port=1 dbname=cppdb user=cppdb password=cppdb sslmode=disable");
+    EXPECT_FALSE(conn.is_open());
+
+    // The '?' -> '$n' conversion happens in PgPreparedStatement's constructor.
+    // PgConnection::prepare() refuses to create that statement while closed, and
+    // the converted SQL is private, so no public path exposes it without a server.
+    EXPECT_THROW(conn.prepare("SELECT \"id\" FROM \"users\" WHERE \"id\" = ?"), DbException);
+
+    PgPreparedStatement query(nullptr, "SELECT \"id\" FROM \"users\" WHERE \"id\" = ?");
+    EXPECT_NO_THROW(query.bind(0, int64_t(7)));
+    EXPECT_THROW(query.execute_query(), DbException);
+
+    PgPreparedStatement command(
+        nullptr, "UPDATE \"users\" SET \"name\" = ? WHERE \"id\" = ?");
+    EXPECT_NO_THROW(command.bind(0, std::string("Alice")));
+    EXPECT_NO_THROW(command.bind(1, int64_t(7)));
+    EXPECT_THROW(command.execute_non_query(), DbException);
+}
+
+TEST(PostgresQueryBuilderTest, DirectExecutionPathsAreSeparateFromPreparedRewrite) {
+    PgConnection conn("");
+    EXPECT_FALSE(conn.is_open());
+
+    // Direct execution sends SQL verbatim according to the driver documentation;
+    // it does not go through the native prepared-statement '?' rewrite.
+    EXPECT_THROW(conn.execute("SELECT ?"), DbException);
+    EXPECT_THROW(conn.execute_query_direct("SELECT ?"), DbException);
+    EXPECT_THROW(conn.execute_non_query_direct("UPDATE \"users\" SET \"name\" = ?"),
+                 DbException);
+}
+
+TEST(PostgresQueryBuilderTest, InheritedLastInsertIdFallbackIsNotPostgresSql) {
+    PostgresDialect dialect;
+
+    // PostgreSQL has no LAST_INSERT_ID(); inserts that need the generated key use
+    // RETURNING. This inherited MySQL fallback remains exposed by the dialect API.
+    EXPECT_TRUE(dialect.supports_last_insert_id());
+    EXPECT_EQ(dialect.last_insert_id_query("users", "id"), "SELECT LAST_INSERT_ID()");
+}
+
+#endif // CPPLINQ_HAS_POSTGRES

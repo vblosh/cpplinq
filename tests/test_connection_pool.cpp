@@ -56,6 +56,58 @@ TEST(ConnectionPoolTest, BasicAcquireAndReturn) {
     EXPECT_EQ(pool->idle_count(), 2);
 }
 
+TEST(ConnectionPoolTest, ClosedConnectionIsDiscardedAndMinimumIsNotReplenished) {
+    PoolConfig config;
+    config.min_connections = 2;
+    config.max_connections = 3;
+
+    auto pool = make_pool<sqlite>(":memory:", config);
+    ASSERT_EQ(pool->size(), 2);
+    ASSERT_EQ(pool->idle_count(), 2);
+
+    {
+        auto conn = pool->acquire();
+        ASSERT_TRUE(conn.is_valid());
+        ASSERT_TRUE(conn->is_open());
+        conn->close();
+        EXPECT_FALSE(conn->is_open());
+    }
+
+    // The closed connection is discarded on RAII return and the pool does not
+    // immediately restore min_connections.
+    EXPECT_EQ(pool->size(), 1);
+    EXPECT_EQ(pool->idle_count(), 1);
+    EXPECT_EQ(pool->active_count(), 0);
+}
+
+TEST(ConnectionPoolTest, AcquireAfterDiscardOpensHealthyConnection) {
+    PoolConfig config;
+    config.min_connections = 1;
+    config.max_connections = 1;
+
+    auto pool = make_pool<sqlite>(":memory:", config);
+
+    {
+        auto conn = pool->acquire();
+        ASSERT_TRUE(conn.is_valid());
+        conn->close();
+    }
+    ASSERT_EQ(pool->size(), 0);
+    ASSERT_EQ(pool->idle_count(), 0);
+
+    {
+        auto conn = pool->acquire();
+        ASSERT_TRUE(conn.is_valid());
+        EXPECT_TRUE(conn->is_open());
+        EXPECT_EQ(pool->size(), 1);
+        EXPECT_EQ(pool->active_count(), 1);
+        EXPECT_EQ(pool->idle_count(), 0);
+    }
+
+    EXPECT_EQ(pool->size(), 1);
+    EXPECT_EQ(pool->idle_count(), 1);
+}
+
 TEST(ConnectionPoolTest, WithConnectionAndWithContext) {
     PoolConfig config;
     config.min_connections = 1;

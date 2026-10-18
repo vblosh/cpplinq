@@ -310,6 +310,49 @@ TEST(ChunkedBufferTest, RvalueToVectorClearsBuffer) {
     EXPECT_TRUE(buffer.empty());
 }
 
+TEST(ChunkedBufferTest, LvalueToVectorCopiesElementsAndPreservesBuffer) {
+    DestructorTracker::reset();
+
+    ChunkedBuffer<DestructorTracker, 4> buffer;
+    for (int i = 0; i < 5; ++i) {
+        buffer.emplace_back(i);
+    }
+    ASSERT_EQ(buffer.size(), 5u);
+    ASSERT_EQ(DestructorTracker::construct_count, 5);
+
+    auto vec = buffer.to_vector();
+
+    ASSERT_EQ(vec.size(), 5u);
+    EXPECT_EQ(buffer.size(), 5u);
+    EXPECT_EQ(DestructorTracker::construct_count, 10); // five copies into the vector
+    EXPECT_EQ(DestructorTracker::move_count, 0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(vec[static_cast<size_t>(i)].value, i);
+        EXPECT_EQ(buffer[static_cast<size_t>(i)].value, i);
+    }
+}
+
+TEST(ChunkedBufferTest, RvalueToVectorMovesElementsAndClearsBuffer) {
+    DestructorTracker::reset();
+
+    ChunkedBuffer<DestructorTracker, 4> buffer;
+    for (int i = 0; i < 5; ++i) {
+        buffer.emplace_back(i);
+    }
+    ASSERT_EQ(buffer.size(), 5u);
+
+    auto vec = std::move(buffer).to_vector();
+
+    ASSERT_EQ(vec.size(), 5u);
+    EXPECT_TRUE(buffer.empty());
+    EXPECT_EQ(DestructorTracker::construct_count, 5); // only the original emplacements
+    EXPECT_EQ(DestructorTracker::move_count, 5);
+    EXPECT_EQ(DestructorTracker::destruct_count, 5); // source elements destroyed by clear()
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(vec[static_cast<size_t>(i)].value, i);
+    }
+}
+
 TEST(ChunkedBufferTest, IteratorComparisonDifferentContainers) {
     ChunkedBuffer<int, 4> buf1;
     ChunkedBuffer<int, 4> buf2;

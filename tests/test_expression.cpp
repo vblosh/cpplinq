@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "cpplinq/core/expression.h"
 #include <iostream>
+#include <memory>
+#include <type_traits>
 
 using namespace cpplinq;
 using namespace cpplinq::expr;
@@ -459,4 +461,258 @@ TEST(ExpressionTest, ColumnHandleToString) {
     ColumnHandle col("users", "email");
     std::string str = col;
     EXPECT_EQ(str, "email");
+}
+
+// ============================================================================
+// Current date/time expression nodes
+// ============================================================================
+
+// The documented API exposes current_timestamp_val() and current_date_val().
+// The absence of now(), current_date(), and current_timestamp() aliases is a
+// compile-time property: only the factories below are declared, so the static
+// assertions pin the supported API used by the runtime tests.
+static_assert(std::is_same_v<decltype(cpplinq::expr::current_timestamp_val()), cpplinq::expr::Expr>);
+static_assert(std::is_same_v<decltype(cpplinq::expr::current_date_val()), cpplinq::expr::Expr>);
+
+TEST(ExpressionTest, CurrentTimestampExprNode) {
+    Expr e = current_timestamp_val();
+
+    ASSERT_TRUE(std::holds_alternative<CurrentTimestampExpr>(e.node));
+    EXPECT_NE(std::get_if<CurrentTimestampExpr>(&e.node), nullptr);
+    EXPECT_EQ(std::get_if<CurrentDateExpr>(&e.node), nullptr);
+}
+
+TEST(ExpressionTest, CurrentDateExprNode) {
+    Expr e = current_date_val();
+
+    ASSERT_TRUE(std::holds_alternative<CurrentDateExpr>(e.node));
+    EXPECT_NE(std::get_if<CurrentDateExpr>(&e.node), nullptr);
+    EXPECT_EQ(std::get_if<CurrentTimestampExpr>(&e.node), nullptr);
+}
+
+TEST(ExpressionTest, CurrentTimestampUsableInComparisonAndDateAdd) {
+    ColumnHandle created_at("events", "created_at");
+
+    Expr comparison = current_timestamp_val() >= created_at;
+    auto* binary = std::get_if<std::shared_ptr<BinaryExpr>>(&comparison.node);
+    ASSERT_NE(binary, nullptr);
+    EXPECT_EQ((*binary)->op, CompareOp::Ge);
+    EXPECT_NE(std::get_if<CurrentTimestampExpr>(&(*binary)->left), nullptr);
+    auto* right_col = std::get_if<ColumnRef>(&(*binary)->right);
+    ASSERT_NE(right_col, nullptr);
+    EXPECT_EQ(right_col->column_name, "created_at");
+
+    Expr added = date_add_days(current_timestamp_val(), 7);
+    auto* date_add = std::get_if<std::shared_ptr<DateAddExpr>>(&added.node);
+    ASSERT_NE(date_add, nullptr);
+    EXPECT_NE(std::get_if<CurrentTimestampExpr>(&(*date_add)->expr), nullptr);
+}
+
+// ============================================================================
+// Date extraction and arithmetic expression nodes
+// ============================================================================
+
+namespace {
+
+void expect_extract_expr(const Expr& e, DatePart expected_part,
+                         const std::string& expected_table,
+                         const std::string& expected_column) {
+    auto* extract = std::get_if<std::shared_ptr<ExtractExpr>>(&e.node);
+    ASSERT_NE(extract, nullptr);
+    EXPECT_EQ((*extract)->part, expected_part);
+
+    auto* column = std::get_if<ColumnRef>(&(*extract)->expr);
+    ASSERT_NE(column, nullptr);
+    EXPECT_EQ(column->table_name, expected_table);
+    EXPECT_EQ(column->column_name, expected_column);
+}
+
+} // namespace
+
+TEST(ExpressionTest, ExtractDatePartMethodsAst) {
+    ColumnHandle created_at("events", "created_at");
+
+    expect_extract_expr(created_at.year(), DatePart::Year, "events", "created_at");
+    expect_extract_expr(created_at.month(), DatePart::Month, "events", "created_at");
+    expect_extract_expr(created_at.day(), DatePart::Day, "events", "created_at");
+}
+
+TEST(ExpressionTest, ExtractDatePartFreeFunctionsAst) {
+    ColumnHandle created_at("events", "created_at");
+
+    expect_extract_expr(extract_year(created_at), DatePart::Year, "events", "created_at");
+    expect_extract_expr(extract_month(created_at), DatePart::Month, "events", "created_at");
+    expect_extract_expr(extract_day(created_at), DatePart::Day, "events", "created_at");
+}
+
+TEST(ExpressionTest, DateAddDaysMethodAst) {
+    ColumnHandle created_at("events", "created_at");
+
+    Expr e = created_at.add_days(7);
+    auto* date_add = std::get_if<std::shared_ptr<DateAddExpr>>(&e.node);
+    ASSERT_NE(date_add, nullptr);
+
+    auto* column = std::get_if<ColumnRef>(&(*date_add)->expr);
+    ASSERT_NE(column, nullptr);
+    EXPECT_EQ(column->table_name, "events");
+    EXPECT_EQ(column->column_name, "created_at");
+
+    auto* literal = std::get_if<Literal>(&(*date_add)->days);
+    ASSERT_NE(literal, nullptr);
+    auto* days = std::get_if<int64_t>(&literal->value);
+    ASSERT_NE(days, nullptr);
+    EXPECT_EQ(*days, 7);
+}
+
+TEST(ExpressionTest, DateAddDaysFreeFunctionAst) {
+    ColumnHandle created_at("events", "created_at");
+    ColumnHandle offset_days("events", "offset_days");
+
+    Expr positive = date_add_days(created_at, 7);
+    auto* date_add = std::get_if<std::shared_ptr<DateAddExpr>>(&positive.node);
+    ASSERT_NE(date_add, nullptr);
+    auto* literal = std::get_if<Literal>(&(*date_add)->days);
+    ASSERT_NE(literal, nullptr);
+    auto* positive_days = std::get_if<int64_t>(&literal->value);
+    ASSERT_NE(positive_days, nullptr);
+    EXPECT_EQ(*positive_days, 7);
+
+    Expr negative = date_add_days(created_at, -3);
+    auto* negative_add = std::get_if<std::shared_ptr<DateAddExpr>>(&negative.node);
+    ASSERT_NE(negative_add, nullptr);
+    auto* negative_literal = std::get_if<Literal>(&(*negative_add)->days);
+    ASSERT_NE(negative_literal, nullptr);
+    auto* negative_days = std::get_if<int64_t>(&negative_literal->value);
+    ASSERT_NE(negative_days, nullptr);
+    EXPECT_EQ(*negative_days, -3);
+
+    Expr column_days = date_add_days(created_at, offset_days);
+    auto* column_add = std::get_if<std::shared_ptr<DateAddExpr>>(&column_days.node);
+    ASSERT_NE(column_add, nullptr);
+    auto* days_ref = std::get_if<ColumnRef>(&(*column_add)->days);
+    ASSERT_NE(days_ref, nullptr);
+    EXPECT_EQ(days_ref->column_name, "offset_days");
+}
+
+TEST(ExpressionTest, DateAddDaysCanBeNested) {
+    ColumnHandle created_at("events", "created_at");
+
+    Expr nested = date_add_days(created_at, 7).add_days(1);
+    auto* outer = std::get_if<std::shared_ptr<DateAddExpr>>(&nested.node);
+    ASSERT_NE(outer, nullptr);
+
+    auto* inner = std::get_if<std::shared_ptr<DateAddExpr>>(&(*outer)->expr);
+    ASSERT_NE(inner, nullptr);
+    auto* column = std::get_if<ColumnRef>(&(*inner)->expr);
+    ASSERT_NE(column, nullptr);
+    EXPECT_EQ(column->column_name, "created_at");
+}
+
+// ============================================================================
+// Subquery expression wrappers and convertibility
+// ============================================================================
+
+static_assert(!std::is_convertible_v<SubqueryExpr, Expr>);
+static_assert(std::is_constructible_v<Expr, std::shared_ptr<SubqueryExpr>>);
+
+TEST(ExpressionTest, SubqueryExprStoresWhereClause) {
+    ColumnHandle amount("orders", "amount");
+    Expr where = amount > 100.0;
+
+    SubqueryExpr sub("orders", {"user_id"}, where.node);
+    EXPECT_EQ(sub.table_name, "orders");
+    ASSERT_EQ(sub.select_columns.size(), 1);
+    EXPECT_EQ(sub.select_columns[0], "user_id");
+    ASSERT_NE(sub.where, nullptr);
+    EXPECT_TRUE(std::holds_alternative<std::shared_ptr<BinaryExpr>>(*sub.where));
+    EXPECT_FALSE(sub.is_distinct);
+
+    SubqueryExpr no_where("orders", {"amount"}, nullptr, true);
+    EXPECT_EQ(no_where.where, nullptr);
+    EXPECT_TRUE(no_where.is_distinct);
+}
+
+TEST(ExpressionTest, SubqueryExprRequiresExplicitExprWrap) {
+    SubqueryExpr sub("orders", {"amount"});
+    Expr wrapped(std::make_shared<SubqueryExpr>(sub));
+
+    auto* stored = std::get_if<std::shared_ptr<SubqueryExpr>>(&wrapped.node);
+    ASSERT_NE(stored, nullptr);
+    EXPECT_EQ((*stored)->table_name, "orders");
+    ASSERT_EQ((*stored)->select_columns.size(), 1);
+    EXPECT_EQ((*stored)->select_columns[0], "amount");
+}
+
+TEST(ExpressionTest, SubqueryInAndExistsWrappers) {
+    ColumnHandle user_id("users", "id");
+    ColumnHandle order_user_id("orders", "user_id");
+    SubqueryExpr sub("orders", {"user_id"}, (order_user_id == user_id).node);
+
+    Expr in_expr = user_id.in(sub);
+    auto* in = std::get_if<std::shared_ptr<InSubqueryExpr>>(&in_expr.node);
+    ASSERT_NE(in, nullptr);
+    EXPECT_FALSE((*in)->is_not);
+    auto* in_column = std::get_if<ColumnRef>(&(*in)->expr);
+    ASSERT_NE(in_column, nullptr);
+    EXPECT_EQ(in_column->column_name, "id");
+    EXPECT_EQ((*in)->subquery.table_name, "orders");
+    ASSERT_EQ((*in)->subquery.select_columns.size(), 1);
+    EXPECT_EQ((*in)->subquery.select_columns[0], "user_id");
+
+    Expr not_in_expr = user_id.not_in(sub);
+    auto* not_in = std::get_if<std::shared_ptr<InSubqueryExpr>>(&not_in_expr.node);
+    ASSERT_NE(not_in, nullptr);
+    EXPECT_TRUE((*not_in)->is_not);
+
+    Expr exists_expr = exists(sub);
+    auto* exists_node = std::get_if<std::shared_ptr<ExistsExpr>>(&exists_expr.node);
+    ASSERT_NE(exists_node, nullptr);
+    EXPECT_FALSE((*exists_node)->is_not);
+    EXPECT_EQ((*exists_node)->subquery.table_name, "orders");
+
+    Expr not_exists_expr = not_exists(sub);
+    auto* not_exists_node = std::get_if<std::shared_ptr<ExistsExpr>>(&not_exists_expr.node);
+    ASSERT_NE(not_exists_node, nullptr);
+    EXPECT_TRUE((*not_exists_node)->is_not);
+}
+
+// ============================================================================
+// Remaining documented scalar function nodes
+// ============================================================================
+
+TEST(ExpressionTest, TrimAbsAndRoundAst) {
+    ColumnHandle name("users", "name");
+    ColumnHandle balance("accounts", "balance");
+    ColumnHandle amount("orders", "amount");
+
+    Expr trimmed = trim(name);
+    auto* trim_func = std::get_if<std::shared_ptr<FunctionExpr>>(&trimmed.node);
+    ASSERT_NE(trim_func, nullptr);
+    EXPECT_EQ((*trim_func)->function_name, "TRIM");
+    EXPECT_EQ((*trim_func)->arguments.size(), 1);
+
+    Expr absolute = abs_val(balance);
+    auto* abs_func = std::get_if<std::shared_ptr<FunctionExpr>>(&absolute.node);
+    ASSERT_NE(abs_func, nullptr);
+    EXPECT_EQ((*abs_func)->function_name, "ABS");
+
+    Expr rounded = round_val(amount);
+    auto* round_func = std::get_if<std::shared_ptr<FunctionExpr>>(&rounded.node);
+    ASSERT_NE(round_func, nullptr);
+    EXPECT_EQ((*round_func)->function_name, "ROUND");
+    ASSERT_EQ((*round_func)->arguments.size(), 2);
+    auto* decimals = std::get_if<Literal>(&(*round_func)->arguments[1]);
+    ASSERT_NE(decimals, nullptr);
+    auto* decimal_value = std::get_if<int64_t>(&decimals->value);
+    ASSERT_NE(decimal_value, nullptr);
+    EXPECT_EQ(*decimal_value, 0);
+
+    Expr rounded_two = round_val(amount, 2);
+    auto* round_two_func = std::get_if<std::shared_ptr<FunctionExpr>>(&rounded_two.node);
+    ASSERT_NE(round_two_func, nullptr);
+    auto* decimals_two = std::get_if<Literal>(&(*round_two_func)->arguments[1]);
+    ASSERT_NE(decimals_two, nullptr);
+    auto* decimal_two_value = std::get_if<int64_t>(&decimals_two->value);
+    ASSERT_NE(decimal_two_value, nullptr);
+    EXPECT_EQ(*decimal_two_value, 2);
 }

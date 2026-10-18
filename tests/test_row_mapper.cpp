@@ -424,6 +424,22 @@ TEST(RowMapperTest, IsAllNullWithOffset) {
     EXPECT_TRUE(mapper.is_all_null(reader));
 }
 
+TEST(RowMapperTest, IsAllNullWithOffsetFalseWhenProjectedColumnsHaveValues) {
+    auto cols = std::make_tuple(
+        column("id", &Person::id),
+        column("name", &Person::name)
+    );
+
+    auto mapper = create_mapper<Person>(cols, 2);
+
+    MockDataReader reader({
+        { int64_t{1}, std::string{"LeftEntity"}, int64_t{7}, std::string{"Joined"} }
+    });
+
+    ASSERT_TRUE(reader.next());
+    EXPECT_FALSE(mapper.is_all_null(reader));
+}
+
 // ============================================================================
 // Blob Type Mapping Tests
 // ============================================================================
@@ -682,6 +698,43 @@ TEST(RowMapperTest, InPlaceMapRowResetsNonOptionalOnNull) {
     mapper.map_row(reader2, entity);
     EXPECT_EQ(entity.id, 0);
     EXPECT_EQ(entity.name, "");
+}
+
+TEST(RowMapperTest, InPlaceMapRowResetsOptionalFieldsOnNull) {
+    const auto cols = std::make_tuple(
+        column("id", &NullableRecord::id),
+        column("nickname", &NullableRecord::nickname),
+        column("favorite_number", &NullableRecord::favorite_number),
+        column("rating", &NullableRecord::rating),
+        column("verified", &NullableRecord::verified)
+    );
+    auto mapper = create_mapper<NullableRecord>(cols);
+
+    MockDataReader populated({
+        { int64_t{9}, std::string{"before"}, int64_t{3}, double{4.25}, bool{true} }
+    });
+    populated.next();
+
+    NullableRecord entity;
+    mapper.map_row(populated, entity);
+    ASSERT_TRUE(entity.nickname.has_value());
+    ASSERT_TRUE(entity.favorite_number.has_value());
+    ASSERT_TRUE(entity.rating.has_value());
+    ASSERT_TRUE(entity.verified.has_value());
+
+    MockDataReader all_null({
+        { std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{}, std::monostate{} }
+    });
+    all_null.next();
+
+    EXPECT_TRUE(mapper.is_all_null(all_null));
+    mapper.map_row(all_null, entity);
+
+    EXPECT_EQ(entity.id, 0);
+    EXPECT_FALSE(entity.nickname.has_value());
+    EXPECT_FALSE(entity.favorite_number.has_value());
+    EXPECT_FALSE(entity.rating.has_value());
+    EXPECT_FALSE(entity.verified.has_value());
 }
 
 TEST(RowMapperTest, ChronoAndCharMappings) {

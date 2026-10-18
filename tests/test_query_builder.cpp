@@ -4,6 +4,7 @@
 #include "cpplinq/core/expression.h"
 #include "cpplinq/core/table.h"
 #include "cpplinq/core/column.h"
+#include "cpplinq/core/db_context.h"
 #ifdef CPPLINQ_HAS_POSTGRES
 #include "dialect/postgres_dialect.h"
 #endif
@@ -451,6 +452,105 @@ public:
         sql += ")";
         return sql;
     }
+};
+
+struct QueryBuilderUser {
+    int64_t id = 0;
+    std::string name;
+};
+
+struct QueryBuilderOrder {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    double amount = 0.0;
+};
+
+struct QueryBuilderAccount {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    std::string currency;
+    double balance = 0.0;
+};
+
+inline auto query_builder_users_table() {
+    return table<QueryBuilderUser>("users",
+        column("id", &QueryBuilderUser::id, primary_key),
+        column("name", &QueryBuilderUser::name));
+}
+
+inline auto query_builder_orders_table() {
+    return table<QueryBuilderOrder>("orders",
+        column("id", &QueryBuilderOrder::id, primary_key),
+        column("user_id", &QueryBuilderOrder::user_id),
+        column("amount", &QueryBuilderOrder::amount));
+}
+
+inline auto query_builder_accounts_table() {
+    return table<QueryBuilderAccount>("accounts",
+        column("id", &QueryBuilderAccount::id, primary_key),
+        column("user_id", &QueryBuilderAccount::user_id),
+        column("currency", &QueryBuilderAccount::currency),
+        column("balance", &QueryBuilderAccount::balance));
+}
+
+class EmptyDataReader final : public IDataReader {
+public:
+    bool next() override { return false; }
+    int column_count() const override { return 0; }
+    bool is_null(int) const override { return true; }
+    int64_t get_int64(int) const override { return 0; }
+    uint64_t get_uint64(int) const override { return 0; }
+    double get_double(int) const override { return 0.0; }
+    std::string get_string(int) const override { return {}; }
+    std::wstring get_wstring(int) const override { return {}; }
+    bool get_bool(int) const override { return false; }
+    std::vector<uint8_t> get_blob(int) const override { return {}; }
+    SqlNumeric get_numeric(int) const override { return {}; }
+    SqlDate get_date(int) const override { return {}; }
+    SqlTime get_time(int) const override { return {}; }
+    SqlTimestamp get_timestamp(int) const override { return {}; }
+    SqlInterval get_interval(int) const override { return {}; }
+    SqlGuid get_guid(int) const override { return {}; }
+};
+
+class CapturingStatement final : public IPreparedStatement {
+public:
+    void bind(int, const BoundValue&) override {}
+    std::unique_ptr<IDataReader> execute_query() override {
+        return std::make_unique<EmptyDataReader>();
+    }
+    size_t execute_non_query() override { return 0; }
+    void reset() override {}
+};
+
+class CapturingConnection final : public IConnection {
+public:
+    void open() override {}
+    void close() override {}
+    bool is_open() const override { return true; }
+
+    std::unique_ptr<IPreparedStatement> prepare(std::string_view sql) override {
+        executed_sql.emplace_back(sql);
+        return std::make_unique<CapturingStatement>();
+    }
+
+    void execute(std::string_view sql) override {
+        executed_sql.emplace_back(sql);
+    }
+
+    void begin_transaction() override {}
+    void commit() override {}
+    void rollback() override {}
+    const ISqlDialect& dialect() const override { return dialect_; }
+    DriverInfo info() const override { return {}; }
+    DriverCapabilities capabilities() const override { return {}; }
+
+    const std::string& last_sql() const { return executed_sql.back(); }
+
+    std::vector<std::string> executed_sql;
+
+private:
+    MockSqliteDialect dialect_;
 };
 
 } // namespace
@@ -1038,6 +1138,71 @@ TEST(SqlGeneratorTest, SubqueryGeneration) {
     EXPECT_DOUBLE_EQ(std::get<double>(in_res.params[0]), 50.0);
 }
 
+TEST(SqlGeneratorTest, ExistsWithNonEmptyProjection) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle user_id("users", "id");
+    ColumnHandle order_user_id("orders", "user_id");
+    ColumnHandle amount("orders", "amount");
+
+    SubqueryExpr sub("orders", {"user_id", "amount"},
+                     ((order_user_id == user_id) && (amount > 100.0)).node);
+    auto res = gen.generate_select("users", {"id"}, exists(sub).node);
+
+    EXPECT_EQ(res.sql, "SELECT \"id\" FROM \"users\" WHERE EXISTS (SELECT \"user_id\", \"amount\" FROM \"orders\" WHERE ((\"orders\".\"user_id\" = \"users\".\"id\") AND (\"orders\".\"amount\" > ?)))");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(res.params[0]), 100.0);
+}
+
+TEST(SqlGeneratorTest, NotInSubqueryGeneration) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle user_id("users", "id");
+    ColumnHandle amount("orders", "amount");
+    SubqueryExpr sub("orders", {"user_id"}, (amount > 50.0).node);
+
+    auto res = gen.generate_select("users", {"id"}, user_id.not_in(sub).node);
+
+    EXPECT_EQ(res.sql, "SELECT \"id\" FROM \"users\" WHERE (\"users\".\"id\" NOT IN (SELECT \"user_id\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)))");
+    ASSERT_EQ(res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(res.params[0]), 50.0);
+}
+
+TEST(SqlGeneratorTest, CteParametersFollowDefinitionOrder) {
+    MockSqliteDialect dialect;
+    SqlGenerator gen(dialect);
+
+    ColumnHandle order_amount("orders", "amount");
+    ColumnHandle refund_amount("refunds", "amount");
+    ColumnHandle user_id("users", "id");
+
+    CteClause order_users{
+        "order_users",
+        SubqueryExpr("orders", {"user_id"}, (order_amount > 100.0).node),
+        false
+    };
+    CteClause refund_users{
+        "refund_users",
+        SubqueryExpr("refunds", {"user_id"}, (refund_amount >= 25).node, true),
+        false
+    };
+
+    auto res = gen.generate_cte_select(
+        {order_users, refund_users},
+        "users",
+        {"id", "name"},
+        (user_id > 5).node
+    );
+
+    EXPECT_EQ(res.sql, "WITH \"order_users\" AS (SELECT \"user_id\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)), \"refund_users\" AS (SELECT DISTINCT \"user_id\" FROM \"refunds\" WHERE (\"refunds\".\"amount\" >= ?)) SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" > ?)");
+    ASSERT_EQ(res.params.size(), 3);
+    EXPECT_DOUBLE_EQ(std::get<double>(res.params[0]), 100.0);
+    EXPECT_EQ(std::get<int64_t>(res.params[1]), 25);
+    EXPECT_EQ(std::get<int64_t>(res.params[2]), 5);
+}
+
 TEST(SqlGeneratorTest, DateTimeFunctionsSqlite) {
     MockSqliteDialect dialect;
     SqlGenerator gen(dialect);
@@ -1136,6 +1301,185 @@ TEST(SqlGeneratorTest, MultiTableJoinGeneration) {
     );
 
     EXPECT_EQ(res.sql, "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"amount\", \"order_items\".\"id\", \"order_items\".\"product\" FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") LEFT JOIN \"order_items\" ON (\"orders\".\"id\" = \"order_items\".\"order_id\")");
+}
+
+TEST(QueryBuilderSqlTest, ExistsAndNotExistsBuilderOverloads) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto orders = query_builder_orders_table();
+
+    auto order_query = db.from(orders);
+    order_query.where(orders["amount"] > 100.0);
+
+    SqlGenerator gen(conn.dialect());
+    auto exists_res = gen.generate_select("users", {"id"}, exists(order_query).node);
+    EXPECT_EQ(exists_res.sql, "SELECT \"id\" FROM \"users\" WHERE EXISTS (SELECT \"id\", \"user_id\", \"amount\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?))");
+    ASSERT_EQ(exists_res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(exists_res.params[0]), 100.0);
+
+    auto not_exists_res = gen.generate_select("users", {"id"}, not_exists(order_query).node);
+    EXPECT_EQ(not_exists_res.sql, "SELECT \"id\" FROM \"users\" WHERE NOT EXISTS (SELECT \"id\", \"user_id\", \"amount\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?))");
+    ASSERT_EQ(not_exists_res.params.size(), 1);
+    EXPECT_DOUBLE_EQ(std::get<double>(not_exists_res.params[0]), 100.0);
+}
+
+TEST(QueryBuilderSqlTest, CteUsesSourceProjectionAndDropsSourceClauses) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+    auto orders = query_builder_orders_table();
+
+    auto source = db.from(orders);
+    source.where(orders["amount"] > 100.0)
+          .distinct()
+          .order_by_desc(orders["amount"])
+          .limit(10)
+          .offset(5)
+          .group_by(orders["user_id"])
+          .having(orders["amount"] > 200.0);
+
+    auto outer = db.from(users);
+    outer.with_cte("high_value_orders", source);
+    outer.to_list();
+
+    EXPECT_EQ(conn.last_sql(), "WITH \"high_value_orders\" AS (SELECT DISTINCT \"id\", \"user_id\", \"amount\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)) SELECT \"id\", \"name\" FROM \"users\"");
+
+    auto single_column_outer = db.from(users);
+    single_column_outer.with_cte("order_user_ids", source.as_subquery(orders["user_id"]));
+    single_column_outer.to_list();
+
+    EXPECT_EQ(conn.last_sql(), "WITH \"order_user_ids\" AS (SELECT DISTINCT \"user_id\" FROM \"orders\" WHERE (\"orders\".\"amount\" > ?)) SELECT \"id\", \"name\" FROM \"users\"");
+}
+
+TEST(QueryBuilderSqlTest, CteWithoutDeclaredColumnsEmitsSelectStar) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+    auto empty_table = table<QueryBuilderUser>("empty_users");
+
+    auto source = db.from(empty_table);
+    auto outer = db.from(users);
+    outer.with_cte("empty_cte", source);
+    outer.to_list();
+
+    EXPECT_EQ(conn.last_sql(),
+              "WITH \"empty_cte\" AS (SELECT * FROM \"empty_users\") "
+              "SELECT \"id\", \"name\" FROM \"users\"");
+}
+
+TEST(QueryBuilderSqlTest, MixedJoinChainGeneratesJoinTypesInOrder) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+    auto orders = query_builder_orders_table();
+    auto accounts = query_builder_accounts_table();
+
+    auto query = db.from(users)
+        .left_join(orders).on(users["id"] == orders["user_id"])
+        .join(accounts).on(accounts["user_id"] == users["id"])
+        .where(accounts["currency"] == "USD")
+        .order_by_desc(orders["amount"])
+        .limit(5)
+        .offset(2);
+    query.to_list();
+
+    EXPECT_EQ(conn.last_sql(), "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"user_id\", \"orders\".\"amount\", \"accounts\".\"id\", \"accounts\".\"user_id\", \"accounts\".\"currency\", \"accounts\".\"balance\" FROM \"users\" LEFT JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\") INNER JOIN \"accounts\" ON (\"accounts\".\"user_id\" = \"users\".\"id\") WHERE (\"accounts\".\"currency\" = ?) ORDER BY \"orders\".\"amount\" DESC LIMIT 5 OFFSET 2");
+}
+
+TEST(QueryBuilderSqlTest, SetOperationCountIgnoresOrderingAndPagination) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+
+    auto first = db.from(users);
+    first.where(users["id"] > 0);
+    auto second = db.from(users);
+    second.where(users["id"] < 100);
+
+    auto combined = first.union_all(second);
+    combined.order_by_desc(users["name"]).limit(10).offset(5);
+
+    EXPECT_EQ(combined.count(), 0u);
+    EXPECT_EQ(conn.last_sql(), "SELECT COUNT(*) FROM (SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" > ?) UNION ALL SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" < ?)) \"_sub\"");
+}
+
+TEST(QueryBuilderSqlTest, SetOperationCopiesOnlyOperandProjectionWhereAndDistinct) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+
+    auto base = db.from(users);
+    base.where(users["id"] > 0);
+
+    auto operand = db.from(users);
+    operand.where(users["id"] < 100)
+           .distinct()
+           .order_by_desc(users["name"])
+           .limit(5)
+           .offset(2)
+           .group_by(users["name"])
+           .having(users["id"] > 3);
+
+    auto combined = base.union_with(operand);
+    combined.to_list();
+
+    EXPECT_EQ(conn.last_sql(),
+              "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" > ?) "
+              "UNION SELECT DISTINCT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" < ?)");
+}
+
+TEST(QueryBuilderSqlTest, CteIsDroppedByJoinedSetOperationAndMutationTerminals) {
+    CapturingConnection conn;
+    DbContext<sqlite> db(conn);
+    auto users = query_builder_users_table();
+    auto orders = query_builder_orders_table();
+
+    auto cte_source = db.from(orders);
+    cte_source.where(orders["amount"] > 100.0);
+
+    auto join_base = db.from(users);
+    join_base.with_cte("high_value_orders", cte_source);
+    auto joined = join_base.join(orders).on(users["id"] == orders["user_id"]);
+    joined.to_list();
+    EXPECT_EQ(conn.last_sql(),
+              "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"id\", \"orders\".\"user_id\", \"orders\".\"amount\" "
+              "FROM \"users\" INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
+
+    auto set_left = db.from(users);
+    set_left.with_cte("high_value_orders", cte_source);
+    set_left.where(users["id"] > 0);
+    auto set_right = db.from(users);
+    set_right.where(users["id"] < 100);
+    set_left.union_with(set_right).to_list();
+    EXPECT_EQ(conn.last_sql(),
+              "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" > ?) "
+              "UNION SELECT \"id\", \"name\" FROM \"users\" WHERE (\"users\".\"id\" < ?)");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
+
+    auto mutation = db.from(users);
+    mutation.with_cte("high_value_orders", cte_source);
+    mutation.where(users["id"] > 0);
+
+    mutation.update({users["name"] = "updated"});
+    EXPECT_EQ(conn.last_sql(),
+              "UPDATE \"users\" SET \"name\" = ? WHERE (\"users\".\"id\" > ?)");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
+
+    mutation.remove();
+    EXPECT_EQ(conn.last_sql(),
+              "DELETE FROM \"users\" WHERE (\"users\".\"id\" > ?)");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
+
+    mutation.prepare_update<int>({users["name"] = param<int>(0)});
+    EXPECT_EQ(conn.last_sql(),
+              "UPDATE \"users\" SET \"name\" = ? WHERE (\"users\".\"id\" > ?)");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
+
+    mutation.prepare_remove();
+    EXPECT_EQ(conn.last_sql(),
+              "DELETE FROM \"users\" WHERE (\"users\".\"id\" > ?)");
+    EXPECT_EQ(conn.last_sql().find("WITH"), std::string::npos);
 }
 
 // ============================================================================

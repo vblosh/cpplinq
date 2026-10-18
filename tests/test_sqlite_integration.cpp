@@ -39,6 +39,47 @@ inline const auto user_roles_table = table<UserRole>(
     column("role_name", &UserRole::role_name)
 );
 
+struct NullableDetail {
+    std::optional<int> score;
+    std::optional<std::string> note;
+
+    bool operator==(const NullableDetail& other) const = default;
+};
+
+inline const auto nullable_details_table = table<NullableDetail>(
+    "test_nullable_details",
+    column("score", &NullableDetail::score),
+    column("note", &NullableDetail::note)
+);
+
+struct DuplicateTag {
+    int code = 0;
+    std::string label;
+
+    bool operator==(const DuplicateTag& other) const = default;
+};
+
+inline const auto duplicate_tags_table = table<DuplicateTag>(
+    "test_duplicate_tags",
+    column("code", &DuplicateTag::code, not_null),
+    column("label", &DuplicateTag::label, not_null)
+);
+
+struct NaturalKeyUser {
+    std::string username;
+    std::string email;
+    int points = 0;
+
+    bool operator==(const NaturalKeyUser& other) const = default;
+};
+
+inline const auto natural_key_users_table = table<NaturalKeyUser>(
+    "test_natural_key_users",
+    column("username", &NaturalKeyUser::username, primary_key),
+    column("email", &NaturalKeyUser::email),
+    column("points", &NaturalKeyUser::points)
+);
+
 } // namespace
 
 TEST(SqliteReviewFixesTest, DialectSupportsTruncate) {
@@ -100,7 +141,11 @@ TEST(SqliteReviewFixesTest, JoinedAndSetOpCountExecution) {
     // JoinedQueryBuilder count
     auto jq = db.from(users_table)
                 .join(orders_table).on(users_table["id"] == orders_table["user_id"])
-                .where(orders_table["amount"] > 30.0);
+                .where(orders_table["amount"] > 30.0)
+                .order_by_desc(orders_table["amount"])
+                .limit(1)
+                .offset(1);
+    // Joined count ignores ORDER BY, LIMIT, and OFFSET.
     EXPECT_EQ(jq.count(), 2u);
 
     // Joined first preserves limit
@@ -115,7 +160,8 @@ TEST(SqliteReviewFixesTest, JoinedAndSetOpCountExecution) {
     // SetOpQueryBuilder count
     auto q1 = db.from(users_table).where(users_table["age"] <= 25);
     auto q2 = db.from(users_table).where(users_table["age"] >= 30);
-    auto sq = q1.union_with(q2);
+    auto sq = q1.union_with(q2).order_by_desc(users_table["age"]).limit(1).offset(1);
+    // Set-operation count ignores ORDER BY, LIMIT, and OFFSET.
     EXPECT_EQ(sq.count(), 2u);
 
     // SetOp first preserves limit
@@ -447,6 +493,259 @@ TEST(SqliteReviewFixesTest, ExistsSubqueryExecutes) {
                          .to_list();
     ASSERT_EQ(non_buyers.size(), 1u);
     EXPECT_EQ(non_buyers[0].name, "Bob");
+}
+
+TEST(SqliteReviewFixesTest, ExistsAcceptsQueryBuilderDirectly) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.ensure_table(orders_table);
+    int alice = static_cast<int>(db.insert(users_table, User{0, "Alice", {}, 30}));
+    db.insert(users_table, User{0, "Bob", {}, 40});
+    db.insert(orders_table, Order{0, alice, 150.0});
+
+    auto any_order = db.from(orders_table)
+                       .where(orders_table["user_id"] == users_table["id"]);
+
+    auto buyers = db.from(users_table)
+                    .where(exists(any_order))
+                    .to_list();
+    ASSERT_EQ(buyers.size(), 1u);
+    EXPECT_EQ(buyers[0].name, "Alice");
+
+    auto non_buyers = db.from(users_table)
+                         .where(not_exists(any_order))
+                         .to_list();
+    ASSERT_EQ(non_buyers.size(), 1u);
+    EXPECT_EQ(non_buyers[0].name, "Bob");
+}
+
+TEST(SqliteReviewFixesTest, InAndNotInSubqueries) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.ensure_table(orders_table);
+    int alice = static_cast<int>(db.insert(users_table, User{0, "Alice", {}, 30}));
+    int bob = static_cast<int>(db.insert(users_table, User{0, "Bob", {}, 40}));
+    db.insert(users_table, User{0, "Cara", {}, 50});
+    db.insert(orders_table, Order{0, alice, 150.0});
+    db.insert(orders_table, Order{0, bob, 50.0});
+
+    auto big_spender_ids = db.from(orders_table)
+                              .where(orders_table["amount"] >= 100.0)
+                              .as_subquery(orders_table["user_id"]);
+
+    auto included = db.from(users_table)
+                        .where(users_table["id"].in(big_spender_ids))
+                        .to_list();
+    ASSERT_EQ(included.size(), 1u);
+    EXPECT_EQ(included[0].name, "Alice");
+
+    auto excluded = db.from(users_table)
+                        .where(users_table["id"].not_in(big_spender_ids))
+                        .order_by(users_table["name"])
+                        .to_list();
+    ASSERT_EQ(excluded.size(), 2u);
+    EXPECT_EQ(excluded[0].name, "Bob");
+    EXPECT_EQ(excluded[1].name, "Cara");
+}
+
+TEST(SqliteReviewFixesTest, CteSurvivesFirstButIsDroppedByScalarTerminals) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "Alice", {}, 30});
+    db.insert(users_table, User{0, "Bob", {}, 17});
+    db.insert(users_table, User{0, "Cara", {}, 42});
+
+    auto adults = db.from(users_table).where(users_table["age"] >= 18);
+    auto cte_users = renamed_table("cte_only_users", users_table);
+    auto query = db.from(cte_users)
+                    .with_cte("cte_only_users", adults)
+                    .order_by(cte_users["age"]);
+
+    auto first = query.first();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->name, "Alice");
+
+    // Scalar terminals omit the CTE list, so the CTE-only FROM target cannot
+    // be resolved once the WITH clause is gone.
+    EXPECT_THROW(query.count(), DbException);
+    EXPECT_THROW(query.count_distinct(cte_users["age"]), DbException);
+    EXPECT_THROW(query.avg(cte_users["age"]), DbException);
+    EXPECT_THROW(query.sum(cte_users["age"]), DbException);
+    EXPECT_THROW(query.min_val(cte_users["age"]), DbException);
+    EXPECT_THROW(query.max_val(cte_users["age"]), DbException);
+    EXPECT_THROW(query.exists(), DbException);
+}
+
+TEST(SqliteReviewFixesTest, CountIgnoresDistinctGroupByHavingOrderLimitOffset) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(duplicate_tags_table);
+    db.insert(duplicate_tags_table, DuplicateTag{1, "a"});
+    db.insert(duplicate_tags_table, DuplicateTag{1, "a"});
+    db.insert(duplicate_tags_table, DuplicateTag{2, "b"});
+
+    auto distinct_rows = db.from(duplicate_tags_table).distinct().to_list();
+    EXPECT_EQ(distinct_rows.size(), 2u);
+    EXPECT_EQ(db.from(duplicate_tags_table).distinct().count(), 3u);
+
+    EXPECT_EQ(db.from(duplicate_tags_table).count_distinct(duplicate_tags_table["code"]), 2u);
+    EXPECT_EQ(db.from(duplicate_tags_table)
+                  .group_by(duplicate_tags_table["code"], duplicate_tags_table["label"])
+                  .having(duplicate_tags_table["code"] > 100)
+                  .count(),
+              3u);
+    EXPECT_EQ(db.from(duplicate_tags_table)
+                  .order_by(duplicate_tags_table["code"])
+                  .limit(1)
+                  .offset(1)
+                  .count(),
+              3u);
+}
+
+TEST(SqliteReviewFixesTest, LeftJoinAllNullMatchedRowMapsToNullopt) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.ensure_table(nullable_details_table);
+    db.insert(users_table, User{0, "Alice", {}, 30});
+    db.insert(nullable_details_table, NullableDetail{std::nullopt, std::nullopt});
+    db.insert(nullable_details_table, NullableDetail{7, "present"});
+
+    // The join condition intentionally does not reference the joined table,
+    // so the all-NULL row is still a matched row.
+    auto rows = db.from(users_table)
+                  .left_join(nullable_details_table)
+                  .on(users_table["id"] >= 0)
+                  .to_list();
+
+    ASSERT_EQ(rows.size(), 2u);
+    size_t null_rows = 0;
+    size_t present_rows = 0;
+    for (const auto& [user, detail] : rows) {
+        EXPECT_EQ(user.name, "Alice");
+        if (detail.has_value()) {
+            ++present_rows;
+            EXPECT_EQ(detail->score, 7);
+            EXPECT_EQ(detail->note, "present");
+        } else {
+            ++null_rows;
+        }
+    }
+    EXPECT_EQ(null_rows, 1u);
+    EXPECT_EQ(present_rows, 1u);
+}
+
+TEST(SqliteReviewFixesTest, SetOpFirstAndCountIgnorePaginationAndOrder) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "Alice", {}, 20});
+    db.insert(users_table, User{0, "Bob", {}, 30});
+    db.insert(users_table, User{0, "Cara", {}, 40});
+    db.insert(users_table, User{0, "Dan", {}, 50});
+
+    auto young = db.from(users_table).where(users_table["age"] <= 20);
+    auto older = db.from(users_table).where(users_table["age"] >= 30);
+    auto combined = young.union_all(older)
+                        .order_by_desc(users_table["age"])
+                        .limit(2)
+                        .offset(1);
+
+    auto rows = combined.to_list();
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].name, "Cara");
+    EXPECT_EQ(rows[1].name, "Bob");
+
+    auto first = combined.first();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->name, "Cara");
+
+    // The count terminal drops ORDER BY, LIMIT, and OFFSET.
+    EXPECT_EQ(combined.count(), 4u);
+}
+
+TEST(SqliteReviewFixesTest, InsertManyDoesNotPopulateGeneratedIds) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+
+    std::vector<User> batch = {
+        User{0, "BatchOne", "one@test.com", 20},
+        User{0, "BatchTwo", "two@test.com", 21}
+    };
+    db.insert_many(users_table, batch);
+
+    EXPECT_EQ(batch[0].id, 0);
+    EXPECT_EQ(batch[1].id, 0);
+
+    auto stored = db.from(users_table).order_by(users_table["name"]).to_list();
+    ASSERT_EQ(stored.size(), 2u);
+    EXPECT_GT(stored[0].id, 0);
+    EXPECT_GT(stored[1].id, 0);
+    EXPECT_NE(stored[0].id, stored[1].id);
+
+    // The unchanged id=0 values do not match the generated rows.
+    for (auto& user : batch) {
+        user.age = 99;
+    }
+    EXPECT_EQ(db.update_many(users_table, batch), 0u);
+
+    auto reloaded = db.from(users_table).order_by(users_table["name"]).to_list();
+    ASSERT_EQ(reloaded.size(), 2u);
+    EXPECT_EQ(reloaded[0].age, 20);
+    EXPECT_EQ(reloaded[1].age, 21);
+}
+
+TEST(SqliteReviewFixesTest, CteSurvivesStreamAndPrepare) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(users_table);
+    db.insert(users_table, User{0, "Alice", {}, 30});
+    db.insert(users_table, User{0, "Bob", {}, 17});
+    db.insert(users_table, User{0, "Cara", {}, 42});
+
+    auto adults = db.from(users_table).where(users_table["age"] >= 18);
+    auto adult_users = renamed_table("adult_users_stream", users_table);
+    auto query = db.from(adult_users)
+                    .with_cte("adult_users_stream", adults)
+                    .order_by(adult_users["age"]);
+
+    auto prepared = query.prepare();
+    auto prepared_rows = prepared.execute();
+    ASSERT_EQ(prepared_rows.size(), 2u);
+    EXPECT_EQ(prepared_rows[0].name, "Alice");
+    EXPECT_EQ(prepared_rows[1].name, "Cara");
+
+    std::vector<std::string> streamed_names;
+    for (const auto& user : query.stream()) {
+        streamed_names.push_back(user.name);
+    }
+    ASSERT_EQ(streamed_names.size(), 2u);
+    EXPECT_EQ(streamed_names[0], "Alice");
+    EXPECT_EQ(streamed_names[1], "Cara");
+}
+
+TEST(SqliteReviewFixesTest, UpsertDefaultsConflictColumnsToPrimaryKey) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(natural_key_users_table);
+
+    // No explicit conflict list: the username primary key is used.
+    db.upsert(natural_key_users_table, NaturalKeyUser{"alice", "alice@old.test", 10});
+    db.upsert(natural_key_users_table, NaturalKeyUser{"alice", "alice@new.test", 25});
+    db.upsert(natural_key_users_table, NaturalKeyUser{"bob", "bob@test", 5});
+
+    auto rows = db.from(natural_key_users_table)
+                    .order_by(natural_key_users_table["username"])
+                    .to_list();
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].username, "alice");
+    EXPECT_EQ(rows[0].email, "alice@new.test");
+    EXPECT_EQ(rows[0].points, 25);
+    EXPECT_EQ(rows[1].username, "bob");
+    EXPECT_EQ(rows[1].points, 5);
+}
+
+TEST(SqliteReviewFixesTest, BatchOperationsWithoutPrimaryKeyThrow) {
+    DbContext<cpplinq::sqlite> db(":memory:");
+    db.ensure_table(duplicate_tags_table);
+
+    EXPECT_THROW(db.delete_many(duplicate_tags_table, std::vector<int>{1}), DbException);
+    EXPECT_THROW(db.update_many(duplicate_tags_table, std::vector<DuplicateTag>{{1, "a"}}), DbException);
 }
 
 TEST(SqliteReviewFixesTest, SetOperationsExecute) {

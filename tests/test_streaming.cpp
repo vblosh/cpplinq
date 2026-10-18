@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 #include "cpplinq/cpplinq.hpp"
+#include <ranges>
 #include <stop_token>
 #include <thread>
 #include <chrono>
+#include <type_traits>
+#include <utility>
 
 using namespace cpplinq;
 
@@ -218,5 +221,44 @@ TEST_F(StreamingTest, RawStreamCancellation) {
     }, operation_cancelled);
 
     EXPECT_EQ(count, 5);
+}
+
+// 10. Documented limitation: streams are single-pass ranges, but their
+// iterators/sentinels do not satisfy std::ranges::input_range.
+TEST_F(StreamingTest, EntityStreamIsMoveOnlyButNotAnInputRange) {
+    using TypedStream = decltype(db_->from(stream_items).stream());
+
+    static_assert(!std::ranges::input_range<TypedStream>);
+    static_assert(!std::ranges::view<TypedStream>);
+    static_assert(!std::is_copy_constructible_v<TypedStream>);
+    static_assert(std::is_move_constructible_v<TypedStream>);
+    using TypedIterator = decltype(std::declval<TypedStream&>().begin());
+    static_assert(!std::is_copy_constructible_v<TypedIterator>);
+    static_assert(std::is_move_constructible_v<TypedIterator>);
+
+    int count = 0;
+    for (const auto& item : db_->from(stream_items).order_by(stream_items["id"]).stream()) {
+        (void)item;
+        if (++count == 3) break;
+    }
+    EXPECT_EQ(count, 3);
+}
+
+TEST_F(StreamingTest, RowStreamIsMoveOnlyButNotAnInputRange) {
+    static_assert(!std::ranges::input_range<RowStream>);
+    static_assert(!std::ranges::view<RowStream>);
+    static_assert(!std::is_copy_constructible_v<RowStream>);
+    static_assert(std::is_move_constructible_v<RowStream>);
+    using RawIterator = decltype(std::declval<RowStream&>().begin());
+    static_assert(!std::is_copy_constructible_v<RawIterator>);
+    static_assert(std::is_move_constructible_v<RawIterator>);
+
+    auto stream = conn_->stream("SELECT id FROM stream_items ORDER BY id");
+    int count = 0;
+    for (const auto& row : stream) {
+        EXPECT_FALSE(row.is_null(0));
+        if (++count == 3) break;
+    }
+    EXPECT_EQ(count, 3);
 }
 
